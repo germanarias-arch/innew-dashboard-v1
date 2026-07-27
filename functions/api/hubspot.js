@@ -1,31 +1,31 @@
-// Proxy a HubSpot. Reemplaza lo que en Cowork hacía el conector MCP.
+// POST /api/hubspot — Proxy a HubSpot. Reemplaza lo que en Cowork hace el conector MCP.
+// Cloudflare Pages Function (reemplaza netlify/functions/hubspot.js).
 // Requiere sesión válida (cookie). El token de HubSpot vive solo acá (env), nunca en el navegador.
-const { verify, getCookie, COOKIE } = require("./_session");
+import { verify, getCookie, COOKIE } from "../../lib/session.js";
 
 const HS = "https://api.hubapi.com";
-const TOKEN = process.env.HUBSPOT_TOKEN;
 const OP = ["EQ","NEQ","LT","LTE","GT","GTE","BETWEEN","IN","NOT_IN","HAS_PROPERTY","NOT_HAS_PROPERTY","CONTAINS_TOKEN","NOT_CONTAINS_TOKEN"];
 
-async function hsFetch(path, opts) {
+async function hsFetch(token, path, opts) {
   opts = opts || {};
   const r = await fetch(HS + path, Object.assign({}, opts, {
-    headers: Object.assign({ "Authorization": "Bearer " + TOKEN, "Content-Type": "application/json" }, opts.headers || {})
+    headers: Object.assign({ "Authorization": "Bearer " + token, "Content-Type": "application/json" }, opts.headers || {})
   }));
   const text = await r.text();
-  let json; try { json = text ? JSON.parse(text) : {}; } catch (e) { json = { raw: text }; }
+  let js; try { js = text ? JSON.parse(text) : {}; } catch (e) { js = { raw: text }; }
   if (!r.ok) { const err = new Error("HubSpot " + r.status + ": " + text.slice(0, 300)); err.status = r.status; throw err; }
-  return json;
+  return js;
 }
 function toolName(t) { return (t || "").split("__").pop(); }
 
-async function doSearch(args) {
+async function doSearch(token, args) {
   const objectType = args.objectType;
   let assocIds = null;
   for (const g of (args.filterGroups || [])) {
     if (g.associatedWith && g.associatedWith.length) {
       const aw = g.associatedWith[0];
       const dealId = (aw.objectIdValues || [])[0];
-      const assoc = await hsFetch("/crm/v4/objects/" + aw.objectType + "/" + dealId + "/associations/" + objectType + "?limit=100");
+      const assoc = await hsFetch(token, "/crm/v4/objects/" + aw.objectType + "/" + dealId + "/associations/" + objectType + "?limit=100");
       assocIds = (assoc.results || []).map(x => String(x.toObjectId || (x.to && x.to.id)));
     }
   }
@@ -50,7 +50,7 @@ async function doSearch(args) {
     if (!body.filterGroups.length) body.filterGroups = [{ filters: [idFilter] }];
     else body.filterGroups.forEach(g => g.filters.push(idFilter));
   }
-  const res = await hsFetch("/crm/v3/objects/" + objectType + "/search", { method: "POST", body: JSON.stringify(body) });
+  const res = await hsFetch(token, "/crm/v3/objects/" + objectType + "/search", { method: "POST", body: JSON.stringify(body) });
   return {
     results: (res.results || []).map(r => ({ id: r.id, properties: r.properties })),
     total: res.total,
@@ -58,15 +58,15 @@ async function doSearch(args) {
   };
 }
 
-async function doManage(args) {
+async function doManage(token, args) {
   const out = {};
   if (args.createRequest && args.createRequest.objects) {
     const results = [];
     for (const o of args.createRequest.objects) {
-      const created = await hsFetch("/crm/v3/objects/" + o.objectType, { method: "POST", body: JSON.stringify({ properties: o.properties || {} }) });
+      const created = await hsFetch(token, "/crm/v3/objects/" + o.objectType, { method: "POST", body: JSON.stringify({ properties: o.properties || {} }) });
       if (o.associations) {
         for (const a of o.associations) {
-          await hsFetch("/crm/v4/objects/" + o.objectType + "/" + created.id + "/associations/default/" + a.targetObjectType + "/" + a.targetObjectId, { method: "PUT", body: "[]" });
+          await hsFetch(token, "/crm/v4/objects/" + o.objectType + "/" + created.id + "/associations/default/" + a.targetObjectType + "/" + a.targetObjectId, { method: "PUT", body: "[]" });
         }
       }
       results.push({ objectType: o.objectType, objectId: Number(created.id), object: { id: created.id } });
@@ -77,10 +77,10 @@ async function doManage(args) {
   if (args.updateRequest && args.updateRequest.objects) {
     const results = [];
     for (const o of args.updateRequest.objects) {
-      await hsFetch("/crm/v3/objects/" + o.objectType + "/" + o.objectId, { method: "PATCH", body: JSON.stringify({ properties: o.properties || {} }) });
+      await hsFetch(token, "/crm/v3/objects/" + o.objectType + "/" + o.objectId, { method: "PATCH", body: JSON.stringify({ properties: o.properties || {} }) });
       if (o.associations) {
         for (const a of o.associations) {
-          await hsFetch("/crm/v4/objects/" + o.objectType + "/" + o.objectId + "/associations/default/" + a.targetObjectType + "/" + a.targetObjectId, { method: "PUT", body: "[]" });
+          await hsFetch(token, "/crm/v4/objects/" + o.objectType + "/" + o.objectId + "/associations/default/" + a.targetObjectType + "/" + a.targetObjectId, { method: "PUT", body: "[]" });
         }
       }
       results.push({ objectType: o.objectType, objectId: o.objectId });
@@ -90,20 +90,27 @@ async function doManage(args) {
   return out;
 }
 
-exports.handler = async (event) => {
-  if (event.httpMethod !== "POST") return { statusCode: 405, body: "Method not allowed" };
-  const sess = verify(getCookie(event.headers || {}, COOKIE));
-  if (!sess) return { statusCode: 401, body: JSON.stringify({ error: "No autenticado" }) };
-  if (!TOKEN) return { statusCode: 500, body: JSON.stringify({ error: "Falta HUBSPOT_TOKEN en el entorno" }) };
+function json(obj, status) {
+  return new Response(JSON.stringify(obj), { status: status || 200, headers: { "Content-Type": "application/json" } });
+}
+
+export async function onRequestPost(context) {
+  const { request, env } = context;
+  const TOKEN = env.HUBSPOT_TOKEN;
+  const SECRET = env.SESSION_SECRET || "cambia-esto-en-cloudflare";
+  const sess = await verify(getCookie(request, COOKIE), SECRET);
+  if (!sess) return json({ error: "No autenticado" }, 401);
+  if (!TOKEN) return json({ error: "Falta HUBSPOT_TOKEN en el entorno" }, 500);
   try {
-    const { tool, args } = JSON.parse(event.body || "{}");
-    const name = toolName(tool);
+    const parsed = await request.json().catch(() => ({}));
+    const name = toolName(parsed.tool);
+    const args = parsed.args;
     let data;
-    if (name === "search_crm_objects") data = await doSearch(args);
-    else if (name === "manage_crm_objects") data = await doManage(args);
-    else return { statusCode: 400, body: JSON.stringify({ error: "Tool no soportada: " + name }) };
-    return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) };
+    if (name === "search_crm_objects") data = await doSearch(TOKEN, args);
+    else if (name === "manage_crm_objects") data = await doManage(TOKEN, args);
+    else return json({ error: "Tool no soportada: " + name }, 400);
+    return json(data, 200);
   } catch (e) {
-    return { statusCode: e.status === 404 ? 404 : 500, body: JSON.stringify({ error: e.message }) };
+    return json({ error: e.message }, e.status === 404 ? 404 : 500);
   }
-};
+}

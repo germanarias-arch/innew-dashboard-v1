@@ -1,12 +1,18 @@
-// Devuelve la identidad y el rol del usuario logueado (lee la cookie de sesión firmada).
-const { verify, getCookie, COOKIE } = require("./_session");
+// GET /api/me — Devuelve identidad y rol del usuario logueado (lee la cookie firmada).
+// Cloudflare Pages Function (reemplaza netlify/functions/me.js).
+import { verify, getCookie, COOKIE } from "../../lib/session.js";
 
-exports.handler = async (event) => {
-  const sess = verify(getCookie(event.headers || {}, COOKIE));
-  if (!sess) return { statusCode: 401, body: JSON.stringify({ error: "No autenticado" }) };
-  return {
-    statusCode: 200,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email: sess.email, name: sess.name, role: sess.role || "full", ownerId: sess.ownerId || "", csmName: sess.csmName || "" })
-  };
-};
+export async function onRequestGet(context) {
+  const { request, env } = context;
+  const SECRET = env.SESSION_SECRET || "cambia-esto-en-cloudflare";
+  const sess = await verify(getCookie(request, COOKIE), SECRET);
+  if (!sess) {
+    return new Response(JSON.stringify({ error: "No autenticado" }), {
+      status: 401, headers: { "Content-Type": "application/json" }
+    });
+  }
+  return new Response(JSON.stringify({
+    email: sess.email, name: sess.name, role: sess.role || "full",
+    ownerId: sess.ownerId || "", csmName: sess.csmName || ""
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+}
