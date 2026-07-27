@@ -1,0 +1,7 @@
+{
+  "name": "innew-dashboard-comercial",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dashboard Comercial Innew — web app (Cloudflare Pages / Netlify) sobre el mismo dashboard.html de Cowork",
+  "dependencies": {}
+}

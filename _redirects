@@ -1,0 +1,4 @@
+# Cloudflare Pages: las Functions en /api/* tienen prioridad sobre este archivo,
+# así que el catch-all NO intercepta las llamadas al backend.
+# Fallback SPA: cualquier ruta desconocida sirve el dashboard (los assets existentes se sirven directo).
+/*    /index.html   200

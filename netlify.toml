@@ -1,0 +1,20 @@
+[build]
+  command = "bash build.sh"
+  publish = "dist"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
+
+# Puente: el front-end ahora llama a /api/*. En Netlify lo reescribimos a las functions,
+# así el MISMO dashboard.html funciona en Netlify y en Cloudflare Pages durante la migración.
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/:splat"
+  status = 200
+
+# Redirige cualquier ruta desconocida al dashboard (SPA-like)
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
