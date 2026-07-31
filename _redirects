@@ -1,4 +1,2 @@
-# Cloudflare Pages: las Functions en /api/* tienen prioridad sobre este archivo,
-# así que el catch-all NO intercepta las llamadas al backend.
-# Fallback SPA: cualquier ruta desconocida sirve el dashboard (los assets existentes se sirven directo).
-/*    /index.html   200
+# Cloudflare: las Functions en /api/* tienen prioridad; los assets (index.html, login.html) se sirven directo.
+# Sin catch-all: Cloudflare Workers rechaza "/* /index.html 200" por loop infinito (2026-07-31).
