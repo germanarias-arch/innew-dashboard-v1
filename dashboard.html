@@ -1619,8 +1619,9 @@ function renderPeriodo(containerId, summary, opts) {
     </div>` : ""}
     ${showNote ? `
     <div class="s-note">
-      * Real/Facturable: el <strong>mes en curso</strong> se toma en vivo del Sheet VENTAS (administración), detallado por país y servicio.
-      Los meses siguientes quedan como estimado hasta que se carguen / se proyectan con el Forecast HS.
+      * Real/Facturable sale del input <strong>Base contratada</strong> (arriba, en Metas) — única fuente de verdad.
+      Nota: el Forecast HS <strong>distribuye la facturación</strong> de cada deal a lo largo de sus meses de facturación (ponderado);
+      los bloques de arriba miran el <strong>mes de cierre</strong> (primer tramo del plan de pagos) — por eso los números no son idénticos.
     </div>` : ""}`;
 
   let html;
@@ -1681,7 +1682,7 @@ function toggleDetalle(detId, caretId) {
 // ====================================================
 function renderMonthlyTable(forecastMonths) {
   let html = `<div class="table-wrap"><table><thead><tr>
-    <th>Mes</th><th>Meta mes</th><th>Real / Facturable</th><th>% Cobertura R/F</th><th>Forecast HS</th><th>Suma</th><th>% Cobertura</th><th>Piso Joa</th><th>% vs Piso</th>
+    <th>Mes</th><th>Meta mes</th><th>Real / Facturable</th><th>% Cobertura R/F</th><th>Forecast HS</th><th>Suma</th><th>% Cobertura</th>
   </tr></thead><tbody>`;
 
   forecastMonths.forEach(m => {
@@ -1692,8 +1693,6 @@ function renderMonthlyTable(forecastMonths) {
     const meta = META_MENSUAL[m.key] || 0;
     const pct = meta ? Math.round(100 * suma / meta) : 0;
     const pctRF = meta ? Math.round(100 * real / meta) : 0;
-    const piso = m.key >= TARGETS_JOA_DESDE ? PISO_JOA : 0;
-    const pctPiso = piso ? Math.round(100 * suma / piso) : null;
     const label = fmtMonthLabel(m.date);
     html += `<tr>
       <td><span class="calendar-icon">📅</span>${label}</td>
@@ -1703,8 +1702,6 @@ function renderMonthlyTable(forecastMonths) {
       <td>${fmtMoneyK(fc)}</td>
       <td>${fmtMoneyK(suma)}</td>
       <td><span class="sem-cell ${semaforoClass(pct)}">${pct}%</span></td>
-      <td>${piso ? fmtMoneyK(piso) : "–"}</td>
-      <td>${pctPiso === null ? "–" : `<span class="sem-cell ${semaforoClass(pctPiso)}">${pctPiso}%</span>`}</td>
     </tr>`;
   });
   html += `</tbody></table></div>
@@ -1717,9 +1714,6 @@ function renderMonthlyTable(forecastMonths) {
     </div>
     <div class="monthly-leyenda" style="margin-top: 8px; font-size: 12px; color: #6b7280; font-style: italic;">
       <strong style="color: #4b5563;">% Cobertura R/F</strong> = Real/Facturable ÷ Meta mes (sin Forecast HS). &nbsp;·&nbsp; <strong style="color: #4b5563;">% Cobertura</strong> = (Real/Facturable + Forecast HS) ÷ Meta mes.
-    </div>
-    <div class="monthly-leyenda" style="margin-top: 4px; font-size: 12px; color: #6b7280; font-style: italic;">
-      <strong style="color: #4b5563;">Piso Joa</strong> = target de la reunión 13-jul-2026: piso $120K/mes (run-rate de salida oct-nov) · stretch $150K/mes. Vigente desde ago-2026. <strong style="color: #4b5563;">% vs Piso</strong> = Suma ÷ Piso.
     </div>`;
   document.getElementById("monthly-table-content").innerHTML = html;
 }
@@ -4864,6 +4858,24 @@ function metasMotores(open, sTri, sSem) {
   </div>`;
 }
 function renderMetas() {
+  // ---- Refresco del bucket "Forecast HS" con deals vivos (antes quedaba congelado del boot) ----
+  if (window.__allDeals && window.__allDeals.length && typeof buildForecast === "function") {
+    try {
+      const fmNew = buildForecast(window.__allDeals);
+      window.__forecastMonths = fmNew;
+      renderPeriodo("mes-actual-content", calcPeriodo(fmNew, [0]), { labelMeta: "Meta del mes", showVelocidad: false, showNote: false, collapsible: true });
+      if (fmNew.length > 1) renderPeriodo("mes-siguiente-content", calcPeriodo(fmNew, [1]), { labelMeta: "Meta del mes", showVelocidad: false, showNote: false, collapsible: true });
+      const sSemB = calcPeriodo(fmNew, fmNew.map((_, i) => i));
+      renderPeriodo("semestre-content", sSemB, { labelMeta: "Meta del semestre", showVelocidad: true, showNote: true });
+      const pvSem = document.getElementById("preview-semestre");
+      if (pvSem) pvSem.textContent = `(Meta ${fmtMoneyK(sSemB.metaTotal)} · Total ${fmtMoneyK(sSemB.totalEsp)} · GAP ${fmtMoneyK(sSemB.gap)} · ${sSemB.pctTotal}%)`;
+      renderMonthlyTable(fmNew);
+      renderTendencia(sSemB.fcTotal);
+      renderTopDeals(window.__allDeals);
+      renderForecastTable(fmNew);
+      if (typeof renderPais === "function") renderPais(fmNew);
+    } catch (e) { console.warn("refresh bucket Forecast HS:", e); }
+  }
   const fm = window.__forecastMonths;
   const cadEl = document.getElementById("metas-cadencia");
   const focoEl = document.getElementById("metas-foco");
