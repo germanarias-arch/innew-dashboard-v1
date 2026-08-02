@@ -459,16 +459,11 @@ table.std tr:hover td { background: #fafafa; }
     <div class="bucket" id="bucket-metas-refore">
       <div class="bucket-header" onclick="toggleBucket('bucket-metas-refore')">
         <span class="bucket-icon">▶</span>
-        <span class="bucket-title">🎯 Reforecast H2 — escenarios y plan (PxQ)</span>
+        <span class="bucket-title">🔁 Replanificar 6 o 12 meses</span>
         <span class="bucket-preview" id="preview-metas-refore"></span>
       </div>
       <div class="bucket-content">
       <div id="view-reforecast">
-
-    <div class="semestre">
-      <h2>🧮 Matriz por capa · Jul → Dic 2026</h2>
-      <div id="refore-matrix" style="overflow-x:auto;"></div>
-    </div>
 
     <div class="bucket" id="bucket-refore-sup">
       <div class="bucket-header" onclick="toggleBucket('bucket-refore-sup')">
@@ -476,6 +471,11 @@ table.std tr:hover td { background: #fafafa; }
         <span class="small" style="color:#888;">Editá y recalcula al instante</span>
       </div>
       <div class="bucket-content"><div id="refore-supuestos"></div></div>
+    </div>
+
+    <div class="semestre">
+      <h2 id="refore-matrix-title">🧮 Matriz por capa</h2>
+      <div id="refore-matrix" style="overflow-x:auto;"></div>
     </div>
       </div>
         </div>
@@ -505,28 +505,13 @@ table.std tr:hover td { background: #fafafa; }
     </div>
   </div>
 
-  <!-- 📅 MES ACTUAL -->
-  <div class="semestre">
-    <h2>📅 Mes Actual <span id="mes-actual-rango" style="font-weight:400; color:#666; font-size:13px;"></span></h2>
-    <div id="mes-actual-content"></div>
-  </div>
-
-  <!-- 📅 MES SIGUIENTE -->
-  <div class="semestre">
-    <h2>📅 Mes Siguiente <span id="mes-siguiente-rango" style="font-weight:400; color:#666; font-size:13px;"></span></h2>
-    <div id="mes-siguiente-content"></div>
-  </div>
-
-  <!-- 🎯 SEMESTRE (colapsable) -->
+  <!-- 📊 DETALLE POR MES (colapsable) — los bloques Mes Actual/Mes Siguiente/Semestre se quitaron (2026-07-31): duplicaban la cadencia de Metas y confundían -->
   <div class="bucket" id="bucket-semestre">
     <div class="bucket-header" onclick="toggleBucket('bucket-semestre')">
       <span class="bucket-icon">▶</span>
-      <span class="bucket-title">🎯 Semestre <span id="semestre-rango" style="font-weight:400; color:#666;"></span></span>
-      <span class="bucket-preview" id="preview-semestre"></span>
+      <span class="bucket-title">📊 Detalle por mes — Real/Facturable + Forecast HS vs Meta</span>
     </div>
     <div class="bucket-content">
-      <div id="semestre-content"></div>
-      <h3 class="section-title-monthly"><span class="icon">📊</span>Detalle por mes — Real/Facturable + Forecast HS vs Meta</h3>
       <div id="monthly-table-content"></div>
     </div>
   </div>
@@ -2321,11 +2306,17 @@ function toggleBucket(id) { document.getElementById(id).classList.toggle("open")
 // Base contratada + Pipeline ponderado live (HubSpot) + Generación PxQ
 // ====================================================
 const REFORE = {
-  labels: ["Jul", "Ago", "Sep", "Oct", "Nov", "Dic"],
-  base:    [80000, 79000, 77000, 73000, 69500, 66000],  // recurrente contratado (decae por churn)
-  planV3:  [146679, 167196, 194013, 208367, 218884, 236734], // plan v3 de referencia
+  horizon: 6,           // 6 o 12 meses rodantes desde el mes actual (toggle en Supuestos)
+  keys: [],             // claves "YYYY-MM" del horizonte (se arman en reforeRebuildHorizon)
+  labels: ["Jul", "Ago", "Sep", "Oct", "Nov", "Dic"],   // derivados de keys en cada rebuild
+  base:    [80000, 79000, 77000, 73000, 69500, 66000],  // derivado de baseM en cada rebuild
+  // Base contratada keyed por mes calendario (sobrevive al rodado del horizonte)
+  baseM: { "2026-07": 80000, "2026-08": 79000, "2026-09": 77000, "2026-10": 73000, "2026-11": 69500, "2026-12": 66000 },
+  planV3:  [146679, 167196, 194013, 208367, 218884, 236734], // plan v3 de referencia (legacy H2)
   piso: 120000,
   stretch: 150000,
+  pisoM: {},            // overrides de Piso por mes "YYYY-MM" (fallback al escalar)
+  stretchM: {},         // overrides de Stretch por mes "YYYY-MM"
   activeScen: "prob",   // escenario que manda KPIs / matriz / barras
   // Generación abierta por PAÍS → TIPO DE SERVICIO. Cada escenario define, por país y
   // servicio, P (ticket MRR / cuota mensual, U$S) y Q (deals cerrados/mes). Aporte = P × Q.
@@ -2370,23 +2361,85 @@ const REFORE = {
   }
 };
 
-// Materializa scen[s].co[pais][servicio] = { P, Q } a partir de la semilla,
-// el multiplicador de escenario (qMult) y el factor de país (f). Todo editable después.
+// ---- Horizonte rodante (Replanificar 6 o 12 meses) ----
+const REFORE_MES_LBL = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+function reforeMonthKeys(n) {
+  const now = new Date(); const arr = [];
+  for (let i = 0; i < n; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    arr.push(d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"));
+  }
+  return arr;
+}
+function reforeRebuildHorizon() {
+  REFORE.keys = reforeMonthKeys(REFORE.horizon === 12 ? 12 : 6);
+  const y0 = REFORE.keys[0].slice(0, 4);
+  REFORE.labels = REFORE.keys.map(k => {
+    const y = k.slice(0, 4), m = Number(k.slice(5, 7));
+    return REFORE_MES_LBL[m - 1] + (y !== y0 ? " '" + y.slice(2) : "");
+  });
+  REFORE.base = REFORE.keys.map(k => Number(REFORE.baseM[k]) || 0);
+  buildReforeCountries();
+}
+function reforeSetHorizon(n) {
+  REFORE.horizon = (Number(n) === 12) ? 12 : 6;
+  dashSave({ reforeHorizon: REFORE.horizon });
+  reforeRebuildHorizon();
+  renderReforecast();
+  try { if (typeof renderGoalStrip === "function") renderGoalStrip(); } catch (e) {}
+}
+// Metas por mes: override mensual → default escalar (Piso/Stretch son valores MENSUALES)
+function reforePisoMes(i) {
+  const k = (REFORE.keys || [])[i]; const v = (REFORE.pisoM || {})[k];
+  if (v != null && v !== "" && !isNaN(Number(v))) return Number(v);
+  const mm = Number((typeof META_MENSUAL !== "undefined" ? META_MENSUAL : {})[k]);
+  return mm > 0 ? mm : (Number(REFORE.piso) || 0);
+}
+function reforeStretchMes(i) {
+  const k = (REFORE.keys || [])[i]; const v = (REFORE.stretchM || {})[k];
+  if (v != null && v !== "" && !isNaN(Number(v))) return Number(v);
+  return Number(REFORE.stretch) || 0;
+}
+
+// Materializa scen[s].co[pais][servicio] = { P, Q }. La matriz arranca SIEMPRE EN CERO
+// (Q = zeros; P = ticket semilla como default de precio) y se le aplican los overrides
+// guardados en localStorage (reforePxQ, keyed por mes calendario — sobreviven al rodado).
 function buildReforeCountries() {
+  const keys = REFORE.keys || [];
+  const ov = (typeof dashLoad === "function" ? (dashLoad().reforePxQ || {}) : {});
   Object.keys(REFORE.scen).forEach(sk => {
     const scen = REFORE.scen[sk];
     scen.co = {};
     REFORE.countries.forEach(c => {
       const co = {};
       REFORE.svcs.forEach(sv => {
-        const seed = REFORE.svcSeed[sv.key] || { P: 0, Q: [0, 0, 0, 0, 0, 0] };
-        co[sv.key] = { P: seed.P, Q: seed.Q.map(q => Math.round(q * (scen.qMult || 1) * (c.f || 1))) };
+        const seed = REFORE.svcSeed[sv.key] || { P: 0 };
+        const o = (((ov[sk] || {})[c.key] || {})[sv.key]) || {};
+        const P = (o.P != null && o.P !== "" && !isNaN(Number(o.P))) ? Number(o.P) : (Number(seed.P) || 0);
+        const Q = keys.map(k => Number((o.Q || {})[k]) || 0);
+        co[sv.key] = { P: P, Q: Q };
       });
       scen.co[c.key] = co;
     });
   });
 }
-buildReforeCountries();
+// ¿La celda país×servicio fue "tocada"? (override de P o algún Q > 0) — para mostrar solo lo tocado
+function reforeSvcTouched(scenKey, coKey, svcKey) {
+  const ov = (((dashLoad().reforePxQ || {})[scenKey] || {})[coKey] || {})[svcKey];
+  if (!ov) return false;
+  if (ov.P != null && ov.P !== "") return true;
+  return Object.keys(ov.Q || {}).some(k => Number(ov.Q[k]) > 0);
+}
+function persistPxQOverride(scenKey, coKey, svcKey, patch) {
+  const c = dashLoad(); const root = c.reforePxQ || {};
+  const s = root[scenKey] = root[scenKey] || {};
+  const co = s[coKey] = s[coKey] || {};
+  const sv = co[svcKey] = co[svcKey] || { P: null, Q: {} };
+  if ("P" in patch) sv.P = patch.P;
+  if (patch.Q) { sv.Q = sv.Q || {}; Object.assign(sv.Q, patch.Q); }
+  dashSave({ reforePxQ: root });
+}
+reforeRebuildHorizon();
 
 // ===================== UPSELL / MATRIZ DE PRODUCTO (vista Clientes) =====================
 // Productos vendibles a cuentas activas (DISTINTOS de las líneas de servicio del forecast).
@@ -2411,17 +2464,26 @@ const UPSELL = {
 function upsellOportCuenta(cuenta) {
   return UPSELL.productos.reduce((s, p) => s + (cuenta.cel[p.key] && cuenta.cel[p.key].vender ? (Number(p.ticket) || 0) : 0), 0);
 }
-// Generación mensual (6 meses) de la línea "inc" para un país. Independiente del escenario.
-// Cada cuenta aporta su oportunidad mensual en la ventana [desdeMes .. desdeMes+meses-1] del horizonte.
+// Generación mensual de la línea "inc" para un país. Independiente del escenario.
+// La ventana desdeMes/meses de cada cuenta sigue anclada al calendario fijo Jul→Dic 2026
+// (UPSELL_BASE_KEYS); se mapea por clave calendario al horizonte rodante del Reforecast.
+const UPSELL_BASE_KEYS = ["2026-07", "2026-08", "2026-09", "2026-10", "2026-11", "2026-12"];
+const UPSELL_BASE_LABELS = ["Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 function incGen(coKey) {
-  const tot = [0, 0, 0, 0, 0, 0];
+  const keys = REFORE.keys || [];
+  const tot = keys.map(() => 0);
   UPSELL.cuentas.forEach(cta => {
     if (cta.pais !== coKey) return;
     const m = upsellOportCuenta(cta);
     const n = Number(cta.meses) || 0;
     if (m <= 0 || n <= 0) return;
     const start = Math.max(0, Math.min(5, Number(cta.desdeMes) || 0));
-    for (let i = start; i < 6 && i < start + n; i++) tot[i] += m;
+    for (let j = start; j < start + n; j++) {
+      const d = new Date(2026, 6 + j, 1); // mes j contando desde Jul-2026
+      const k = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+      const idx = keys.indexOf(k);
+      if (idx >= 0) tot[idx] += m;
+    }
   });
   return tot;
 }
@@ -2450,8 +2512,10 @@ function dashSave(patch) { const c = dashLoad(); Object.assign(c, patch); try { 
 // esto lo baja a REAL_FACTURABLE (Jul–Dic) para que TODAS las vistas de dirección
 // (cadence cards, goal-strip, forecast por país, accuracy) lean de lo mismo.
 const FACTURABLE_H2_KEYS = ["2026-07", "2026-08", "2026-09", "2026-10", "2026-11", "2026-12"];
-function syncFacturableFromBase() { FACTURABLE_H2_KEYS.forEach((k, i) => { REAL_FACTURABLE[k] = REFORE.base[i] || 0; }); }
-function persistBase() { dashSave({ reforeBase: REFORE.base }); }
+// Baja TODAS las claves de baseM (no solo el horizonte visible) — los meses pasados conservan su facturable
+function syncFacturableFromBase() { Object.keys(REFORE.baseM || {}).forEach(k => { REAL_FACTURABLE[k] = Number(REFORE.baseM[k]) || 0; }); }
+function persistBase() { dashSave({ reforeBaseM: REFORE.baseM }); }
+function persistMetasM() { dashSave({ reforePisoM: REFORE.pisoM, reforeStretchM: REFORE.stretchM, reforePiso: REFORE.piso, reforeStretch: REFORE.stretch }); }
 
 function persistFuentes() { dashSave({ fuentes: FUENTES.rows }); }
 function persistUpsell() {
@@ -2484,7 +2548,17 @@ const GEN_STAGE_IDS = GEN_STAGES.map(s => s.id);
   const p = dashLoad();
   if (Array.isArray(p.productos) && p.productos.length) UPSELL.productos = p.productos;
   if (Array.isArray(p.fuentes) && p.fuentes.length) FUENTES.rows = p.fuentes;
-  if (Array.isArray(p.reforeBase) && p.reforeBase.length === 6) REFORE.base = p.reforeBase.map(Number);
+  // Migración legacy: reforeBase era un array de 6 (Jul–Dic 2026) → mapa baseM keyed por mes
+  if (Array.isArray(p.reforeBase) && p.reforeBase.length === 6 && !p.reforeBaseM) {
+    FACTURABLE_H2_KEYS.forEach((k, i) => { REFORE.baseM[k] = Number(p.reforeBase[i]) || 0; });
+  }
+  if (p.reforeBaseM && typeof p.reforeBaseM === "object") Object.assign(REFORE.baseM, p.reforeBaseM);
+  if (p.reforeHorizon === 12 || p.reforeHorizon === 6) REFORE.horizon = p.reforeHorizon;
+  if (p.reforePisoM && typeof p.reforePisoM === "object") REFORE.pisoM = p.reforePisoM;
+  if (p.reforeStretchM && typeof p.reforeStretchM === "object") REFORE.stretchM = p.reforeStretchM;
+  if (Number(p.reforePiso) > 0) REFORE.piso = Number(p.reforePiso);
+  if (Number(p.reforeStretch) > 0) REFORE.stretch = Number(p.reforeStretch);
+  reforeRebuildHorizon();   // rearma keys/labels/base + matriz PxQ con overrides persistidos
   syncFacturableFromBase();
 })();
 
@@ -3539,7 +3613,8 @@ function svcGen(scenKey, coKey, svcKey) {
   const ap = svcAporte(scenKey, coKey, svcKey);
   const win = REFORE.idpMeses || 4;
   const gen = [];
-  for (let i = 0; i < 6; i++) {
+  const N = (REFORE.keys || []).length || 6;
+  for (let i = 0; i < N; i++) {
     if (meta.type === "idp") {
       let s = 0; for (let k = Math.max(0, i - win + 1); k <= i; k++) s += ap[k]; gen[i] = s;
     } else {
@@ -3550,14 +3625,16 @@ function svcGen(scenKey, coKey, svcKey) {
 }
 // Generación de un país por mes = suma de sus servicios.
 function countryGen(scenKey, coKey) {
-  const tot = [0, 0, 0, 0, 0, 0];
-  REFORE.svcs.forEach(sv => { const g = svcGen(scenKey, coKey, sv.key); for (let i = 0; i < 6; i++) tot[i] += g[i]; });
+  const N = (REFORE.keys || []).length || 6;
+  const tot = new Array(N).fill(0);
+  REFORE.svcs.forEach(sv => { const g = svcGen(scenKey, coKey, sv.key); for (let i = 0; i < N; i++) tot[i] += (g[i] || 0); });
   return tot;
 }
 // Generación total del escenario por mes = suma de todos los países.
 function scenGenAcum(key) {
-  const tot = [0, 0, 0, 0, 0, 0];
-  REFORE.countries.forEach(c => { const g = countryGen(key, c.key); for (let i = 0; i < 6; i++) tot[i] += g[i]; });
+  const N = (REFORE.keys || []).length || 6;
+  const tot = new Array(N).fill(0);
+  REFORE.countries.forEach(c => { const g = countryGen(key, c.key); for (let i = 0; i < N; i++) tot[i] += (g[i] || 0); });
   return tot;
 }
 // TOTAL por escenario = Base + Pipeline ponderado + Generación acumulada
@@ -3571,7 +3648,7 @@ function buildReforePipeline() {
   const deals = window.__allDeals || [];
   const now = new Date();
   const startMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-  const N = 6;
+  const N = (REFORE.keys || []).length || 6;
   const weighted = new Array(N).fill(0);
   const unweighted = new Array(N).fill(0);
   const byMonth = Array.from({ length: N }, () => []);
@@ -3606,7 +3683,7 @@ function buildReforePipeline() {
 
 function renderReforecast() {
   const pipe = buildReforePipeline();
-  const N = 6;
+  const N = (REFORE.keys || []).length || 6;
   const sum = a => a.reduce((s, x) => s + x, 0);
   const active = REFORE.activeScen;
   const scenA = REFORE.scen[active];
@@ -3621,14 +3698,15 @@ function renderReforecast() {
   const total = totalsByScen[active];
   const gapPiso = [], gapStretch = [];
   for (let i = 0; i < N; i++) {
-    gapPiso[i] = total[i] - metaMesRefore(i);
-    gapStretch[i] = total[i] - REFORE.stretch;
+    gapPiso[i] = total[i] - reforePisoMes(i);
+    gapStretch[i] = total[i] - reforeStretchMes(i);
   }
   const totalH2 = sum(total);
-  const mesesSobrePiso = total.filter((t, i) => t >= metaMesRefore(i)).length;
-  const mesesSobreStretch = total.filter(t => t >= REFORE.stretch).length;
+  const mesesSobrePiso = total.filter((t, i) => t >= reforePisoMes(i)).length;
+  const mesesSobreStretch = total.filter((t, i) => t >= reforeStretchMes(i)).length;
+  const rangoTxt = `${REFORE.labels[0]} → ${REFORE.labels[N - 1]}`;
 
-  { const _rr = document.getElementById("refore-rango"); if (_rr) _rr.textContent = `(Jul → Dic 2026 · escenario ${scenA.name} · ${fmtMoneyK(totalH2)} proyectado H2)`; }
+  { const _rr = document.getElementById("refore-rango"); if (_rr) _rr.textContent = `(${rangoTxt} · escenario ${scenA.name} · ${fmtMoneyK(totalH2)} proyectado)`; }
 
   // ---- KPIs ----
   const kpi = (label, val, sub, color) => `
@@ -3638,18 +3716,16 @@ function renderReforecast() {
       <div class="small" style="color:#666; margin-top:1px;">${sub}</div>
     </div>`;
   { const _rk = document.getElementById("refore-kpis"); if (_rk) _rk.innerHTML =
-    kpi("Base contratada H2", fmtMoneyK(sum(REFORE.base)), "recurrente firmado", "#6b7280") +
-    kpi("Pipeline ponderado H2", fmtMoneyK(sum(pipe.weighted)), "en vivo desde HubSpot", "#4030C8") +
+    kpi("Base contratada", fmtMoneyK(sum(REFORE.base)), `recurrente firmado · ${rangoTxt}`, "#6b7280") +
+    kpi("Pipeline ponderado", fmtMoneyK(sum(pipe.weighted)), "en vivo desde HubSpot", "#4030C8") +
     kpi(`Generación PxQ · ${scenA.name}`, fmtMoneyK(sum(genActive)), "MRR nuevo acumulado", scenA.color) +
-    kpi(`TOTAL H2 · ${scenA.name}`, fmtMoneyK(totalH2), `prom. ${fmtMoneyK(totalH2 / N)}/mes`, "#059669") +
-    kpi("Meses ≥ Meta", `${mesesSobrePiso}/6`, `vs meta mensual`, mesesSobrePiso >= 4 ? "#059669" : "#dc2626") +
-    kpi("Meses ≥ Stretch", `${mesesSobreStretch}/6`, `Stretch ${fmtMoneyK(REFORE.stretch)}`, mesesSobreStretch >= 3 ? "#059669" : "#d97706") +
+    kpi(`TOTAL · ${scenA.name}`, fmtMoneyK(totalH2), `prom. ${fmtMoneyK(totalH2 / N)}/mes`, "#059669") +
+    kpi("Meses ≥ Meta", `${mesesSobrePiso}/${N}`, `vs meta mensual`, mesesSobrePiso >= Math.ceil(N * 0.6) ? "#059669" : "#dc2626") +
+    kpi("Meses ≥ Stretch", `${mesesSobreStretch}/${N}`, `Stretch ${fmtMoneyK(REFORE.stretch)}`, mesesSobreStretch >= Math.ceil(N * 0.5) ? "#059669" : "#d97706") +
     (() => {
       // Cobertura de pipeline del mes en curso: pipeline sin ponderar ÷ gap a cubrir (piso − base). Benchmark sano ≥3×.
-      const now = new Date();
-      const ci = (now.getFullYear() - 2026) * 12 + (now.getMonth() - 6);
-      if (ci < 0 || ci >= N) return "";
-      const need = Math.max(0, metaMesRefore(ci) - REFORE.base[ci]);
+      const ci = 0; // horizonte rodante: el mes actual siempre es el primer índice
+      const need = Math.max(0, reforePisoMes(ci) - REFORE.base[ci]);
       const cov = need ? pipe.unweighted[ci] / need : Infinity;
       const covTxt = need ? cov.toFixed(1) + "×" : "✓";
       return kpi("Cobertura mes actual", covTxt, need ? `pipe ${fmtMoneyK(pipe.unweighted[ci])} / gap ${fmtMoneyK(need)} · sano ≥3×` : "base ya cubre la meta", cov >= 3 ? "#059669" : cov >= 1.5 ? "#d97706" : "#dc2626");
@@ -3664,7 +3740,7 @@ function renderReforecast() {
   const barTotals = REFORE.base.map((b, i) => b + focoW[i] + genW[i]);
   const W = 720, H = 300, padL = 56, padR = 16, padT = 20, padB = 34;
   const plotW = W - padL - padR, plotH = H - padT - padB;
-  const metaMaxH2 = Math.max(...REFORE_H2_KEYS.map(k => META_MENSUAL[k] || 0));
+  const metaMaxH2 = Math.max(...Array.from({ length: N }, (_, i) => reforePisoMes(i)));
   const maxVal = Math.max(metaMaxH2, ...barTotals) * 1.15;
   const y = v => padT + plotH - (v / maxVal) * plotH;
   const bandW = plotW / N;
@@ -3700,13 +3776,13 @@ function renderReforecast() {
   const lineY = v => y(v);
   let metaPts = "";
   for (let i = 0; i < N; i++) {
-    const mv = metaMesRefore(i), gy = lineY(mv);
+    const mv = reforePisoMes(i), gy = lineY(mv);
     const x0 = padL + bandW * i, x1 = padL + bandW * (i + 1);
     metaPts += `<line x1="${x0}" y1="${gy}" x2="${x1}" y2="${gy}" stroke="#dc2626" stroke-width="1.6" stroke-dasharray="5 4"/>`;
     metaPts += `<text x="${cxOf(i)}" y="${gy - 4}" text-anchor="middle" font-size="8" fill="#dc2626" font-weight="600">${Math.round(mv/1000)}K</text>`;
   }
   svg += metaPts;
-  svg += `<text x="${padL + 2}" y="${lineY(metaMesRefore(0)) - 4}" text-anchor="start" font-size="9" fill="#dc2626" font-weight="700">Meta</text>`;
+  svg += `<text x="${padL + 2}" y="${lineY(reforePisoMes(0)) - 4}" text-anchor="start" font-size="9" fill="#dc2626" font-weight="700">Meta</text>`;
   svg += `</svg>`;
   // legend (misma paleta que la barra puente de Metas)
   svg += `<div class="small" style="display:flex; gap:16px; flex-wrap:wrap; margin-top:6px; color:#555;">
@@ -3735,30 +3811,31 @@ function renderReforecast() {
   let mtx = `<table class="std" style="min-width:640px; border-collapse:collapse; width:100%;"><thead><tr>
     <th style="text-align:left; padding:6px 10px;">Capa (U$S)</th>`;
   REFORE.labels.forEach(l => mtx += `<th style="text-align:right; padding:6px 10px;">${l}</th>`);
-  mtx += `<th style="text-align:right; padding:6px 10px;">H2</th></tr></thead><tbody>`;
+  mtx += `<th style="text-align:right; padding:6px 10px;">Total</th></tr></thead><tbody>`;
   mtx += mkRow("Base contratada", REFORE.base, { labelStyle: "color:#6b7280" });
   mtx += mkRow("Pipeline ponderado (live)", pipe.weighted, { labelStyle: "color:#4030C8; font-weight:600" });
   mtx += mkRow(`Generación PxQ · ${scenA.name}`, genActive, { labelStyle: `color:${scenA.color}` });
-  const incAll = REFORE.countries.reduce((acc, c) => { const g = incGen(c.key); return acc.map((v, i) => v + g[i]); }, [0, 0, 0, 0, 0, 0]);
+  const incAll = REFORE.countries.reduce((acc, c) => { const g = incGen(c.key); return acc.map((v, i) => v + (g[i] || 0)); }, new Array(N).fill(0));
   mtx += mkRow("↳ incl. Incremento cuentas activas", incAll, { labelStyle: "color:#0d9488; font-style:italic; font-size:11px" });
   mtx += mkRow(`TOTAL · ${scenA.name}`, total, { bold: true, trStyle: "background:#f5f6fb; border-top:2px solid #4030C8; border-bottom:2px solid #4030C8;", labelStyle: "font-weight:700;color:#111" });
   mtx += mkRow("Gap vs Piso", gapPiso, { gap: true, labelStyle: "color:#dc2626" });
   mtx += mkRow("Gap vs Stretch", gapStretch, { gap: true, labelStyle: "color:#d97706" });
-  mtx += `<tr><td colspan="8" style="padding:4px 10px; border-top:1px dashed #ddd; color:#999; font-size:11px;">Comparativa TOTAL por escenario</td></tr>`;
+  mtx += `<tr><td colspan="${N + 2}" style="padding:4px 10px; border-top:1px dashed #ddd; color:#999; font-size:11px;">Comparativa TOTAL por escenario</td></tr>`;
   mtx += mkRow("TOTAL Optimista", totalsByScen.opt, { labelStyle: `color:${REFORE.scen.opt.color}; font-weight:600` });
   mtx += mkRow("TOTAL Probabilística", totalsByScen.prob, { labelStyle: `color:${REFORE.scen.prob.color}; font-weight:600` });
   mtx += mkRow("TOTAL Pesimista", totalsByScen.pes, { labelStyle: `color:${REFORE.scen.pes.color}; font-weight:600` });
-  mtx += `<tr><td colspan="8" style="padding:4px 10px; border-top:1px dashed #ddd;"></td></tr>`;
+  mtx += `<tr><td colspan="${N + 2}" style="padding:4px 10px; border-top:1px dashed #ddd;"></td></tr>`;
   mtx += mkRow("Pipeline 100% firma (ref)", pipe.unweighted, { labelStyle: "color:#999; font-style:italic" });
-  mtx += mkRow("Plan v3 (ref)", REFORE.planV3, { labelStyle: "color:#999; font-style:italic" });
+  if ((REFORE.keys || [])[0] === "2026-07" && N === 6) mtx += mkRow("Plan v3 (ref)", REFORE.planV3, { labelStyle: "color:#999; font-style:italic" });
   mtx += `</tbody></table>`;
   document.getElementById("refore-matrix").innerHTML = mtx;
+  { const _mt = document.getElementById("refore-matrix-title"); if (_mt) _mt.textContent = `🧮 Matriz por capa · ${rangoTxt}`; }
 
   // ---- Detalle pipeline por deal ----
   const allPipe = [];
   pipe.byMonth.forEach((arr, i) => arr.forEach(d => allPipe.push({ ...d, monthLabel: REFORE.labels[i] })));
   allPipe.sort((a, b) => b.wPerMes - a.wPerMes);
-  document.getElementById("refore-pipe-preview").textContent = `${allPipe.length} asignaciones · ${fmtMoneyK(sum(pipe.weighted))} ponderado`;
+  { const _pp = document.getElementById("refore-pipe-preview"); if (_pp) _pp.textContent = `${allPipe.length} asignaciones · ${fmtMoneyK(sum(pipe.weighted))} ponderado`; }
   let pt = `<table class="std" style="min-width:640px; border-collapse:collapse; width:100%;"><thead><tr>
     <th style="text-align:left; padding:6px 10px;">Deal</th>
     <th style="text-align:left; padding:6px 10px;">Etapa</th>
@@ -3778,7 +3855,7 @@ function renderReforecast() {
       <td style="padding:5px 10px; color:#888;">${fmtDate(d.closedate)}</td></tr>`;
   });
   pt += `</tbody></table>`;
-  document.getElementById("refore-pipe-table").innerHTML = pt;
+  { const _pt = document.getElementById("refore-pipe-table"); if (_pt) _pt.innerHTML = pt; }
 
   // ---- Supuestos editables ----
   renderReforeSupuestos();
@@ -3787,9 +3864,21 @@ function renderReforecast() {
 function renderReforeSupuestos() {
   const active = REFORE.activeScen;
   const scenA = REFORE.scen[active];
+  const N = (REFORE.keys || []).length || 6;
   const numIn = (path, i, val, w) => `<input type="number" value="${Math.round(val)}" onchange="reforeEdit('${path}',${i},this.value)" style="width:${w || 74}px; text-align:right; padding:3px 5px; border:1px solid #ccc; border-radius:4px; font-size:12px;">`;
 
-  let h = `<div class="small" style="color:#888; margin-bottom:10px;">Generación abierta por <b>país</b> → <b>tipo de servicio</b>: ticket <b>P</b> (U$S/mes por deal) × <b>Q</b> (deals cerrados/mes), editable por país y escenario. El escenario activo manda KPIs, matriz y barras; las 3 curvas de TOTAL se comparan siempre en el gráfico. No se persiste (se reinicia al recargar).</div>`;
+  let h = `<div class="small" style="color:#888; margin-bottom:10px;">Generación abierta por <b>país</b> → <b>tipo de servicio</b>: ticket <b>P</b> (U$S/mes por deal) × <b>Q</b> (deals cerrados/mes), editable por país y escenario. El escenario activo manda KPIs, matriz y barras. Todo lo que edites <b>se guarda en este navegador</b> (localStorage).</div>`;
+
+  // ---- Horizonte 6/12 + Export ----
+  h += `<div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:12px;">`;
+  h += `<span class="small" style="color:#666; font-weight:600;">Horizonte:</span>`;
+  [6, 12].forEach(n => {
+    const on = REFORE.horizon === n;
+    h += `<button onclick="reforeSetHorizon(${n})" style="cursor:pointer; padding:5px 14px; border-radius:20px; font-size:12px; font-weight:600; border:1.5px solid #4030C8; background:${on ? '#4030C8' : '#fff'}; color:${on ? '#fff' : '#4030C8'};">${n} meses</button>`;
+  });
+  h += `<span class="small" style="color:#999;">desde ${REFORE.labels[0]} hasta ${REFORE.labels[N - 1]}</span>`;
+  h += `<button onclick="reforeExportCsv()" style="cursor:pointer; margin-left:auto; padding:5px 14px; border-radius:8px; font-size:12px; font-weight:600; border:1.5px solid #059669; background:#fff; color:#059669;">⬇ Exportar CSV</button>`;
+  h += `</div>`;
 
   // ---- Tabs de escenario ----
   h += `<div style="display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap;">`;
@@ -3801,17 +3890,31 @@ function renderReforeSupuestos() {
 
   h += `<div style="display:flex; gap:26px; flex-wrap:wrap; align-items:flex-start;">`;
 
-  // ---- Metas (compartidas) ----
-  h += `<div><div style="font-weight:600; margin-bottom:6px;">🎯 Metas</div>
-    <div style="margin-bottom:6px;">Piso <input type="number" value="${REFORE.piso}" onchange="reforeEditScalar('piso',this.value)" style="width:90px; text-align:right; padding:3px 5px; border:1px solid #ccc; border-radius:4px;"></div>
-    <div>Stretch <input type="number" value="${REFORE.stretch}" onchange="reforeEditScalar('stretch',this.value)" style="width:90px; text-align:right; padding:3px 5px; border:1px solid #ccc; border-radius:4px;"></div></div>`;
+  // ---- Metas por mes (override) + defaults ----
+  const metaIn = (tipo, i) => {
+    const k = (REFORE.keys || [])[i];
+    const ov = (tipo === "piso" ? REFORE.pisoM : REFORE.stretchM) || {};
+    const has = ov[k] != null && ov[k] !== "" && !isNaN(Number(ov[k]));
+    const def = tipo === "piso" ? reforePisoMes(i) : reforeStretchMes(i);
+    return `<input type="number" value="${has ? Math.round(Number(ov[k])) : ''}" placeholder="${Math.round(def)}" onchange="reforeEditMetaMes('${tipo}',${i},this.value)" style="width:64px; text-align:right; padding:3px 4px; border:1px solid ${has ? '#4030C8' : '#ddd'}; border-radius:4px; font-size:11px; ${has ? 'background:#f5f3ff;' : ''}">`;
+  };
+  let metasB = `<div><div style="font-weight:600; margin-bottom:6px;">🎯 Metas <span class="small" style="color:#999; font-weight:400;">(por mes; vacío = default)</span></div>`;
+  metasB += `<div class="small" style="margin-bottom:6px;">Default Piso <input type="number" value="${REFORE.piso}" onchange="reforeEditScalar('piso',this.value)" style="width:84px; text-align:right; padding:3px 5px; border:1px solid #ccc; border-radius:4px;"> · Stretch <input type="number" value="${REFORE.stretch}" onchange="reforeEditScalar('stretch',this.value)" style="width:84px; text-align:right; padding:3px 5px; border:1px solid #ccc; border-radius:4px;"></div>`;
+  metasB += `<div style="overflow-x:auto;"><table style="border-collapse:collapse;"><tr><td></td>`;
+  REFORE.labels.forEach(l => metasB += `<td style="padding:2px 4px; font-size:10px; color:#888; text-align:center;">${l}</td>`);
+  metasB += `</tr><tr><td class="small" style="padding:2px 6px 2px 0; color:#dc2626; font-weight:600;">Piso</td>`;
+  for (let i = 0; i < N; i++) metasB += `<td style="padding:2px 3px;">${metaIn('piso', i)}</td>`;
+  metasB += `</tr><tr><td class="small" style="padding:2px 6px 2px 0; color:#d97706; font-weight:600;">Stretch</td>`;
+  for (let i = 0; i < N; i++) metasB += `<td style="padding:2px 3px;">${metaIn('stretch', i)}</td>`;
+  metasB += `</tr></table></div></div>`;
+  h += metasB;
 
   // ---- Base contratada (compartida) ----
-  let baseB = `<div><div style="font-weight:600; margin-bottom:6px;">🏗️ Base contratada</div><table style="border-collapse:collapse;"><tr>`;
+  let baseB = `<div><div style="font-weight:600; margin-bottom:6px;">🏗️ Base contratada</div><div style="overflow-x:auto;"><table style="border-collapse:collapse;"><tr>`;
   REFORE.labels.forEach(l => baseB += `<td style="padding:2px 4px; font-size:10px; color:#888; text-align:center;">${l}</td>`);
   baseB += `</tr><tr>`;
-  REFORE.base.forEach((v, i) => baseB += `<td style="padding:2px 3px;">${numIn('base', i, v)}</td>`);
-  baseB += `</tr></table></div>`;
+  REFORE.base.forEach((v, i) => baseB += `<td style="padding:2px 3px;">${numIn('base', i, v, 64)}</td>`);
+  baseB += `</tr></table></div></div>`;
   h += baseB;
 
   h += `</div>`;
@@ -3821,9 +3924,9 @@ function renderReforeSupuestos() {
   h += `<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:4px;">`;
   h += `<div style="font-weight:700; color:${scenA.color};">🎛️ Palancas · ${scenA.name} · por país → servicio</div>`;
   const scenTot = scenGenAcum(active);
-  h += `<div style="font-size:12px; color:${scenA.color};">Generación LATAM Dic: <b>${fmtMoneyK(scenTot[5])}</b> · H2 ${fmtMoneyK(scenTot.reduce((a, b) => a + b, 0))}</div>`;
+  h += `<div style="font-size:12px; color:${scenA.color};">Gen. LATAM últ. mes: <b>${fmtMoneyK(scenTot[N - 1] || 0)}</b> · Total ${fmtMoneyK(scenTot.reduce((a, b) => a + b, 0))}</div>`;
   h += `</div>`;
-  h += `<div class="small" style="color:#888; margin-bottom:12px;">Ticket <b>P</b> (U$S/mes por deal) × <b>Q</b> (deals cerrados/mes). Editable por país, servicio y mes. Clic en el país para abrir/cerrar.</div>`;
+  h += `<div class="small" style="color:#888; margin-bottom:12px;">Ticket <b>P</b> (U$S/mes por deal) × <b>Q</b> (deals cerrados/mes). La matriz arranca <b>en cero</b>: solo se muestran los servicios que tocaste (＋ agregar servicio para sumar otro). Todo se guarda en este navegador. Clic en el país para abrir/cerrar.</div>`;
   const rowLabels = REFORE.labels;
 
   REFORE.countries.forEach(c => {
@@ -3833,9 +3936,11 @@ function renderReforeSupuestos() {
     // header país
     h += `<div onclick="reforeToggleCo('${c.key}')" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; padding:9px 12px; background:${scenA.color}0a;">`;
     h += `<span style="font-weight:700; color:#333;"><span style="display:inline-block; width:0; height:0; border-left:5px solid ${scenA.color}; border-top:4px solid transparent; border-bottom:4px solid transparent; margin-right:8px; transform:rotate(${open ? 90 : 0}deg);"></span>${c.name}</span>`;
-    h += `<span style="font-size:12px; color:${scenA.color};">Gen. Dic ${fmtMoneyK(cg[5])} · H2 ${fmtMoneyK(cg.reduce((a, b) => a + b, 0))}</span>`;
+    h += `<span style="font-size:12px; color:${scenA.color};">Gen. últ. mes ${fmtMoneyK(cg[N - 1] || 0)} · Total ${fmtMoneyK(cg.reduce((a, b) => a + b, 0))}</span>`;
     h += `</div>`;
     if (open) {
+      const revealed = ((window.__reforeReveal || {})[active + "|" + c.key] || []);
+      const hiddenSvcs = [];
       h += `<div style="padding:8px 12px; overflow-x:auto;"><table style="border-collapse:collapse; font-size:12px;">`;
       h += `<tr><td style="padding:2px 8px 6px 0; font-size:10px; color:#888; text-align:left;">Servicio</td>`;
       h += `<td style="padding:2px 6px 6px; font-size:10px; color:#888; text-align:center;">Ticket P</td>`;
@@ -3846,6 +3951,7 @@ function renderReforeSupuestos() {
         // "inc" = Incremento cuentas activas → viene de la vista Clientes (read-only aquí).
         if (sv.type === "inc") {
           const ig = incGen(c.key);
+          if (!ig.some(v => v > 0)) return;  // sin aporte de Clientes → no mostrar
           const tagI = `<span style="font-size:9px; color:#0d9488; background:#0d94881a; padding:1px 5px; border-radius:6px; margin-left:5px;">Clientes</span>`;
           h += `<tr style="border-top:1px solid #eee; background:#0d948808;">`;
           h += `<td style="padding:5px 8px 5px 0; white-space:nowrap; color:#333; font-weight:600;">${sv.name}${tagI}</td>`;
@@ -3855,6 +3961,7 @@ function renderReforeSupuestos() {
           h += `</tr>`;
           return;
         }
+        if (!revealed.includes(sv.key) && !reforeSvcTouched(active, c.key, sv.key)) { hiddenSvcs.push(sv); return; }
         const s = REFORE.scen[active].co[c.key][sv.key];
         const isIdp = sv.type === "idp";
         const tag = isIdp
@@ -3873,7 +3980,14 @@ function renderReforeSupuestos() {
       h += `<tr style="border-top:2px solid ${scenA.color};"><td style="padding:6px 8px 2px 0; font-weight:700; color:${scenA.color};">Generación ${c.name}/mes</td><td></td><td></td>`;
       cg.forEach(v => h += `<td style="padding:6px 3px 2px; text-align:center; font-size:11px; font-weight:700; color:${scenA.color};">${fmtMoneyK(v).replace("U$S ", "")}</td>`);
       h += `</tr>`;
-      h += `</table></div>`;
+      h += `</table>`;
+      if (hiddenSvcs.length) {
+        h += `<div style="margin-top:8px;"><select onchange="reforeRevealSvc('${active}','${c.key}',this.value)" style="padding:4px 8px; border:1.5px dashed ${scenA.color}; border-radius:7px; font-size:12px; color:${scenA.color}; background:#fff; cursor:pointer;">`;
+        h += `<option value="">＋ agregar servicio…</option>`;
+        hiddenSvcs.forEach(sv => h += `<option value="${sv.key}">${sv.name}</option>`);
+        h += `</select></div>`;
+      }
+      h += `</div>`;
     }
     h += `</div>`;
   });
@@ -3898,17 +4012,64 @@ function reforeToggleCo(key) {
 function reforeEditSvcP(scenKey, coKey, svcKey, val) {
   const n = parseFloat(val); if (isNaN(n)) return;
   REFORE.scen[scenKey].co[coKey][svcKey].P = n;
+  persistPxQOverride(scenKey, coKey, svcKey, { P: n });
   renderReforecast();
 }
 function reforeEditSvcQ(scenKey, coKey, svcKey, i, val) {
   const n = parseFloat(val); if (isNaN(n)) return;
   REFORE.scen[scenKey].co[coKey][svcKey].Q[i] = n;
+  const k = (REFORE.keys || [])[i];
+  if (k) persistPxQOverride(scenKey, coKey, svcKey, { Q: { [k]: n } });
   renderReforecast();
+}
+function reforeRevealSvc(scen, co, svcKey) {
+  if (!svcKey) return;
+  window.__reforeReveal = window.__reforeReveal || {};
+  const k = scen + "|" + co;
+  (window.__reforeReveal[k] = window.__reforeReveal[k] || []).push(svcKey);
+  renderReforecast();
+}
+function reforeEditMetaMes(tipo, i, val) {
+  const k = (REFORE.keys || [])[i]; if (!k) return;
+  const map = tipo === "piso" ? REFORE.pisoM : REFORE.stretchM;
+  const n = parseFloat(val);
+  if (val === "" || isNaN(n)) delete map[k]; else map[k] = n;
+  persistMetasM();
+  renderReforecast();
+  try { renderGoalStrip(); } catch (e) {}
+}
+function reforeExportCsv() {
+  const N = (REFORE.keys || []).length; const sc = REFORE.activeScen; const scen = REFORE.scen[sc];
+  const pipe = buildReforePipeline(); const sep = ";"; const rows = [];
+  rows.push(["Replanificar " + REFORE.horizon + " meses", "Escenario: " + scen.name].join(sep));
+  rows.push(["Mes"].concat(REFORE.labels).join(sep));
+  rows.push(["Piso"].concat(REFORE.keys.map((k, i) => reforePisoMes(i))).join(sep));
+  rows.push(["Stretch"].concat(REFORE.keys.map((k, i) => reforeStretchMes(i))).join(sep));
+  rows.push(["Base contratada"].concat(REFORE.base).join(sep));
+  rows.push(["Pipeline ponderado"].concat(pipe.weighted.map(v => Math.round(v))).join(sep));
+  rows.push(["Generacion PxQ (" + scen.name + ")"].concat(scenGenAcum(sc).map(v => Math.round(v))).join(sep));
+  ["opt", "prob", "pes"].forEach(k => rows.push(["TOTAL " + REFORE.scen[k].name].concat(scenTotal(k, pipe.weighted).map(v => Math.round(v))).join(sep)));
+  rows.push(""); rows.push("Palancas tocadas (P x Q)");
+  rows.push(["Pais", "Servicio", "Ticket P"].concat(REFORE.labels).join(sep));
+  REFORE.countries.forEach(c => REFORE.svcs.forEach(sv => {
+    if (sv.type === "inc") return;
+    if (!reforeSvcTouched(sc, c.key, sv.key)) return;
+    const s = REFORE.scen[sc].co[c.key][sv.key];
+    rows.push([c.name, sv.name, s.P].concat(s.Q).join(sep));
+  }));
+  const csv = "﻿" + rows.join("\r\n");  // arranca con BOM UTF-8 para Excel
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "replanificacion_" + ((REFORE.keys || [])[0] || "") + "_" + REFORE.horizon + "m.csv";
+  document.body.appendChild(a); a.click(); a.remove();
 }
 function reforeEdit(path, i, val) {
   const n = parseFloat(val); if (isNaN(n)) return;
   REFORE[path][i] = n;
   if (path === "base") {
+    const k = (REFORE.keys || [])[i];
+    if (k) REFORE.baseM[k] = n;
     syncFacturableFromBase();  // baja el facturable a REAL_FACTURABLE (única fuente)
     persistBase();             // sobrevive a la recarga
     const mv = document.getElementById("view-metas");
@@ -3921,6 +4082,7 @@ function reforeEdit(path, i, val) {
 function reforeEditScalar(key, val) {
   const n = parseFloat(val); if (isNaN(n)) return;
   REFORE[key] = n;
+  persistMetasM();
   renderReforecast();
 }
 
@@ -4038,7 +4200,7 @@ function renderClientes() {
       h += `</td>`;
     });
     h += `<td style="padding:4px 6px; text-align:center; border-left:2px solid #0d948833;"><select onchange="clientesEditDesde(${idx}, this.value)" style="font-size:11px; padding:3px 4px; border:1px solid #ccc; border-radius:5px;">`;
-    REFORE.labels.forEach((l, i) => h += `<option value="${i}" ${i === (Number(cta.desdeMes) || 0) ? "selected" : ""}>${l}</option>`);
+    UPSELL_BASE_LABELS.forEach((l, i) => h += `<option value="${i}" ${i === (Number(cta.desdeMes) || 0) ? "selected" : ""}>${l}</option>`);
     h += `</select></td>`;
     h += `<td style="padding:4px 6px; text-align:center;"><input type="number" value="${n}" min="0" max="6" step="1" title="cuántos meses se cobra" onchange="clientesEditMeses(${idx}, this.value)" style="width:40px; padding:2px 3px; border:1px solid #ddd; border-radius:5px; text-align:center; font-size:11px;"></td>`;
     h += `<td style="padding:6px 10px; text-align:right; font-weight:700; color:${oport > 0 && n > 0 ? "#0d9488" : "#ccc"};">${oport > 0 ? fmtMoneyK(oport) : "–"}${oport > 0 && n === 0 ? '<div style="font-size:9px; color:#d97706; font-weight:400;">falta meses</div>' : ""}</td>`;
@@ -4053,7 +4215,7 @@ function renderClientes() {
   let r = `<table style="border-collapse:collapse; font-size:12px;"><thead><tr style="background:#f5f6fb;"><th style="text-align:left; padding:8px 10px;">País</th>`;
   REFORE.labels.forEach(l => r += `<th style="text-align:right; padding:8px 10px;">${l}</th>`);
   r += `<th style="text-align:right; padding:8px 10px;">H2</th></tr></thead><tbody>`;
-  const totMes = [0, 0, 0, 0, 0, 0];
+  const totMes = new Array((REFORE.keys || []).length || 6).fill(0);
   REFORE.countries.forEach(c => {
     const g = incGen(c.key);
     if (g.every(v => v === 0)) return;
@@ -4385,7 +4547,7 @@ async function clientesCreateUpsell(idx) {
     producto: "Upsell - CA",
     detalle_upsell_ca: marcados.map(p => p.name).join(", ")
   };
-  const mesLbl = REFORE.labels[desde] || closedate;
+  const mesLbl = UPSELL_BASE_LABELS[desde] || closedate;
   if (!confirm(`¿Crear oportunidad de upsell en HubSpot?\n\n${dealname}\nMonto total: ${fmtMoneyK(amountTotal)}  (${fmtMoneyK(oport)}/mes × ${meses} meses)\nInicio de cobro: ${mesLbl}\n\nSe asocia a la cuenta y entra al embudo en «SQL – Discovery» (vista Generación). Owner y fuente los asignás después.`)) return;
   const el = document.getElementById("ups-hs-" + idx);
   if (el) el.textContent = "creando…";
@@ -4430,7 +4592,7 @@ async function clientesCreateUpsell(idx) {
     alert("No se pudo crear la oportunidad en HubSpot:\n\n" + (e && e.message ? e.message : e));
   }
 }
-// Mes de inicio de cobro (0-5, sobre REFORE.labels) — por cuenta/fila.
+// Mes de inicio de cobro (0-5, sobre UPSELL_BASE_LABELS = calendario fijo Jul-Dic 2026) — por cuenta/fila.
 function clientesEditDesde(idx, val) {
   const cta = UPSELL.cuentas[idx]; if (!cta) return;
   cta.desdeMes = Math.max(0, Math.min(5, Number(val) || 0));
@@ -4863,12 +5025,7 @@ function renderMetas() {
     try {
       const fmNew = buildForecast(window.__allDeals);
       window.__forecastMonths = fmNew;
-      renderPeriodo("mes-actual-content", calcPeriodo(fmNew, [0]), { labelMeta: "Meta del mes", showVelocidad: false, showNote: false, collapsible: true });
-      if (fmNew.length > 1) renderPeriodo("mes-siguiente-content", calcPeriodo(fmNew, [1]), { labelMeta: "Meta del mes", showVelocidad: false, showNote: false, collapsible: true });
       const sSemB = calcPeriodo(fmNew, fmNew.map((_, i) => i));
-      renderPeriodo("semestre-content", sSemB, { labelMeta: "Meta del semestre", showVelocidad: true, showNote: true });
-      const pvSem = document.getElementById("preview-semestre");
-      if (pvSem) pvSem.textContent = `(Meta ${fmtMoneyK(sSemB.metaTotal)} · Total ${fmtMoneyK(sSemB.totalEsp)} · GAP ${fmtMoneyK(sSemB.gap)} · ${sSemB.pctTotal}%)`;
       renderMonthlyTable(fmNew);
       renderTendencia(sSemB.fcTotal);
       renderTopDeals(window.__allDeals);
@@ -4898,7 +5055,7 @@ function renderMetas() {
   // ---- Base contratada arriba (German la actualiza a diario; misma edición que la analítica: reforeEdit('base',...)) ----
   const baseEl = document.getElementById("metas-base");
   if (baseEl) {
-    const curIdx = Math.min(5, Math.max(0, new Date().getMonth() - 6)); // Jul=0 … Dic=5
+    const curIdx = 0; // horizonte rodante: el mes actual siempre es el primer índice
     let bh = `<div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap; padding:10px 14px; border:1.5px solid #047857; border-radius:10px; background:#ecfdf5;">`;
     bh += `<div><div style="font-weight:700; color:#047857;">🏗️ Base contratada (facturable)</div><div class="small" style="color:#059669;">actualizar a diario · única fuente de verdad</div></div>`;
     bh += `<table style="border-collapse:collapse;"><tr>` +
@@ -4988,50 +5145,209 @@ function renderMarcadores() {
 const TARGET_SECTIONS = [
   { key: "crecimiento", label: "📈 Industrias en crecimiento" },
   { key: "lideres", label: "🏆 eCommerce Líderes" },
-  { key: "grandes", label: "🏢 Grandes marcas + Industrias" }
+  { key: "grandes", label: "🏢 Grandes marcas + Industrias" },
+  { key: "partner", label: "🤝 Listado de partner/reseller" }
 ];
-const TARGET_ESTADOS = [
+// Estados POR CONTACTO (v2 — 1 fila = 1 contacto)
+const TARGET_C_ESTADOS = [
   { v: "por_contactar", l: "Por contactar", c: "#6b7280", bg: "#f3f4f6" },
-  { v: "en_contacto", l: "En contacto", c: "#b45309", bg: "#fffbeb" },
-  { v: "reunion", l: "Reunión agendada", c: "#1d4ed8", bg: "#eff6ff" },
-  { v: "opp_detectada", l: "Opp. detectada", c: "#047857", bg: "#ecfdf5" },
+  { v: "touch1", l: "1er touch", c: "#b45309", bg: "#fffbeb" },
+  { v: "followup", l: "Follow-up", c: "#9a3412", bg: "#fff7ed" },
+  { v: "respondio", l: "Respondió", c: "#0e7490", bg: "#ecfeff" },
+  { v: "reunion", l: "Reunión", c: "#1d4ed8", bg: "#eff6ff" },
   { v: "descartado", l: "Descartado", c: "#991b1b", bg: "#fef2f2" }
 ];
+const TARGET_CANALES = ["LinkedIn", "Email", "Teléfono", "WhatsApp", "Otro"];
 function targetSeeds() {
   return [
-    { id: "seed-ferrum", section: "grandes", nombre: "Ferrum", industria: "Sanitarios / Construcción (AR)", contactoNombre: "Gustavo A. Rusconi", contactoRol: "Gerente Comercial", contactoLink: "", estado: "por_contactar", nextStep: "Retomar prospección (abierta desde may-2026)", dealId: null },
-    { id: "seed-bugambilia", section: "grandes", nombre: "Aceros Bugambilia", industria: "Acero / Ferretería (MX)", contactoNombre: "Jackie", contactoRol: "Marketing / eCommerce", contactoLink: "", estado: "en_contacto", nextStep: "Seguimiento post-reunión", dealId: null }
+    { id: "seed-ferrum", section: "grandes", nombre: "Ferrum", industria: "Sanitarios / Construcción (AR)", fuente: "", detallePartner: "", dealId: null, contactos: [{ id: "seed-ferrum_c0", nombre: "Gustavo A. Rusconi", rol: "Gerente Comercial", email: "", link: "", listado: "carga manual", partner: "", estado: "por_contactar", canal: "", fechaToque: "", hsContactId: null, ticketId: null, taskDue: "", taskOwner: "", nextStep: "Retomar prospección (abierta desde may-2026)" }] },
+    { id: "seed-bugambilia", section: "grandes", nombre: "Aceros Bugambilia", industria: "Acero / Ferretería (MX)", fuente: "", detallePartner: "", dealId: null, contactos: [{ id: "seed-bugambilia_c0", nombre: "Jackie", rol: "Marketing / eCommerce", email: "", link: "", listado: "carga manual", partner: "", estado: "followup", canal: "", fechaToque: "", hsContactId: null, ticketId: null, taskDue: "", taskOwner: "", nextStep: "Seguimiento post-reunión" }] }
   ];
+}
+// Migración one-time: modelo flat viejo (contactoNombre/Rol/Link + estado por empresa) → contactos[]
+function targetMigrate(list) {
+  const OLD2NEW = { por_contactar: "por_contactar", en_contacto: "followup", reunion: "reunion", opp_detectada: "reunion", descartado: "descartado" };
+  let changed = false;
+  list.forEach(t => {
+    if (Array.isArray(t.contactos)) return;
+    changed = true;
+    t.contactos = [];
+    if (t.contactoNombre || t.contactoLink) {
+      const link = String(t.contactoLink || "");
+      const isMail = link.indexOf("@") > -1 && !/^https?:/i.test(link);
+      t.contactos.push({
+        id: t.id + "_c0", nombre: t.contactoNombre || "", rol: t.contactoRol || "",
+        email: isMail ? link : "", link: isMail ? "" : link,
+        listado: "carga manual", partner: t.detallePartner || "",
+        estado: OLD2NEW[t.estado] || "por_contactar", canal: "", fechaToque: "",
+        hsContactId: null, ticketId: t.ticketId || null, taskDue: t.taskDue || "", taskOwner: t.taskOwner || "", nextStep: t.nextStep || ""
+      });
+    }
+    delete t.contactoNombre; delete t.contactoRol; delete t.contactoLink;
+    t.ticketId = null; t.taskDue = ""; t.taskOwner = "";
+  });
+  return changed;
 }
 function targetLoad() {
   const t = dashLoad().target_accounts;
-  if (Array.isArray(t)) return t;
+  if (Array.isArray(t)) { if (targetMigrate(t)) targetSave(t); return t; }
   const seeds = targetSeeds(); targetSave(seeds); return seeds;
 }
 function targetSave(list) { dashSave({ target_accounts: list }); }
 window.__targetTab = window.__targetTab || "crecimiento";
 function targetSetTab(k) { window.__targetTab = k; renderTarget(); }
-function targetEstadoInfo(v) { return TARGET_ESTADOS.find(e => e.v === v) || TARGET_ESTADOS[0]; }
+function targetCEstadoInfo(v) { return TARGET_C_ESTADOS.find(e => e.v === v) || TARGET_C_ESTADOS[0]; }
+function targetFindC(cid) {
+  const list = targetLoad();
+  for (const t of list) {
+    const c = (t.contactos || []).find(x => x.id === cid);
+    if (c) return { list: list, t: t, c: c };
+  }
+  return null;
+}
+// Estado de la empresa = mejor estado entre sus contactos
+const TARGET_ESTADO_RANK = { reunion: 5, respondio: 4, followup: 3, touch1: 2, por_contactar: 1, descartado: 0 };
+function targetEmpresaEstado(t) {
+  const cs = t.contactos || [];
+  if (!cs.length) return "por_contactar";
+  let best = "descartado", bestR = -1;
+  cs.forEach(c => { const r = TARGET_ESTADO_RANK[c.estado] || 0; if (r > bestR) { bestR = r; best = c.estado || "por_contactar"; } });
+  return best;
+}
+// Contacto frío: en 1er touch / follow-up y +7 días sin toque registrado
+function targetFrio(c) {
+  if (c.estado !== "touch1" && c.estado !== "followup") return false;
+  if (!c.fechaToque) return true;
+  const d = new Date(c.fechaToque + "T12:00:00");
+  return isNaN(d) ? true : (Date.now() - d.getTime()) > 7 * 86400000;
+}
 function targetEdit(id, field, value) {
   const list = targetLoad(); const t = list.find(x => x.id === id); if (!t) return;
   t[field] = value; targetSave(list);
-  if (field === "estado" || field === "fuente") renderTarget();
+  if (field === "fuente") renderTarget();
+}
+function targetCEdit(cid, field, value) {
+  const f = targetFindC(cid); if (!f) return;
+  f.c[field] = value;
+  if (field === "estado" && value !== "por_contactar" && !f.c.fechaToque) f.c.fechaToque = new Date().toISOString().slice(0, 10);
+  targetSave(f.list);
+  if (field === "estado" || field === "fechaToque") renderTarget();
 }
 function targetRemove(id) {
   const list = targetLoad(); const t = list.find(x => x.id === id); if (!t) return;
-  if (!confirm('¿Eliminar "' + t.nombre + '" de Cuentas Target?')) return;
+  if (!confirm('¿Eliminar "' + t.nombre + '" y sus ' + (t.contactos || []).length + ' contacto(s) de Cuentas Target?')) return;
   targetSave(list.filter(x => x.id !== id)); renderTarget();
+}
+function targetCRemove(cid) {
+  const f = targetFindC(cid); if (!f) return;
+  if (!confirm('¿Eliminar el contacto "' + (f.c.nombre || "(sin nombre)") + '" de ' + f.t.nombre + '?')) return;
+  f.t.contactos = f.t.contactos.filter(x => x.id !== cid);
+  targetSave(f.list); renderTarget();
 }
 function targetEditRow(id) {
   const list = targetLoad(); const t = list.find(x => x.id === id); if (!t) return;
   const nombre = prompt("Empresa / marca:", t.nombre); if (nombre === null) return;
   const industria = prompt("Vertical / industria:", t.industria || ""); if (industria === null) return;
-  const cn = prompt("Contacto — nombre:", t.contactoNombre || ""); if (cn === null) return;
-  const cr = prompt("Contacto — rol:", t.contactoRol || ""); if (cr === null) return;
-  const cl = prompt("Contacto — link LinkedIn / email:", t.contactoLink || ""); if (cl === null) return;
   t.nombre = nombre.trim() || t.nombre; t.industria = industria.trim();
-  t.contactoNombre = cn.trim(); t.contactoRol = cr.trim(); t.contactoLink = cl.trim();
   targetSave(list); renderTarget();
+}
+function targetCEditRow(cid) {
+  const f = targetFindC(cid); if (!f) return;
+  const c = f.c;
+  const nombre = prompt("Contacto — nombre:", c.nombre || ""); if (nombre === null) return;
+  const rol = prompt("Contacto — rol:", c.rol || ""); if (rol === null) return;
+  const email = prompt("Contacto — email:", c.email || ""); if (email === null) return;
+  const link = prompt("Contacto — link LinkedIn:", c.link || ""); if (link === null) return;
+  const partner = prompt("Partner que lo acercó:", c.partner || ""); if (partner === null) return;
+  c.nombre = nombre.trim(); c.rol = rol.trim(); c.email = email.trim(); c.link = link.trim(); c.partner = partner.trim();
+  targetSave(f.list); renderTarget();
+}
+function targetAddContact(empId) {
+  const list = targetLoad(); const t = list.find(x => x.id === empId); if (!t) return;
+  const nombre = prompt("Contacto — nombre:"); if (nombre === null || !nombre.trim()) return;
+  const rol = prompt("Contacto — rol:", "") || "";
+  const email = prompt("Contacto — email (para sync HubSpot):", "") || "";
+  const link = prompt("Contacto — link LinkedIn:", "") || "";
+  const partner = prompt("Partner que lo acercó:", "") || "";
+  t.contactos = t.contactos || [];
+  const c = {
+    id: String(Date.now()) + "_c", nombre: nombre.trim(), rol: rol.trim(), email: email.trim(), link: link.trim(),
+    listado: "carga manual", partner: partner.trim(), estado: "por_contactar", canal: "", fechaToque: "",
+    hsContactId: null, ticketId: null, taskDue: "", taskOwner: "", nextStep: ""
+  };
+  t.contactos.push(c);
+  targetSave(list); renderTarget();
+  if (c.email) targetSyncContact(c.id, true).then(() => renderTarget()).catch(() => {});
+}
+// ── Sync de contactos a HubSpot (upsert por email) ──
+async function targetHsFindContactByEmail(email) {
+  try {
+    const res = await withTimeout(mcpCall("mcp__aaaa9eed-76e4-4bc8-a1a2-fad976f54ccb__search_crm_objects", {
+      objectType: "contacts", properties: ["email", "firstname", "lastname"],
+      filterGroups: [{ filters: [{ propertyName: "email", operator: "EQ", value: email }] }],
+      limit: 2, chatInsights: false
+    }), 15000);
+    const parsed = typeof res === "string" ? JSON.parse(res) : res;
+    const results = parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
+    return results.length ? results[0] : null;
+  } catch (e) { return null; }
+}
+async function targetHsFindCompanyByName(name) {
+  try {
+    const res = await withTimeout(mcpCall("mcp__aaaa9eed-76e4-4bc8-a1a2-fad976f54ccb__search_crm_objects", {
+      objectType: "companies", properties: ["name", "lifecyclestage"],
+      filterGroups: [{ filters: [{ propertyName: "name", operator: "CONTAINS_TOKEN", value: name }] }],
+      limit: 5, chatInsights: false
+    }), 15000);
+    const parsed = typeof res === "string" ? JSON.parse(res) : res;
+    const results = parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
+    const nrm = s => String(s || "").trim().toLowerCase();
+    return results.find(r => nrm(r.properties && r.properties.name) === nrm(name)) || null;
+  } catch (e) { return null; }
+}
+// Crea o actualiza el contacto en HubSpot. Devuelve "new" | "upd" | null.
+async function targetSyncContact(cid, silent) {
+  const f = targetFindC(cid); if (!f) return null;
+  const c = f.c, t = f.t;
+  if (!c.email) { if (!silent) alert("El contacto no tiene email — cargalo con ✏️ para poder sincronizar a HubSpot."); return null; }
+  const stEl = document.getElementById("chs-" + cid);
+  if (stEl) stEl.textContent = "…";
+  const parts = String(c.nombre || "").trim().split(/\s+/);
+  const props = { email: c.email };
+  if (parts[0]) props.firstname = parts[0];
+  if (parts.length > 1) props.lastname = parts.slice(1).join(" ");
+  if (c.rol) props.jobtitle = c.rol;
+  try {
+    const found = await targetHsFindContactByEmail(c.email);
+    if (found && found.id) {
+      await hsWrite({ updateRequest: { objects: [{ objectType: "contacts", objectId: Number(found.id), properties: props }] } });
+      c.hsContactId = String(found.id);
+      targetSave(f.list);
+      if (stEl) stEl.textContent = "✓";
+      return "upd";
+    }
+    const obj = { objectType: "contacts", properties: props };
+    if (t._companyId) obj.associations = [{ targetObjectId: Number(t._companyId), targetObjectType: "companies" }];
+    const res = await hsWrite({ createRequest: { objects: [obj] } });
+    const newId = genExtractNewId(res);
+    if (newId) c.hsContactId = String(newId);
+    targetSave(f.list);
+    if (stEl) stEl.textContent = "✓";
+    return "new";
+  } catch (e) {
+    if (stEl) stEl.textContent = "✗";
+    if (!silent) alert("Error sincronizando el contacto: " + String(e && e.message || e));
+    return null;
+  }
+}
+async function targetSyncBatch(cids) {
+  let nu = 0, up = 0, err = 0;
+  for (const cid of cids) {
+    const r = await targetSyncContact(cid, true);
+    if (r === "new") nu++; else if (r === "upd") up++; else err++;
+  }
+  renderTarget();
+  if (nu || up || err) alert("Sync HubSpot: " + nu + " contacto(s) creado(s) · " + up + " actualizado(s)." + (err ? "\n" + err + " con error (reintentá con ⟳ en la columna HubSpot)." : ""));
 }
 function targetToggleForm() {
   const f = document.getElementById("target-form"); if (!f) return;
@@ -5042,18 +5358,27 @@ function targetAdd() {
   const nombre = val("tg-nombre");
   if (!nombre) { alert("Falta el nombre de la empresa."); return; }
   const list = targetLoad();
+  const contactos = [];
+  if (val("tg-cnombre") || val("tg-email")) {
+    contactos.push({
+      id: String(Date.now()) + "_c0", nombre: val("tg-cnombre"), rol: val("tg-crol"), email: val("tg-email"), link: val("tg-clink"),
+      listado: "carga manual", partner: "", estado: "por_contactar", canal: "", fechaToque: "",
+      hsContactId: null, ticketId: null, taskDue: "", taskOwner: "", nextStep: val("tg-next")
+    });
+  }
   list.push({
     id: String(Date.now()), section: window.__targetTab || "crecimiento",
-    nombre: nombre, industria: val("tg-industria"),
-    contactoNombre: val("tg-cnombre"), contactoRol: val("tg-crol"), contactoLink: val("tg-clink"),
-    estado: "por_contactar", nextStep: val("tg-next"), dealId: null
+    nombre: nombre, industria: val("tg-industria"), fuente: "", detallePartner: "", dealId: null,
+    contactos: contactos
   });
   targetSave(list); renderTarget();
+  const c0 = contactos[0];
+  if (c0 && c0.email) targetSyncContact(c0.id, true).then(() => renderTarget()).catch(() => {});
 }
 function targetCsvTemplate() {
   const rows = [
-    ["empresa", "vertical", "contacto_nombre", "contacto_rol", "contacto_link", "partner", "detalle_partner", "estado", "siguiente_paso", "frente"],
-    ["Ejemplo SA", "Retail", "Juan Perez", "Gerente eCommerce", "https://linkedin.com/in/juanperez", "Reseller", "Pablo Sanchez - Chile", "por_contactar", "Mandar primer mail", "crecimiento"]
+    ["empresa", "vertical", "contacto_nombre", "contacto_rol", "email", "contacto_link", "partner", "detalle_partner", "estado", "siguiente_paso", "frente"],
+    ["Ejemplo SA", "Retail", "Juan Perez", "Gerente eCommerce", "juan.perez@ejemplo.com", "https://linkedin.com/in/juanperez", "Reseller", "Pablo Sanchez - Chile", "por_contactar", "Mandar primer mail", "crecimiento"]
   ];
   const csv = "﻿" + rows.map(r => r.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(";")).join("\r\n");
   const a = document.createElement("a");
@@ -5096,7 +5421,8 @@ function targetImportFile(input) {
         vertical: ["vertical", "industria", "vertical_industria", "rubro"],
         contacto_nombre: ["contacto_nombre", "contacto", "nombre_contacto"],
         contacto_rol: ["contacto_rol", "rol", "cargo"],
-        contacto_link: ["contacto_link", "link", "linkedin", "email", "mail", "web", "url"],
+        email: ["email", "mail", "correo", "e_mail"],
+        contacto_link: ["contacto_link", "link", "linkedin", "web", "url"],
         partner: ["partner", "fuente", "lead_source", "canal"],
         detalle_partner: ["detalle_partner", "detalle", "partner_especifico", "referidor", "empresa_referidora"],
         estado: ["estado", "status"],
@@ -5106,30 +5432,52 @@ function targetImportFile(input) {
       const idx = {};
       Object.keys(ALIASES).forEach(k => { idx[k] = head.findIndex(h => ALIASES[k].indexOf(h) > -1); });
       if (idx.empresa === -1) { alert('No encontré la columna "empresa" en el encabezado. Bajá la plantilla CSV para ver el formato.'); return; }
-      const EST = { por_contactar: "por_contactar", en_contacto: "en_contacto", contacto: "en_contacto", reunion: "reunion", reunion_agendada: "reunion", opp_detectada: "opp_detectada", oportunidad: "opp_detectada", descartado: "descartado", descartada: "descartado" };
-      const SEC = { crecimiento: "crecimiento", industrias_en_crecimiento: "crecimiento", lideres: "lideres", ecommerce_lideres: "lideres", grandes: "grandes", grandes_marcas: "grandes", grandes_marcas_industrias: "grandes" };
+      const ESTC = { por_contactar: "por_contactar", touch1: "touch1", primer_touch: "touch1", "1er_touch": "touch1", followup: "followup", follow_up: "followup", en_contacto: "followup", contacto: "followup", respondio: "respondio", reunion: "reunion", reunion_agendada: "reunion", opp_detectada: "reunion", oportunidad: "reunion", descartado: "descartado", descartada: "descartado" };
+      const SEC = { crecimiento: "crecimiento", industrias_en_crecimiento: "crecimiento", lideres: "lideres", ecommerce_lideres: "lideres", grandes: "grandes", grandes_marcas: "grandes", grandes_marcas_industrias: "grandes", partner: "partner", listado_de_partner: "partner", partner_reseller: "partner", reseller: "partner" };
       const tab = window.__targetTab || "crecimiento";
       const list = targetLoad();
-      const existing = new Set(list.map(x => norm(x.nombre)));
+      const byName = {};
+      list.forEach(x => { byName[norm(x.nombre)] = x; });
       const g = (r, k) => idx[k] > -1 ? String(r[idx[k]] || "").trim() : "";
-      let add = 0, dup = 0;
+      let empNew = 0, cAdd = 0, cDup = 0;
+      const newCids = [];
       rows.slice(1).forEach((r, i) => {
         const nombre = g(r, "empresa"); if (!nombre) return;
-        if (existing.has(norm(nombre))) { dup++; return; }
-        existing.add(norm(nombre));
         const rawFuente = g(r, "partner");
         const lsMatch = rawFuente ? LEAD_SOURCE_OPTS.find(o => norm(o.v) === norm(rawFuente) || norm(o.l) === norm(rawFuente)) : null;
-        list.push({
-          id: String(Date.now()) + "_" + i, section: SEC[norm(g(r, "frente"))] || tab,
-          nombre: nombre, industria: g(r, "vertical"),
-          contactoNombre: g(r, "contacto_nombre"), contactoRol: g(r, "contacto_rol"), contactoLink: g(r, "contacto_link"),
-          fuente: lsMatch ? lsMatch.v : "", detallePartner: g(r, "detalle_partner"),
-          estado: EST[norm(g(r, "estado"))] || "por_contactar", nextStep: g(r, "siguiente_paso"), dealId: null
-        });
-        add++;
+        let emp = byName[norm(nombre)];
+        if (!emp) {
+          emp = {
+            id: String(Date.now()) + "_" + i, section: SEC[norm(g(r, "frente"))] || tab,
+            nombre: nombre, industria: g(r, "vertical"),
+            fuente: lsMatch ? lsMatch.v : "", detallePartner: g(r, "detalle_partner"),
+            dealId: null, contactos: []
+          };
+          byName[norm(nombre)] = emp; list.push(emp); empNew++;
+        } else {
+          if (!emp.industria && g(r, "vertical")) emp.industria = g(r, "vertical");
+          if (!emp.fuente && lsMatch) emp.fuente = lsMatch.v;
+          if (!emp.detallePartner && g(r, "detalle_partner")) emp.detallePartner = g(r, "detalle_partner");
+        }
+        const cNombre = g(r, "contacto_nombre"), cEmail = g(r, "email");
+        if (!cNombre && !cEmail) return;
+        const cKey = norm(cEmail || cNombre);
+        const ya = (emp.contactos || []).some(c => norm(c.email || c.nombre) === cKey);
+        if (ya) { cDup++; return; }
+        const c = {
+          id: emp.id + "_c" + Date.now() + "_" + i,
+          nombre: cNombre, rol: g(r, "contacto_rol"), email: cEmail, link: g(r, "contacto_link"),
+          listado: f.name, partner: g(r, "detalle_partner") || (lsMatch ? "" : rawFuente),
+          estado: ESTC[norm(g(r, "estado"))] || "por_contactar", canal: "", fechaToque: "",
+          hsContactId: null, ticketId: null, taskDue: "", taskOwner: "", nextStep: g(r, "siguiente_paso")
+        };
+        emp.contactos = emp.contactos || [];
+        emp.contactos.push(c); cAdd++;
+        if (cEmail) newCids.push(c.id);
       });
       targetSave(list); renderTarget();
-      alert("✓ Importadas " + add + " cuenta(s)." + (dup ? "\nSalteadas " + dup + " duplicada(s) (ya existían por nombre)." : ""));
+      alert("✓ " + empNew + " empresa(s) nueva(s) · " + cAdd + " contacto(s) agregado(s)." + (cDup ? "\n" + cDup + " contacto(s) ya existían (mismo email/nombre en la empresa)." : ""));
+      if (newCids.length) targetSyncBatch(newCids);
     } catch (e) { alert("No pude leer el CSV: " + String(e.message || e)); }
   };
   reader.readAsText(f, "utf-8");
@@ -5149,7 +5497,9 @@ function targetDealModal(id) {
   wrap.innerHTML =
     '<div style="background:#fff; border-radius:12px; max-width:460px; width:100%; padding:20px; box-shadow:0 10px 40px rgba(0,0,0,0.2); max-height:90vh; overflow:auto;">' +
     '<div style="font-size:15px; font-weight:800; color:#430C89; margin-bottom:2px;">⚡ Crear deal en HubSpot</div>' +
-    '<div style="font-size:12px; color:#6b7280; margin-bottom:6px;">Cuenta target: <b>' + escAttr(t.nombre) + '</b>. El deal entra al embudo temprano (Total Generación).</div>' +
+    '<div style="font-size:12px; color:#6b7280; margin-bottom:6px;">Cuenta target: <b>' + escAttr(t.nombre) + '</b>. El deal se crea sobre la empresa, asociando el contacto elegido.</div>' +
+    '<label ' + lbl + '>Contacto asociado</label><select id="tgd-contacto" ' + inp + '><option value="">— sin contacto —</option>' +
+    (t.contactos || []).map(c => '<option value="' + escAttr(c.id) + '">' + escAttr(c.nombre || c.email || "(sin nombre)") + (c.hsContactId ? " ✓HS" : (c.email ? "" : " (sin email)")) + '</option>').join("") + '</select>' +
     '<label ' + lbl + '>Nombre del deal</label><input id="tgd-nombre" ' + inp + ' value="' + escAttr(t.nombre) + '">' +
     '<label ' + lbl + '>Producto</label><select id="tgd-producto" ' + inp + '>' + productoOptions("") + '</select>' +
     '<label ' + lbl + '>País (segmento)</label><select id="tgd-pais" ' + inp + '>' + DAILY_PAISES.map(p => '<option value="' + p + '">' + p + '</option>').join("") + '</select>' +
@@ -5171,7 +5521,23 @@ async function targetCreateDeal(id) {
   if (!amount || amount <= 0) { alert("Cargá un monto válido."); return; }
   const meses = Math.max(1, Math.min(12, Number(val("tgd-meses")) || 1));
   const st = document.getElementById("tgd-st"); const btn = document.getElementById("tgd-save");
-  if (btn) btn.disabled = true; if (st) st.textContent = "Creando deal en HubSpot…";
+  if (btn) btn.disabled = true; if (st) st.textContent = "Preparando empresa en HubSpot…";
+  const cid = val("tgd-contacto");
+  const c = cid ? (t.contactos || []).find(x => x.id === cid) : null;
+  try {
+    if (!t._companyId) {
+      const found = await targetHsFindCompanyByName(t.nombre);
+      if (found) t._companyId = String(found.id);
+      else {
+        const rc = await hsWrite({ createRequest: { objects: [{ objectType: "companies", properties: { name: t.nombre } }] } });
+        const ncid = genExtractNewId(rc);
+        if (ncid) t._companyId = String(ncid);
+      }
+      targetSave(list);
+    }
+    if (c && !c.hsContactId && c.email) { try { await targetSyncContact(c.id, true); } catch (e) {} }
+  } catch (e) {}
+  if (st) st.textContent = "Creando deal en HubSpot…";
   const props = {
     dealname: (val("tgd-nombre") || t.nombre).trim(),
     pipeline: "default",
@@ -5182,13 +5548,19 @@ async function targetCreateDeal(id) {
   if (val("tgd-producto")) props.producto = val("tgd-producto");
   if (val("tgd-pais")) props.segmento = val("tgd-pais");
   if (val("tgd-lead")) { props.lead_source = val("tgd-lead"); props.dealtype = "newbusiness"; }
-  if (t.detallePartner) props.partner___empresa_referidora = t.detallePartner;
+  const detP = (c && c.partner) || t.detallePartner;
+  if (detP) props.partner___empresa_referidora = detP;
   if (val("tgd-cierre")) props.closedate = val("tgd-cierre");
+  const assoc = [];
+  if (t._companyId && /^\d+$/.test(String(t._companyId))) assoc.push({ targetObjectId: Number(t._companyId), targetObjectType: "companies" });
+  const cFresh = cid ? ((targetLoad().find(x => x.id === id) || {}).contactos || []).find(x => x.id === cid) : null;
+  if (cFresh && cFresh.hsContactId && /^\d+$/.test(String(cFresh.hsContactId))) assoc.push({ targetObjectId: Number(cFresh.hsContactId), targetObjectType: "contacts" });
   try {
-    const res = await hsWrite({ createRequest: { objects: [{ objectType: "deals", properties: props }] } });
+    const obj = { objectType: "deals", properties: props };
+    if (assoc.length) obj.associations = assoc;
+    const res = await hsWrite({ createRequest: { objects: [obj] } });
     const newId = genExtractNewId(res);
     t.dealId = newId ? String(newId) : "creado";
-    t.estado = "opp_detectada";
     targetSave(list);
     closeTargetModal(); renderTarget();
     try { await reloadDaily(); } catch (e) {}
@@ -5199,32 +5571,33 @@ async function targetCreateDeal(id) {
     alert("Error creando el deal: " + (e && e.message ? e.message : e));
   }
 }
-function targetToggleTask(id) {
-  const r = document.getElementById("ttask-" + id); if (!r) return;
+function targetToggleTask(cid) {
+  const r = document.getElementById("ttask-" + cid); if (!r) return;
   const open = r.style.display !== "none";
   r.style.display = open ? "none" : "table-row";
   if (!open) {
-    const t = targetLoad().find(x => x.id === id);
-    const subj = document.getElementById("tt-subj-" + id);
-    const due = document.getElementById("tt-due-" + id);
-    if (subj && t) subj.value = t.nextStep || "";
-    if (due && t) due.value = t.taskDue || dailyTomorrow();
-    const h = document.getElementById("tth-" + id);
-    const b = document.getElementById("ttbtn-" + id);
-    if (h) h.textContent = (t && t.ticketId) ? "Editar ticket" : "Nuevo ticket de siguiente paso";
-    if (b) b.textContent = (t && t.ticketId) ? "Guardar cambios" : "Crear ticket";
+    const f = targetFindC(cid); const c = f && f.c;
+    const subj = document.getElementById("tt-subj-" + cid);
+    const due = document.getElementById("tt-due-" + cid);
+    if (subj && c) subj.value = c.nextStep || "";
+    if (due && c) due.value = c.taskDue || dailyTomorrow();
+    const h = document.getElementById("tth-" + cid);
+    const b = document.getElementById("ttbtn-" + cid);
+    if (h) h.textContent = (c && c.ticketId) ? "Editar ticket" : "Nuevo ticket de siguiente paso";
+    if (b) b.textContent = (c && c.ticketId) ? "Guardar cambios" : "Crear ticket";
     if (subj) subj.focus();
   }
 }
-async function targetCreateTask(id) {
-  const list = targetLoad(); const t = list.find(x => x.id === id); if (!t) return;
+async function targetCreateTask(cid) {
+  const f = targetFindC(cid); if (!f) return;
+  const list = f.list, t = f.t, c = f.c;
   const val = i => { const el = document.getElementById(i); return el ? el.value.trim() : ""; };
-  const subj = val("tt-subj-" + id);
+  const subj = val("tt-subj-" + cid);
   if (!subj) { alert("Cargá el asunto del ticket."); return; }
-  const ownerId = val("tt-owner-" + id);
-  const due = val("tt-due-" + id);
-  const st = document.getElementById("ttst-" + id);
-  const btn = document.getElementById("ttbtn-" + id);
+  const ownerId = val("tt-owner-" + cid);
+  const due = val("tt-due-" + cid);
+  const st = document.getElementById("ttst-" + cid);
+  const btn = document.getElementById("ttbtn-" + cid);
   if (btn) btn.disabled = true;
   if (st) { st.classList.remove("err"); st.textContent = "guardando…"; }
   const tprops = { subject: subj };
@@ -5232,17 +5605,20 @@ async function targetCreateTask(id) {
   if (due) tprops.fecha_vencimiento = due;
   const dealOk = t.dealId && /^\d+$/.test(String(t.dealId));
   try {
-    if (t.ticketId) {
-      await hsWrite({ updateRequest: { objects: [{ objectType: "tickets", objectId: Number(t.ticketId), properties: tprops }] } });
+    if (c.ticketId) {
+      await hsWrite({ updateRequest: { objects: [{ objectType: "tickets", objectId: Number(c.ticketId), properties: tprops }] } });
     } else {
       const obj = { objectType: "tickets", properties: Object.assign({ hs_pipeline: "0", hs_pipeline_stage: "1", hs_ticket_priority: "HIGH" }, tprops) };
-      if (dealOk) obj.associations = [{ targetObjectId: Number(t.dealId), targetObjectType: "deals" }];
+      const assoc = [];
+      if (dealOk) assoc.push({ targetObjectId: Number(t.dealId), targetObjectType: "deals" });
+      if (c.hsContactId && /^\d+$/.test(String(c.hsContactId))) assoc.push({ targetObjectId: Number(c.hsContactId), targetObjectType: "contacts" });
+      if (assoc.length) obj.associations = assoc;
       const res = await hsWrite({ createRequest: { objects: [obj] } });
       const newId = genExtractNewId(res);
-      if (newId) t.ticketId = String(newId);
+      if (newId) c.ticketId = String(newId);
     }
     if (dealOk) { try { await hsWrite({ updateRequest: { objects: [{ objectType: "deals", objectId: Number(t.dealId), properties: { hs_next_step: subj } }] } }); } catch (e) {} }
-    t.nextStep = subj; t.taskDue = due || ""; t.taskOwner = ownerId || "";
+    c.nextStep = subj; c.taskDue = due || ""; c.taskOwner = ownerId || "";
     targetSave(list);
     if (window.__tareasLoaded) { try { loadTareas(); } catch (e) {} }
     renderTarget();
@@ -5251,15 +5627,16 @@ async function targetCreateTask(id) {
     if (st) { st.classList.add("err"); st.textContent = "error: " + String(e.message || e).slice(0, 80); }
   }
 }
-async function targetTaskDone(id) {
-  const list = targetLoad(); const t = list.find(x => x.id === id); if (!t || !t.ticketId) return;
-  if (!confirm('¿Marcar como realizado?\n\n"' + (t.nextStep || "") + '"\n\nSe cierra el ticket en HubSpot.')) return;
-  const st = document.getElementById("ttrowst-" + id);
+async function targetTaskDone(cid) {
+  const f = targetFindC(cid); if (!f || !f.c.ticketId) return;
+  const list = f.list, c = f.c;
+  if (!confirm('¿Marcar como realizado?\n\n"' + (c.nextStep || "") + '"\n\nSe cierra el ticket en HubSpot.')) return;
+  const st = document.getElementById("ttrowst-" + cid);
   if (st) { st.classList.remove("err"); st.textContent = "cerrando…"; }
   try {
-    await hsWrite({ updateRequest: { objects: [{ objectType: "tickets", objectId: Number(t.ticketId), properties: { hs_pipeline_stage: "4" } }] } });
-    window.__tareasData = (window.__tareasData || []).filter(x => String(x.id) !== String(t.ticketId));
-    t.ticketId = null; t.nextStep = ""; t.taskDue = "";
+    await hsWrite({ updateRequest: { objects: [{ objectType: "tickets", objectId: Number(c.ticketId), properties: { hs_pipeline_stage: "4" } }] } });
+    window.__tareasData = (window.__tareasData || []).filter(x => String(x.id) !== String(c.ticketId));
+    c.ticketId = null; c.nextStep = ""; c.taskDue = "";
     targetSave(list);
     renderTarget();
     try { const tv = document.getElementById("view-tareas"); if (tv && tv.style.display !== "none") renderTareas(); } catch (e) {}
@@ -5272,22 +5649,22 @@ function targetKpiCard(label, n, color) {
 }
 // ── Filtros por columna en Cuentas Target (estado de sesión, no persiste) ──
 function targetFilters() {
-  if (!window.__targetFilters) window.__targetFilters = { nombre: "", vertical: "", contacto: "", fuente: "", detalle: "", estado: "", next: "" };
+  if (!window.__targetFilters) window.__targetFilters = { nombre: "", contacto: "", listado: "", partner: "", next: "" };
   return window.__targetFilters;
 }
 function targetFilterSet(k, v) { targetFilters()[k] = v; renderTarget(); }
-function clearTargetFilters() { window.__targetFilters = null; msfClearUids(["t-fuente", "t-estado"]); renderTarget(); }
+function clearTargetFilters() { window.__targetFilters = null; msfClearUids(["t-estado"]); renderTarget(); }
 function renderTarget() {
   const kEl = document.getElementById("target-kpis"), tEl = document.getElementById("target-tabs"), bEl = document.getElementById("target-body");
   if (!bEl) return;
   const list = targetLoad();
   const tab = window.__targetTab || "crecimiento";
-  const cnt = e => list.filter(x => x.estado === e).length;
+  const allC = list.reduce((a, t) => a.concat(t.contactos || []), []);
   if (kEl) kEl.innerHTML = '<div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px;">' +
-    targetKpiCard("Total Cuentas Target", list.length, "#430C89") +
-    targetKpiCard("En contacto", cnt("en_contacto"), "#b45309") +
-    targetKpiCard("Reuniones agendadas", cnt("reunion"), "#1d4ed8") +
-    targetKpiCard("Opp. detectadas", cnt("opp_detectada"), "#047857") +
+    targetKpiCard("Empresas target", list.length, "#430C89") +
+    targetKpiCard("Contactos", allC.length, "#4030C8") +
+    targetKpiCard("🥶 Fríos (+7d sin toque)", allC.filter(targetFrio).length, "#b45309") +
+    targetKpiCard("Reuniones", allC.filter(c => c.estado === "reunion").length, "#1d4ed8") +
     targetKpiCard("Deals convertidos", list.filter(x => x.dealId).length, "#059669") + '</div>';
   if (tEl) tEl.innerHTML = '<div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px;">' +
     TARGET_SECTIONS.map(s => {
@@ -5298,17 +5675,24 @@ function renderTarget() {
   const rowsAll = list.filter(x => x.section === tab);
   const TF = targetFilters();
   const tfl = s => String(s || "").toLowerCase();
-  const rows = rowsAll.filter(t => {
-    if (TF.nombre && tfl(t.nombre).indexOf(tfl(TF.nombre)) === -1) return false;
-    if (TF.vertical && tfl(t.industria).indexOf(tfl(TF.vertical)) === -1) return false;
-    if (TF.contacto && tfl((t.contactoNombre || "") + " " + (t.contactoRol || "") + " " + (t.contactoLink || "")).indexOf(tfl(TF.contacto)) === -1) return false;
-    if (!msfMatch("t-fuente", t.fuente || "")) return false;
-    if (TF.detalle && tfl(t.detallePartner).indexOf(tfl(TF.detalle)) === -1) return false;
-    if (!msfMatch("t-estado", t.estado || "")) return false;
-    if (TF.next && tfl(t.nextStep).indexOf(tfl(TF.next)) === -1) return false;
+  const cMatch = c => {
+    if (TF.contacto && tfl((c.nombre || "") + " " + (c.rol || "") + " " + (c.email || "") + " " + (c.link || "")).indexOf(tfl(TF.contacto)) === -1) return false;
+    if (TF.listado && tfl(c.listado).indexOf(tfl(TF.listado)) === -1) return false;
+    if (TF.partner && tfl(c.partner).indexOf(tfl(TF.partner)) === -1) return false;
+    if (!msfMatch("t-estado", c.estado || "")) return false;
+    if (TF.next && tfl(c.nextStep).indexOf(tfl(TF.next)) === -1) return false;
     return true;
+  };
+  const cFilterOn = !!(TF.contacto || TF.listado || TF.partner || TF.next) || msfSel("t-estado").length > 0;
+  const rows = [];
+  rowsAll.forEach(t => {
+    if (TF.nombre && tfl(t.nombre).indexOf(tfl(TF.nombre)) === -1) return;
+    const shown = (t.contactos || []).filter(cMatch);
+    if (!shown.length && cFilterOn) return;
+    rows.push({ t: t, shown: shown });
   });
-  const tfActive = Object.keys(TF).some(k => TF[k]) || msfSel("t-fuente").length > 0 || msfSel("t-estado").length > 0;
+  const nCShown = rows.reduce((a, r) => a + r.shown.length, 0);
+  const tfActive = Object.keys(TF).some(k => TF[k]) || msfSel("t-estado").length > 0;
   let h = '<div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:8px; align-items:center;">' +
     '<button onclick="targetCsvTemplate()" style="padding:7px 12px; border:1px solid #C7BDFF; border-radius:8px; background:#F1EFFF; color:#4030C8; cursor:pointer; font-size:12.5px; font-weight:700;">⬇ Plantilla CSV</button>' +
     '<label style="padding:7px 12px; border:1px solid #C7BDFF; border-radius:8px; background:#F1EFFF; color:#4030C8; cursor:pointer; font-size:12.5px; font-weight:700;">⬆ Importar CSV<input type="file" accept=".csv,.txt,.tsv" style="display:none;" onchange="targetImportFile(this)"></label>' +
@@ -5319,67 +5703,101 @@ function renderTarget() {
     '<input id="tg-industria" placeholder="Vertical / industria" style="padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px;">' +
     '<input id="tg-cnombre" placeholder="Contacto — nombre" style="padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px;">' +
     '<input id="tg-crol" placeholder="Contacto — rol" style="padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px;">' +
-    '<input id="tg-clink" placeholder="Link LinkedIn / email" style="padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px;">' +
+    '<input id="tg-email" placeholder="Email (para sync HubSpot)" style="padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px;">' +
+    '<input id="tg-clink" placeholder="Link LinkedIn / web" style="padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px;">' +
     '<input id="tg-next" placeholder="Siguiente paso" style="padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px;">' +
     '</div><div style="margin-top:8px; text-align:right;"><button onclick="targetAdd()" style="padding:6px 14px; border:none; border-radius:8px; background:#059669; color:#fff; cursor:pointer; font-size:12.5px; font-weight:700;">Guardar en "' + (TARGET_SECTIONS.find(s => s.key === tab) || {}).label + '"</button></div></div>';
   if (!rowsAll.length) {
     h += '<div style="font-size:12.5px; color:#9ca3af; font-style:italic; padding:16px; background:#fff; border:1px dashed #d1d5db; border-radius:10px;">Sin cuentas en este frente todavía. Usá ＋ Agregar empresa para cargar tu lista.</div>';
   } else {
     const tfInp = (k, ph) => '<input value="' + escAttr(TF[k] || "") + '" placeholder="' + ph + '" onchange="targetFilterSet(\'' + k + '\', this.value)" style="width:95%; box-sizing:border-box; padding:3px 5px; border:1px solid #d1d5db; border-radius:5px; font-size:11px;">';
+    const nCTotal = rowsAll.reduce((a, t) => a + (t.contactos || []).length, 0);
     const filaFiltros = '<tr style="background:#fafafa;">' +
       '<td style="padding:4px 6px;">' + tfInp("nombre", "filtrar…") + '</td>' +
-      '<td style="padding:4px 6px;">' + tfInp("vertical", "filtrar…") + '</td>' +
       '<td style="padding:4px 6px;">' + tfInp("contacto", "filtrar…") + '</td>' +
-      '<td style="padding:4px 6px;">' + msfBtn("t-fuente", LEAD_SOURCE_OPTS.map(o => ({ v: o.v, l: o.l })), "renderTarget", { live: false }) + '</td>' +
-      '<td style="padding:4px 6px;">' + tfInp("detalle", "filtrar…") + '</td>' +
-      '<td style="padding:4px 6px;">' + msfBtn("t-estado", TARGET_ESTADOS.map(e => ({ v: e.v, l: e.l })), "renderTarget", { live: false }) + '</td>' +
+      '<td style="padding:4px 6px;"></td>' +
+      '<td style="padding:4px 6px;">' + tfInp("listado", "filtrar…") + '</td>' +
+      '<td style="padding:4px 6px;">' + tfInp("partner", "filtrar…") + '</td>' +
+      '<td style="padding:4px 6px;">' + msfBtn("t-estado", TARGET_C_ESTADOS.map(e => ({ v: e.v, l: e.l })), "renderTarget", { live: false }) + '</td>' +
+      '<td style="padding:4px 6px;"></td>' +
       '<td style="padding:4px 6px;">' + tfInp("next", "filtrar…") + '</td>' +
       '<td style="padding:4px 6px; white-space:nowrap;"><button onclick="clearTargetFilters()" title="Limpiar filtros" style="padding:3px 8px; border:1px solid #d1d5db; border-radius:5px; background:#fff; cursor:pointer; font-size:11px;">✕</button>' +
-        (tfActive ? ' <span style="font-size:10.5px; color:#4030C8; font-weight:700;">' + rows.length + ' de ' + rowsAll.length + '</span>' : '') + '</td></tr>';
-    h += '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:12.5px; background:#fff; min-width:1150px;">' +
+        (tfActive ? ' <span style="font-size:10.5px; color:#4030C8; font-weight:700;">' + nCShown + ' de ' + nCTotal + '</span>' : '') + '</td></tr>';
+    h += '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:12.5px; background:#fff; min-width:1300px;">' +
       '<thead><tr style="background:#fafafa; text-align:left;">' +
-      ['Empresa / Marca', 'Vertical', 'Contacto clave', 'Partner', 'Detalle partner', 'Estado', 'Siguiente paso / notas', 'Acciones'].map(c => '<th style="padding:8px; border-bottom:2px solid #e5e7eb; font-size:11px; text-transform:uppercase; color:#6b7280;">' + c + '</th>').join("") +
+      ['Empresa / Marca', 'Contacto', 'HubSpot', 'Listado', 'Partner', 'Estado', 'Canal · Últ. toque', 'Ticket / siguiente paso', 'Acciones'].map(c => '<th style="padding:8px; border-bottom:2px solid #e5e7eb; font-size:11px; text-transform:uppercase; color:#6b7280;">' + c + '</th>').join("") +
       '</tr>' + filaFiltros + '</thead><tbody>';
-    if (!rows.length) h += '<tr><td colspan="8" style="padding:14px; font-size:12.5px; color:#9ca3af; font-style:italic;">Sin cuentas para este filtro.</td></tr>';
-    rows.forEach(t => {
-      const ei = targetEstadoInfo(t.estado);
-      const contacto = (t.contactoNombre ? '<b>' + escAttr(t.contactoNombre) + '</b>' : '<span style="color:#9ca3af;">—</span>') +
-        (t.contactoRol ? '<br><span style="color:#6b7280;">' + escAttr(t.contactoRol) + '</span>' : '') +
-        (t.contactoLink ? '<br><a href="' + escAttr(/^https?:\/\//.test(t.contactoLink) ? t.contactoLink : (t.contactoLink.indexOf("@") > -1 ? "mailto:" + t.contactoLink : "https://" + t.contactoLink)) + '" target="_blank" rel="noopener" style="color:#4030C8; font-size:11px;">🔗 contacto</a>' : '');
+    if (!rows.length) h += '<tr><td colspan="9" style="padding:14px; font-size:12.5px; color:#9ca3af; font-style:italic;">Sin cuentas para este filtro.</td></tr>';
+    rows.forEach(r => {
+      const t = r.t, shown = r.shown;
+      const eiEmp = targetCEstadoInfo(targetEmpresaEstado(t));
       const accion = t.dealId
-        ? '<a href="' + HUBSPOT_DEAL(t.dealId) + '" target="_blank" rel="noopener" style="display:inline-block; padding:3px 8px; border-radius:6px; background:#ecfdf5; border:1px solid #6EE7B7; color:#047857; font-size:11px; font-weight:700; text-decoration:none;">✓ Deal #' + escAttr(String(t.dealId)) + ' en Generación ↗</a>'
+        ? '<a href="' + HUBSPOT_DEAL(t.dealId) + '" target="_blank" rel="noopener" style="display:inline-block; padding:3px 8px; border-radius:6px; background:#ecfdf5; border:1px solid #6EE7B7; color:#047857; font-size:11px; font-weight:700; text-decoration:none;">✓ Deal #' + escAttr(String(t.dealId)) + ' ↗</a>'
         : '<button onclick="targetDealModal(\'' + t.id + '\')" style="padding:3px 8px; border:1px solid #C7BDFF; border-radius:6px; background:#F1EFFF; color:#4030C8; cursor:pointer; font-size:11px; font-weight:700;">⚡ Crear Deal</button>';
-      h += '<tr style="border-bottom:1px solid #f3f4f6; vertical-align:top;">' +
-        '<td style="padding:8px; font-weight:700; color:#111827;">' + escAttr(t.nombre) + '</td>' +
-        '<td style="padding:8px; color:#374151;">' + (escAttr(t.industria || "") || '<span style="color:#9ca3af;">—</span>') + '</td>' +
-        '<td style="padding:8px;">' + contacto + '</td>' +
-        '<td style="padding:8px;"><select onchange="targetEdit(\'' + t.id + '\', \'fuente\', this.value)" style="max-width:160px; padding:3px 5px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; background:#fff;">' + leadSourceOptions(t.fuente || "") + '</select></td>' +
-        '<td style="padding:8px;">' + (detalleFuenteEnabled(t.fuente)
-          ? '<select onchange="targetEdit(\'' + t.id + '\', \'detallePartner\', this.value)" style="max-width:160px; padding:3px 5px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; background:#fff;">' + partnerActiveOptions(t.detallePartner || "") + '</select>'
-          : '<select disabled title="Elegí una fuente PR (Referral / Ref / Reseller) en la columna Partner para cargar el detalle" style="max-width:160px; padding:3px 5px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; background:#f3f4f6; color:#9ca3af;"><option value="">— sin detalle</option></select>') + '</td>' +
-        '<td style="padding:8px;"><select onchange="targetEdit(\'' + t.id + '\', \'estado\', this.value)" style="padding:4px 6px; border-radius:6px; font-size:12px; border:1px solid ' + ei.c + '; background:' + ei.bg + '; color:' + ei.c + '; font-weight:700;">' +
-        TARGET_ESTADOS.map(e => '<option value="' + e.v + '"' + (e.v === t.estado ? ' selected' : '') + '>' + e.l + '</option>').join("") + '</select></td>' +
-        '<td style="padding:8px; min-width:220px; white-space:normal;">' + (t.ticketId
-          ? '<a href="https://app.hubspot.com/contacts/' + ACCOUNT_ID + '/record/0-5/' + escAttr(String(t.ticketId)) + '" target="_blank" rel="noopener" style="color:#4030C8; font-weight:600;">🎫 ' + (escAttr(t.nextStep || "") || "(ticket)") + '</a>' +
-            (t.taskDue ? '<span class="small" style="color:#6b7280;"> · vence ' + escAttr(t.taskDue) + '</span>' : '') +
-            ' <button title="Realizado (cierra el ticket)" onclick="targetTaskDone(\'' + t.id + '\')" style="padding:2px 7px; font-size:11px; border:1px solid #6EE7B7; background:#ECFDF5; color:#047857; border-radius:5px; cursor:pointer;">✓</button>' +
-            '<button title="Editar ticket" onclick="targetToggleTask(\'' + t.id + '\')" style="padding:2px 7px; font-size:11px; border:1px solid #d1d5db; background:#fff; border-radius:5px; cursor:pointer;">✎</button>' +
-            ' <span id="ttrowst-' + t.id + '" class="fc-status" style="font-size:11px;"></span>'
-          : '<button onclick="targetToggleTask(\'' + t.id + '\')" style="padding:3px 8px; border:1px solid #C7BDFF; border-radius:6px; background:#F1EFFF; color:#4030C8; cursor:pointer; font-size:11px; font-weight:700;">＋ Ticket siguiente paso</button>' +
-            (t.nextStep ? '<div class="small" style="color:#6b7280; margin-top:3px;">' + escAttr(t.nextStep) + '</div>' : '')) + '</td>' +
-        '<td style="padding:8px; white-space:nowrap;">' + accion +
-        ' <button onclick="targetEditRow(\'' + t.id + '\')" title="Editar datos" style="background:none; border:none; cursor:pointer; font-size:13px;">✏️</button>' +
-        '<button onclick="targetRemove(\'' + t.id + '\')" title="Eliminar" style="background:none; border:none; cursor:pointer; font-size:13px; color:#b91c1c;">🗑️</button></td></tr>';
-      h += '<tr id="ttask-' + t.id + '" style="display:none; background:#f9fafb;"><td colspan="8" style="padding:12px 16px; white-space:normal;">' +
-        '<div style="max-width:560px; display:flex; flex-direction:column; gap:10px;">' +
-        '<div id="tth-' + t.id + '" style="font-size:12px; font-weight:600;">Nuevo ticket de siguiente paso</div>' +
-        '<label style="font-size:11px; color:#6b7280; display:flex; flex-direction:column; gap:3px;">Asunto<input type="text" id="tt-subj-' + t.id + '" placeholder="ej. Llamar a ' + escAttr(t.contactoNombre || t.nombre) + '" style="padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px;"></label>' +
-        '<div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">' +
-        '<label style="font-size:11px; color:#6b7280; display:flex; flex-direction:column; gap:3px;">Owner del ticket<select id="tt-owner-' + t.id + '" style="padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px;">' + ownerOptions(t.taskOwner || BUG_OWNER_ID) + '</select></label>' +
-        '<label style="font-size:11px; color:#6b7280; display:flex; flex-direction:column; gap:3px;">Vence<input type="date" id="tt-due-' + t.id + '" value="' + escAttr(t.taskDue || dailyTomorrow()) + '" style="padding:5px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px;"></label>' +
-        '<button id="ttbtn-' + t.id + '" class="fc-btn" onclick="targetCreateTask(\'' + t.id + '\')">Crear ticket</button>' +
-        '<span id="ttst-' + t.id + '" class="fc-status" style="font-size:11px;"></span>' +
-        '</div></div></td></tr>';
+      const empCell = '<td rowspan="' + Math.max(1, shown.length * 2) + '" style="padding:8px; vertical-align:top; border-bottom:2px solid #e5e7eb; min-width:190px; background:#fcfcff;">' +
+        '<div style="font-weight:800; color:#111827;">' + escAttr(t.nombre) + '</div>' +
+        (t.industria ? '<div style="font-size:11px; color:#6b7280;">' + escAttr(t.industria) + '</div>' : '') +
+        '<div style="margin-top:4px;"><span style="display:inline-block; padding:2px 7px; border-radius:6px; font-size:10.5px; font-weight:700; border:1px solid ' + eiEmp.c + '; background:' + eiEmp.bg + '; color:' + eiEmp.c + ';">' + eiEmp.l + '</span></div>' +
+        '<div style="margin-top:6px;">' + accion + '</div>' +
+        '<div style="margin-top:6px;"><select onchange="targetEdit(\'' + t.id + '\', \'fuente\', this.value)" title="Fuente (lead_source)" style="max-width:170px; padding:3px 5px; font-size:11px; border:1px solid #d1d5db; border-radius:5px; background:#fff;">' + leadSourceOptions(t.fuente || "") + '</select></div>' +
+        '<div style="margin-top:4px;">' + (detalleFuenteEnabled(t.fuente)
+          ? '<select onchange="targetEdit(\'' + t.id + '\', \'detallePartner\', this.value)" title="Detalle partner" style="max-width:170px; padding:3px 5px; font-size:11px; border:1px solid #d1d5db; border-radius:5px; background:#fff;">' + partnerActiveOptions(t.detallePartner || "") + '</select>'
+          : '<select disabled title="Elegí una fuente PR para cargar el detalle" style="max-width:170px; padding:3px 5px; font-size:11px; border:1px solid #d1d5db; border-radius:5px; background:#f3f4f6; color:#9ca3af;"><option value="">— sin detalle</option></select>') + '</div>' +
+        '<div style="margin-top:6px; white-space:nowrap;">' +
+        '<button onclick="targetAddContact(\'' + t.id + '\')" title="Agregar contacto" style="padding:2px 8px; border:1px solid #C7BDFF; border-radius:6px; background:#F1EFFF; color:#4030C8; cursor:pointer; font-size:11px; font-weight:700;">＋ contacto</button>' +
+        ' <button onclick="targetEditRow(\'' + t.id + '\')" title="Editar empresa" style="background:none; border:none; cursor:pointer; font-size:13px;">✏️</button>' +
+        '<button onclick="targetRemove(\'' + t.id + '\')" title="Eliminar empresa" style="background:none; border:none; cursor:pointer; font-size:13px; color:#b91c1c;">🗑️</button></div></td>';
+      if (!shown.length) {
+        h += '<tr style="border-bottom:2px solid #e5e7eb;">' + empCell +
+          '<td colspan="8" style="padding:10px; font-size:12px; color:#9ca3af; font-style:italic; border-bottom:2px solid #e5e7eb;">Sin contactos — usá ＋ contacto.</td></tr>';
+        return;
+      }
+      shown.forEach((c, ci) => {
+        const cid = c.id;
+        const eiC = targetCEstadoInfo(c.estado);
+        const last = ci === shown.length - 1;
+        const bb = last ? "border-bottom:2px solid #e5e7eb;" : "border-bottom:1px solid #f3f4f6;";
+        const linkC = c.link ? '<br><a href="' + escAttr(/^https?:\/\//.test(c.link) ? c.link : "https://" + c.link) + '" target="_blank" rel="noopener" style="color:#4030C8; font-size:11px;">🔗 link</a>' : '';
+        const mailC = c.email ? '<br><a href="mailto:' + escAttr(c.email) + '" style="color:#6b7280; font-size:11px;">' + escAttr(c.email) + '</a>' : '';
+        const frio = targetFrio(c) ? ' <span title="+7 días sin toque" style="font-size:12px;">🥶</span>' : '';
+        const hsCell = c.hsContactId
+          ? '<a href="https://app.hubspot.com/contacts/' + ACCOUNT_ID + '/record/0-1/' + escAttr(String(c.hsContactId)) + '" target="_blank" rel="noopener" style="display:inline-block; padding:2px 7px; border-radius:6px; background:#ecfdf5; border:1px solid #6EE7B7; color:#047857; font-size:10.5px; font-weight:700; text-decoration:none;">✓ sync ↗</a>'
+          : (c.email
+            ? '<button onclick="targetSyncContact(\'' + cid + '\')" style="padding:2px 7px; border:1px solid #C7BDFF; border-radius:6px; background:#F1EFFF; color:#4030C8; cursor:pointer; font-size:10.5px; font-weight:700;">⟳ sync</button>'
+            : '<span style="font-size:10.5px; color:#9ca3af;" title="Cargale un email para sincronizar">⏳ sin email</span>');
+        h += '<tr style="' + bb + ' vertical-align:top;">' + (ci === 0 ? empCell : '') +
+          '<td style="padding:8px; min-width:150px;"><b>' + (escAttr(c.nombre || "") || '<span style="color:#9ca3af;">—</span>') + '</b>' + frio +
+            (c.rol ? '<br><span style="color:#6b7280; font-size:11px;">' + escAttr(c.rol) + '</span>' : '') + mailC + linkC + '</td>' +
+          '<td style="padding:8px; white-space:nowrap;">' + hsCell + ' <span id="chs-' + cid + '" class="fc-status" style="font-size:10.5px;"></span></td>' +
+          '<td style="padding:8px;">' + (c.listado ? '<span style="display:inline-block; padding:2px 7px; border-radius:6px; background:#f3f4f6; border:1px solid #e5e7eb; color:#374151; font-size:10.5px;">' + escAttr(c.listado) + '</span>' : '<span style="color:#9ca3af;">—</span>') + '</td>' +
+          '<td style="padding:8px; font-size:12px; color:#374151;">' + (escAttr(c.partner || "") || '<span style="color:#9ca3af;">—</span>') + '</td>' +
+          '<td style="padding:8px;"><select onchange="targetCEdit(\'' + cid + '\', \'estado\', this.value)" style="padding:3px 6px; border-radius:6px; font-size:11.5px; border:1px solid ' + eiC.c + '; background:' + eiC.bg + '; color:' + eiC.c + '; font-weight:700;">' +
+            TARGET_C_ESTADOS.map(e => '<option value="' + e.v + '"' + (e.v === (c.estado || "por_contactar") ? ' selected' : '') + '>' + e.l + '</option>').join("") + '</select></td>' +
+          '<td style="padding:8px; white-space:nowrap;"><select onchange="targetCEdit(\'' + cid + '\', \'canal\', this.value)" style="padding:3px 5px; font-size:11px; border:1px solid #d1d5db; border-radius:5px; background:#fff;"><option value="">—</option>' +
+            TARGET_CANALES.map(k => '<option value="' + k + '"' + (k === c.canal ? ' selected' : '') + '>' + k + '</option>').join("") + '</select>' +
+            ' <input type="date" value="' + escAttr(c.fechaToque || "") + '" onchange="targetCEdit(\'' + cid + '\', \'fechaToque\', this.value)" style="padding:3px 5px; font-size:11px; border:1px solid #d1d5db; border-radius:5px;"></td>' +
+          '<td style="padding:8px; min-width:200px; white-space:normal;">' + (c.ticketId
+            ? '<a href="https://app.hubspot.com/contacts/' + ACCOUNT_ID + '/record/0-5/' + escAttr(String(c.ticketId)) + '" target="_blank" rel="noopener" style="color:#4030C8; font-weight:600;">🎫 ' + (escAttr(c.nextStep || "") || "(ticket)") + '</a>' +
+              (c.taskDue ? '<span class="small" style="color:#6b7280;"> · vence ' + escAttr(c.taskDue) + '</span>' : '') +
+              ' <button title="Realizado (cierra el ticket)" onclick="targetTaskDone(\'' + cid + '\')" style="padding:2px 7px; font-size:11px; border:1px solid #6EE7B7; background:#ECFDF5; color:#047857; border-radius:5px; cursor:pointer;">✓</button>' +
+              '<button title="Editar ticket" onclick="targetToggleTask(\'' + cid + '\')" style="padding:2px 7px; font-size:11px; border:1px solid #d1d5db; background:#fff; border-radius:5px; cursor:pointer;">✎</button>' +
+              ' <span id="ttrowst-' + cid + '" class="fc-status" style="font-size:11px;"></span>'
+            : '<button onclick="targetToggleTask(\'' + cid + '\')" style="padding:3px 8px; border:1px solid #C7BDFF; border-radius:6px; background:#F1EFFF; color:#4030C8; cursor:pointer; font-size:11px; font-weight:700;">＋ Ticket</button>' +
+              (c.nextStep ? '<div class="small" style="color:#6b7280; margin-top:3px;">' + escAttr(c.nextStep) + '</div>' : '')) + '</td>' +
+          '<td style="padding:8px; white-space:nowrap;">' +
+            '<button onclick="targetCEditRow(\'' + cid + '\')" title="Editar contacto" style="background:none; border:none; cursor:pointer; font-size:13px;">✏️</button>' +
+            '<button onclick="targetCRemove(\'' + cid + '\')" title="Eliminar contacto" style="background:none; border:none; cursor:pointer; font-size:13px; color:#b91c1c;">🗑️</button></td></tr>';
+        h += '<tr id="ttask-' + cid + '" style="display:none; background:#f9fafb;"><td colspan="8" style="padding:12px 16px; white-space:normal;">' +
+          '<div style="max-width:560px; display:flex; flex-direction:column; gap:10px;">' +
+          '<div id="tth-' + cid + '" style="font-size:12px; font-weight:600;">Nuevo ticket de siguiente paso</div>' +
+          '<label style="font-size:11px; color:#6b7280; display:flex; flex-direction:column; gap:3px;">Asunto<input type="text" id="tt-subj-' + cid + '" placeholder="ej. Llamar a ' + escAttr(c.nombre || t.nombre) + '" style="padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px;"></label>' +
+          '<div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">' +
+          '<label style="font-size:11px; color:#6b7280; display:flex; flex-direction:column; gap:3px;">Owner del ticket<select id="tt-owner-' + cid + '" style="padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px;">' + ownerOptions(c.taskOwner || BUG_OWNER_ID) + '</select></label>' +
+          '<label style="font-size:11px; color:#6b7280; display:flex; flex-direction:column; gap:3px;">Vence<input type="date" id="tt-due-' + cid + '" value="' + escAttr(c.taskDue || dailyTomorrow()) + '" style="padding:5px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px;"></label>' +
+          '<button id="ttbtn-' + cid + '" class="fc-btn" onclick="targetCreateTask(\'' + cid + '\')">Crear ticket</button>' +
+          '<span id="ttst-' + cid + '" class="fc-status" style="font-size:11px;"></span>' +
+          '</div></div></td></tr>';
+      });
     });
     h += '</tbody></table></div>';
   }
@@ -8947,20 +9365,9 @@ function renderAccuracy() {
     renderPulso(pulso);
     renderEmbudoViz();
 
-    // Mes actual (índice 0) y mes siguiente (índice 1)
-    document.getElementById("mes-actual-rango").textContent = `(${fmtMonthLabel(forecastMonths[0].date)})`;
-    document.getElementById("mes-siguiente-rango").textContent = `(${fmtMonthLabel(forecastMonths[1].date)})`;
-    const sumMesActual = calcPeriodo(forecastMonths, [0]);
-    const sumMesSig = calcPeriodo(forecastMonths, [1]);
-    renderPeriodo("mes-actual-content", sumMesActual, { labelMeta: "Meta del mes", showVelocidad: false, showNote: false, collapsible: true });
-    renderPeriodo("mes-siguiente-content", sumMesSig, { labelMeta: "Meta del mes", showVelocidad: false, showNote: false, collapsible: true });
-
-    // Semestre completo (todos los 6 meses)
+    // Bloques Mes Actual/Mes Siguiente/Semestre eliminados (2026-07-31) — duplicaban la cadencia de Metas
     const allIdx = forecastMonths.map((_, i) => i);
-    document.getElementById("semestre-rango").textContent = `(${fmtMonthLabel(forecastMonths[0].date)} → ${fmtMonthLabel(forecastMonths[forecastMonths.length-1].date)})`;
     const semSummary = calcPeriodo(forecastMonths, allIdx);
-    renderPeriodo("semestre-content", semSummary, { labelMeta: "Meta del semestre", showVelocidad: true, showNote: true });
-    document.getElementById("preview-semestre").textContent = `(Meta ${fmtMoneyK(semSummary.metaTotal)} · Total ${fmtMoneyK(semSummary.totalEsp)} · GAP ${fmtMoneyK(semSummary.gap)} · ${semSummary.pctTotal}%)`;
 
     renderMonthlyTable(forecastMonths);
     renderTendencia(semSummary.fcTotal);
@@ -8978,7 +9385,7 @@ function renderAccuracy() {
     renderScorecard();       // scorecard por owner (en Foco)
     renderWoW();             // movimientos de la semana (en Foco)
     renderCohortes();        // cohortes + razones de pérdida (en Embudo)
-    renderAccuracy();        // precisión del forecast (en Reforecast)
+    // renderAccuracy() removida (2026-07-31): German pidió quitar 🎯 Precisión del forecast
 
     // Previews adicionales
     const fcTotal = semSummary.fcTotal;
