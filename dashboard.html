@@ -5649,11 +5649,11 @@ function targetKpiCard(label, n, color) {
 }
 // ── Filtros por columna en Cuentas Target (estado de sesión, no persiste) ──
 function targetFilters() {
-  if (!window.__targetFilters) window.__targetFilters = { nombre: "", contacto: "", listado: "", partner: "", next: "" };
+  if (!window.__targetFilters) window.__targetFilters = { nombre: "", detalle: "", contacto: "", listado: "", partner: "", next: "" };
   return window.__targetFilters;
 }
 function targetFilterSet(k, v) { targetFilters()[k] = v; renderTarget(); }
-function clearTargetFilters() { window.__targetFilters = null; msfClearUids(["t-estado"]); renderTarget(); }
+function clearTargetFilters() { window.__targetFilters = null; msfClearUids(["t-estado", "t-fuente"]); renderTarget(); }
 function renderTarget() {
   const kEl = document.getElementById("target-kpis"), tEl = document.getElementById("target-tabs"), bEl = document.getElementById("target-body");
   if (!bEl) return;
@@ -5687,12 +5687,14 @@ function renderTarget() {
   const rows = [];
   rowsAll.forEach(t => {
     if (TF.nombre && tfl(t.nombre).indexOf(tfl(TF.nombre)) === -1) return;
+    if (!msfMatch("t-fuente", t.fuente || "")) return;
+    if (TF.detalle && tfl(t.detallePartner).indexOf(tfl(TF.detalle)) === -1) return;
     const shown = (t.contactos || []).filter(cMatch);
     if (!shown.length && cFilterOn) return;
     rows.push({ t: t, shown: shown });
   });
   const nCShown = rows.reduce((a, r) => a + r.shown.length, 0);
-  const tfActive = Object.keys(TF).some(k => TF[k]) || msfSel("t-estado").length > 0;
+  const tfActive = Object.keys(TF).some(k => TF[k]) || msfSel("t-estado").length > 0 || msfSel("t-fuente").length > 0;
   let h = '<div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:8px; align-items:center;">' +
     '<button onclick="targetCsvTemplate()" style="padding:7px 12px; border:1px solid #C7BDFF; border-radius:8px; background:#F1EFFF; color:#4030C8; cursor:pointer; font-size:12.5px; font-weight:700;">⬇ Plantilla CSV</button>' +
     '<label style="padding:7px 12px; border:1px solid #C7BDFF; border-radius:8px; background:#F1EFFF; color:#4030C8; cursor:pointer; font-size:12.5px; font-weight:700;">⬆ Importar CSV<input type="file" accept=".csv,.txt,.tsv" style="display:none;" onchange="targetImportFile(this)"></label>' +
@@ -5714,6 +5716,8 @@ function renderTarget() {
     const nCTotal = rowsAll.reduce((a, t) => a + (t.contactos || []).length, 0);
     const filaFiltros = '<tr style="background:#fafafa;">' +
       '<td style="padding:4px 6px;">' + tfInp("nombre", "filtrar…") + '</td>' +
+      '<td style="padding:4px 6px;">' + msfBtn("t-fuente", [{ v: "", l: "— sin fuente" }].concat(LEAD_SOURCE_OPTS.map(o => ({ v: o.v, l: o.l }))), "renderTarget", { live: false }) + '</td>' +
+      '<td style="padding:4px 6px;">' + tfInp("detalle", "filtrar…") + '</td>' +
       '<td style="padding:4px 6px;">' + tfInp("contacto", "filtrar…") + '</td>' +
       '<td style="padding:4px 6px;"></td>' +
       '<td style="padding:4px 6px;">' + tfInp("listado", "filtrar…") + '</td>' +
@@ -5723,32 +5727,34 @@ function renderTarget() {
       '<td style="padding:4px 6px;">' + tfInp("next", "filtrar…") + '</td>' +
       '<td style="padding:4px 6px; white-space:nowrap;"><button onclick="clearTargetFilters()" title="Limpiar filtros" style="padding:3px 8px; border:1px solid #d1d5db; border-radius:5px; background:#fff; cursor:pointer; font-size:11px;">✕</button>' +
         (tfActive ? ' <span style="font-size:10.5px; color:#4030C8; font-weight:700;">' + nCShown + ' de ' + nCTotal + '</span>' : '') + '</td></tr>';
-    h += '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:12.5px; background:#fff; min-width:1300px;">' +
+    h += '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:12.5px; background:#fff; min-width:1500px;">' +
       '<thead><tr style="background:#fafafa; text-align:left;">' +
-      ['Empresa / Marca', 'Contacto', 'HubSpot', 'Listado', 'Partner', 'Estado', 'Canal · Últ. toque', 'Ticket / siguiente paso', 'Acciones'].map(c => '<th style="padding:8px; border-bottom:2px solid #e5e7eb; font-size:11px; text-transform:uppercase; color:#6b7280;">' + c + '</th>').join("") +
+      ['Empresa / Marca', 'Fuente', 'Detalle fuente', 'Contacto', 'HubSpot', 'Listado', 'Partner', 'Estado', 'Canal · Últ. toque', 'Ticket / siguiente paso', 'Acciones'].map(c => '<th style="padding:8px; border-bottom:2px solid #e5e7eb; font-size:11px; text-transform:uppercase; color:#6b7280;">' + c + '</th>').join("") +
       '</tr>' + filaFiltros + '</thead><tbody>';
-    if (!rows.length) h += '<tr><td colspan="9" style="padding:14px; font-size:12.5px; color:#9ca3af; font-style:italic;">Sin cuentas para este filtro.</td></tr>';
+    if (!rows.length) h += '<tr><td colspan="11" style="padding:14px; font-size:12.5px; color:#9ca3af; font-style:italic;">Sin cuentas para este filtro.</td></tr>';
     rows.forEach(r => {
       const t = r.t, shown = r.shown;
       const eiEmp = targetCEstadoInfo(targetEmpresaEstado(t));
       const accion = t.dealId
         ? '<a href="' + HUBSPOT_DEAL(t.dealId) + '" target="_blank" rel="noopener" style="display:inline-block; padding:3px 8px; border-radius:6px; background:#ecfdf5; border:1px solid #6EE7B7; color:#047857; font-size:11px; font-weight:700; text-decoration:none;">✓ Deal #' + escAttr(String(t.dealId)) + ' ↗</a>'
         : '<button onclick="targetDealModal(\'' + t.id + '\')" style="padding:3px 8px; border:1px solid #C7BDFF; border-radius:6px; background:#F1EFFF; color:#4030C8; cursor:pointer; font-size:11px; font-weight:700;">⚡ Crear Deal</button>';
-      const empCell = '<td rowspan="' + Math.max(1, shown.length * 2) + '" style="padding:8px; vertical-align:top; border-bottom:2px solid #e5e7eb; min-width:190px; background:#fcfcff;">' +
+      const rsp = Math.max(1, shown.length * 2);
+      const empCell = '<td rowspan="' + rsp + '" style="padding:8px; vertical-align:top; border-bottom:2px solid #e5e7eb; min-width:190px; background:#fcfcff;">' +
         '<div style="font-weight:800; color:#111827;">' + escAttr(t.nombre) + '</div>' +
         (t.industria ? '<div style="font-size:11px; color:#6b7280;">' + escAttr(t.industria) + '</div>' : '') +
         '<div style="margin-top:4px;"><span style="display:inline-block; padding:2px 7px; border-radius:6px; font-size:10.5px; font-weight:700; border:1px solid ' + eiEmp.c + '; background:' + eiEmp.bg + '; color:' + eiEmp.c + ';">' + eiEmp.l + '</span></div>' +
         '<div style="margin-top:6px;">' + accion + '</div>' +
-        '<div style="margin-top:6px;"><select onchange="targetEdit(\'' + t.id + '\', \'fuente\', this.value)" title="Fuente (lead_source)" style="max-width:170px; padding:3px 5px; font-size:11px; border:1px solid #d1d5db; border-radius:5px; background:#fff;">' + leadSourceOptions(t.fuente || "") + '</select></div>' +
-        '<div style="margin-top:4px;">' + (detalleFuenteEnabled(t.fuente)
-          ? '<select onchange="targetEdit(\'' + t.id + '\', \'detallePartner\', this.value)" title="Detalle partner" style="max-width:170px; padding:3px 5px; font-size:11px; border:1px solid #d1d5db; border-radius:5px; background:#fff;">' + partnerActiveOptions(t.detallePartner || "") + '</select>'
-          : '<select disabled title="Elegí una fuente PR para cargar el detalle" style="max-width:170px; padding:3px 5px; font-size:11px; border:1px solid #d1d5db; border-radius:5px; background:#f3f4f6; color:#9ca3af;"><option value="">— sin detalle</option></select>') + '</div>' +
         '<div style="margin-top:6px; white-space:nowrap;">' +
         '<button onclick="targetAddContact(\'' + t.id + '\')" title="Agregar contacto" style="padding:2px 8px; border:1px solid #C7BDFF; border-radius:6px; background:#F1EFFF; color:#4030C8; cursor:pointer; font-size:11px; font-weight:700;">＋ contacto</button>' +
         ' <button onclick="targetEditRow(\'' + t.id + '\')" title="Editar empresa" style="background:none; border:none; cursor:pointer; font-size:13px;">✏️</button>' +
         '<button onclick="targetRemove(\'' + t.id + '\')" title="Eliminar empresa" style="background:none; border:none; cursor:pointer; font-size:13px; color:#b91c1c;">🗑️</button></div></td>';
+      const fuenteCell = '<td rowspan="' + rsp + '" style="padding:8px; vertical-align:top; border-bottom:2px solid #e5e7eb; background:#fcfcff;">' +
+        '<select onchange="targetEdit(\'' + t.id + '\', \'fuente\', this.value)" title="Fuente (lead_source)" style="max-width:150px; padding:3px 5px; font-size:11px; border:1px solid #d1d5db; border-radius:5px; background:#fff;">' + leadSourceOptions(t.fuente || "") + '</select></td>';
+      const detalleCell = '<td rowspan="' + rsp + '" style="padding:8px; vertical-align:top; border-bottom:2px solid #e5e7eb; background:#fcfcff;">' + (detalleFuenteEnabled(t.fuente)
+          ? '<select onchange="targetEdit(\'' + t.id + '\', \'detallePartner\', this.value)" title="Detalle partner" style="max-width:150px; padding:3px 5px; font-size:11px; border:1px solid #d1d5db; border-radius:5px; background:#fff;">' + partnerActiveOptions(t.detallePartner || "") + '</select>'
+          : '<select disabled title="Elegí una fuente PR para cargar el detalle" style="max-width:150px; padding:3px 5px; font-size:11px; border:1px solid #d1d5db; border-radius:5px; background:#f3f4f6; color:#9ca3af;"><option value="">— sin detalle</option></select>') + '</td>';
       if (!shown.length) {
-        h += '<tr style="border-bottom:2px solid #e5e7eb;">' + empCell +
+        h += '<tr style="border-bottom:2px solid #e5e7eb;">' + empCell + fuenteCell + detalleCell +
           '<td colspan="8" style="padding:10px; font-size:12px; color:#9ca3af; font-style:italic; border-bottom:2px solid #e5e7eb;">Sin contactos — usá ＋ contacto.</td></tr>';
         return;
       }
@@ -5765,7 +5771,7 @@ function renderTarget() {
           : (c.email
             ? '<button onclick="targetSyncContact(\'' + cid + '\')" style="padding:2px 7px; border:1px solid #C7BDFF; border-radius:6px; background:#F1EFFF; color:#4030C8; cursor:pointer; font-size:10.5px; font-weight:700;">⟳ sync</button>'
             : '<span style="font-size:10.5px; color:#9ca3af;" title="Cargale un email para sincronizar">⏳ sin email</span>');
-        h += '<tr style="' + bb + ' vertical-align:top;">' + (ci === 0 ? empCell : '') +
+        h += '<tr style="' + bb + ' vertical-align:top;">' + (ci === 0 ? empCell + fuenteCell + detalleCell : '') +
           '<td style="padding:8px; min-width:150px;"><b>' + (escAttr(c.nombre || "") || '<span style="color:#9ca3af;">—</span>') + '</b>' + frio +
             (c.rol ? '<br><span style="color:#6b7280; font-size:11px;">' + escAttr(c.rol) + '</span>' : '') + mailC + linkC + '</td>' +
           '<td style="padding:8px; white-space:nowrap;">' + hsCell + ' <span id="chs-' + cid + '" class="fc-status" style="font-size:10.5px;"></span></td>' +
