@@ -7416,7 +7416,7 @@ function renderDaily(deals) {
       cell: (p, id) => { const v = dailyFactMes(p, 1); return `<td style="text-align:right; background:#eef2ff;" title="${factCellTitle()}">${v ? fmtMoneyK(v) : '<span style="color:#9ca3af;">—</span>'}</td>`; } },
     next: { label: "Siguiente paso", align: "",
       filter: `<th style="padding:4px 6px;"><input id="flt-next" value="${escAttr(f.next)}" oninput="filterDailyRows()" placeholder="filtrar" style="${fInS}"></th>`,
-      cell: (p, id) => `<td style="max-width:280px;"><div style="display:flex; align-items:center; gap:6px;"><span ${p.hs_next_step ? `title="${escAttr(p.hs_next_step)}"` : ""} style="flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; ${p.hs_next_step ? "cursor:help;" : "color:#9ca3af;"}">${p.hs_next_step ? escAttr(p.hs_next_step) : "— sin ticket"}</span>${p.hs_next_step ? `<span style="flex:0 0 auto; display:flex; gap:4px;"><button onclick="dailyDone('${id}')" title="Hecho: cerrar el ticket y vaciar el siguiente paso" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #a7f3d0; color:#047857; border-radius:5px; background:#ecfdf5;">✓</button><button onclick="dailyDefer('${id}')" title="Baja: cerrar el ticket y vaciar el siguiente paso" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #fecaca; color:#b91c1c; border-radius:5px; background:#fef2f2;">✗</button><button onclick="dailyEditTask('${id}')" title="Editar el ticket" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #d1d5db; color:#6b7280; border-radius:5px; background:white;">✎</button></span>` : ""}</div></td>` },
+      cell: (p, id) => `<td style="max-width:280px;"><div id="nxwrap-${id}" style="display:flex; align-items:center; gap:6px;"><span ${p.hs_next_step ? `title="${escAttr(p.hs_next_step)}"` : ""} style="flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; ${p.hs_next_step ? "cursor:help;" : "color:#9ca3af;"}">${p.hs_next_step ? escAttr(p.hs_next_step) : "— sin ticket"}</span>${p.hs_next_step ? `<span style="flex:0 0 auto; display:flex; gap:4px;"><button onclick="dailyDone('${id}')" title="Hecho: cerrar el ticket y vaciar el siguiente paso" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #a7f3d0; color:#047857; border-radius:5px; background:#ecfdf5;">✓</button><button onclick="dailyDefer('${id}')" title="Baja: cerrar el ticket y vaciar el siguiente paso" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #fecaca; color:#b91c1c; border-radius:5px; background:#fef2f2;">✗</button><button onclick="dailyEditTask('${id}')" title="Editar el ticket" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #d1d5db; color:#6b7280; border-radius:5px; background:white;">✎</button></span>` : ""}</div></td>` },
     tarea: { label: "Ticket", align: "text-align:center;", nosort: true,
       filter: `<th></th>`,
       cell: (p, id) => `<td style="text-align:center;"><button onclick="toggleDailyTask('${id}')" title="Crear ticket / siguiente paso" style="padding:3px 9px; font-size:13px; cursor:pointer; border:1px solid #d1d5db; border-radius:5px; background:white;">+</button></td>` }
@@ -7482,6 +7482,7 @@ function renderDaily(deals) {
   document.getElementById("daily-tabla").innerHTML = html;
   filterDailyRows();
   rows.forEach(d => { if (getDealCompany(d.id) === undefined) resolveDealCompany(d.id).then(() => genCoHydrate(d.id)); });
+  rows.forEach(d => { const p = d.properties || {}; if (!p.hs_next_step) dailyTicketResolve(d.id); });
 }
 
 function toggleDailyTask(id) {
@@ -7566,6 +7567,25 @@ async function dailyFetchOpenTickets(id) {
   const parsed = typeof res === "string" ? JSON.parse(res) : res;
   return parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
 }
+// Tickets creados directo en HubSpot (sin hs_next_step en el deal): hidratación async post-render
+window.__dealTicketCache = window.__dealTicketCache || {}; // dealId -> null | {id, subject, due}
+async function dailyTicketResolve(id) {
+  if (window.__dealTicketCache[id] !== undefined) { dailyTicketPaint(id); return; }
+  try {
+    const tickets = await dailyFetchOpenTickets(id);
+    const t = (tickets || []).find(x => !(((x.properties && x.properties.subject) || "").indexOf("🐞") === 0));
+    window.__dealTicketCache[id] = t ? { id: String(t.id), subject: (t.properties.subject || ""), due: (t.properties.fecha_vencimiento || "") } : null;
+  } catch (e) { window.__dealTicketCache[id] = null; }
+  dailyTicketPaint(id);
+}
+function dailyTicketPaint(id) {
+  const t = window.__dealTicketCache[id];
+  if (!t) return;
+  const el = document.getElementById("nxwrap-" + id);
+  if (!el) return;
+  const due = t.due ? ` <span class="small" style="color:#6b7280;">· vence ${fmtFV(t.due)}</span>` : "";
+  el.innerHTML = `<span title="${escAttr(t.subject)} — ticket abierto en HubSpot" style="flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; cursor:help;"><a href="https://app.hubspot.com/contacts/${ACCOUNT_ID}/record/0-5/${t.id}" target="_blank" style="text-decoration:none;">🎫</a> ${escAttr(t.subject)}${due}</span><span style="flex:0 0 auto; display:flex; gap:4px;"><button onclick="dailyDone('${id}')" title="Hecho: cerrar el ticket y vaciar el siguiente paso" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #a7f3d0; color:#047857; border-radius:5px; background:#ecfdf5;">✓</button><button onclick="dailyDefer('${id}')" title="Baja: cerrar el ticket y vaciar el siguiente paso" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #fecaca; color:#b91c1c; border-radius:5px; background:#fef2f2;">✗</button><button onclick="dailyEditTask('${id}')" title="Editar el ticket" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #d1d5db; color:#6b7280; border-radius:5px; background:white;">✎</button></span>`;
+}
 async function dailyCreateTask(id) {
   const subj = document.getElementById("tk-subj-" + id).value.trim();
   const owner = document.getElementById("tk-owner-" + id).value;
@@ -7587,6 +7607,7 @@ async function dailyCreateTask(id) {
     }
     await hsWrite({ updateRequest: { objects: [{ objectType: "deals", objectId: Number(id), properties: { hs_next_step: subj } }] } });
     st.textContent = "✓ guardado";
+    try { delete window.__dealTicketCache[id]; } catch (e2) {}
     await reloadDaily();
   } catch (e) { st.classList.add("err"); st.textContent = "Error al guardar"; }
 }
@@ -7640,6 +7661,7 @@ async function dailyDone(id) {
     await hsWrite({ updateRequest: { objects: [{ objectType: "deals", objectId: Number(id), properties: { hs_next_step: "" } }] } });
     // Best-effort: cerrar tickets asociados (no debe romper la acción principal)
     await dailyCloseTicketsQuiet(id);
+    try { delete window.__dealTicketCache[id]; } catch (e2) {}
     if (st) st.textContent = "✓ hecho";
     await reloadDaily();
   } catch (e) { if (st) { st.classList.add("err"); st.textContent = "error"; } console.warn("dailyDone falló", id, e); }
@@ -7651,6 +7673,7 @@ async function dailyDefer(id) {
   try {
     await hsWrite({ updateRequest: { objects: [{ objectType: "deals", objectId: Number(id), properties: { hs_next_step: "" } }] } });
     await dailyCloseTicketsQuiet(id);
+    try { delete window.__dealTicketCache[id]; } catch (e2) {}
     if (st) st.textContent = "✓ dada de baja";
     await reloadDaily();
   } catch (e) { if (st) { st.classList.add("err"); st.textContent = "error"; } console.warn("dailyDefer falló", id, e); }
@@ -7975,6 +7998,52 @@ function setHiddenTareas(set) { try { localStorage.setItem("tareas_hidden", JSON
 function tareaHide(id) { const s = getHiddenTareas(); s.add(String(id)); setHiddenTareas(s); renderTareas(); try { if (typeof renderScorecard === "function") renderScorecard(); } catch (e) {} }
 function tareaUnhide(id) { const s = getHiddenTareas(); s.delete(String(id)); setHiddenTareas(s); renderTareas(); }
 function toggleTareasMode() { window.__tareasMode = (window.__tareasMode === "ocultas") ? "activas" : "ocultas"; renderTareas(); }
+function tareasUnhideAll() {
+  const n = getHiddenTareas().size;
+  if (!n) return;
+  if (!confirm(`¿Restaurar las ${n} tareas ocultas? Volverán a verse como activas en el dashboard.`)) return;
+  setHiddenTareas(new Set());
+  window.__tareasMode = "activas";
+  renderTareas();
+}
+// Selección múltiple de tickets para cierre masivo en HubSpot (activas y ocultas)
+window.__tareasSel = window.__tareasSel || new Set();
+function tareasSelToggle(id, on) { const s = window.__tareasSel; if (on) s.add(String(id)); else s.delete(String(id)); tareasSelPaint(); }
+function tareasSelAll(on) {
+  const s = window.__tareasSel;
+  (window.__tareasRendered || []).forEach(id => { if (on) s.add(String(id)); else s.delete(String(id)); const cb = document.getElementById("tsel-" + id); if (cb) cb.checked = on; });
+  tareasSelPaint();
+}
+function tareasSelPaint() {
+  const n = window.__tareasSel.size;
+  const b = document.getElementById("tareas-close-sel");
+  if (b) { b.style.display = n ? "" : "none"; b.disabled = false; b.textContent = `✓ Cerrar seleccionadas (${n})`; }
+}
+async function tareasCloseSel() {
+  const ids = [...window.__tareasSel];
+  if (!ids.length) return;
+  if (!confirm(`¿Cerrar ${ids.length} ticket(s) en HubSpot?\n\nQuedan cerrados allá (no es solo ocultar).`)) return;
+  const b = document.getElementById("tareas-close-sel");
+  if (b) { b.disabled = true; b.textContent = "cerrando…"; }
+  try {
+    for (let i = 0; i < ids.length; i += 50) {
+      const chunk = ids.slice(i, i + 50);
+      await hsWrite({ updateRequest: { objects: chunk.map(id => ({ objectType: "tickets", objectId: Number(id), properties: { hs_pipeline_stage: "4" } })) } });
+      if (b) b.textContent = `cerrando… ${Math.min(i + 50, ids.length)}/${ids.length}`;
+    }
+    const closed = new Set(ids.map(String));
+    window.__tareasData = (window.__tareasData || []).filter(t => !closed.has(String(t.id)));
+    const hid = getHiddenTareas(); let touched = false;
+    closed.forEach(id => { if (hid.has(id)) { hid.delete(id); touched = true; } });
+    if (touched) setHiddenTareas(hid);
+    window.__tareasSel = new Set();
+    renderTareas();
+    try { if (typeof renderScorecard === "function") renderScorecard(); refreshFocoSug(); } catch (e) {}
+  } catch (e) {
+    alert("Error cerrando tickets: " + String(e.message || e).slice(0, 200));
+    renderTareas();
+  }
+}
 function clearTareasFilters() { window.__tareasFilter = { owner: "", estado: "", tarea: "", deal: "", vence: "", q: "" }; msfClearUids(["ta-owner", "ta-estado"]); renderTareas(); }
 function getSlackSent() { try { return JSON.parse(localStorage.getItem("tarea_slack_sent") || "{}"); } catch (e) { return {}; } }
 function setSlackSent(map) { try { localStorage.setItem("tarea_slack_sent", JSON.stringify(map)); } catch (e) {} }
@@ -7986,22 +8055,22 @@ async function loadTareas() {
   if (cont) cont.innerHTML = '<div class="loading">Cargando tareas…</div>';
   try {
     const all = []; let offset = 0;
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 10; i++) {
       const res = await mcpCall("mcp__aaaa9eed-76e4-4bc8-a1a2-fad976f54ccb__search_crm_objects", {
         objectType: "tickets",
         filterGroups: [{ filters: [
           { propertyName: "hs_pipeline_stage", operator: "NEQ", value: "4" }
         ] }],
-        properties: ["subject", "hs_pipeline_stage", "fecha_vencimiento", "hubspot_owner_id", "hs_lastmodifieddate"],
-        sorts: [{ propertyName: "fecha_vencimiento", direction: "ASCENDING" }],
-        limit: 100, offset,
+        properties: ["subject", "hs_pipeline_stage", "fecha_vencimiento", "hubspot_owner_id", "hs_lastmodifieddate", "hs_createdate"],
+        sorts: [{ propertyName: "hs_createdate", direction: "DESCENDING" }],
+        limit: 200, offset,
         chatInsights: { userIntent: "Vista Tareas: todos los tickets abiertos de HubSpot", satisfaction: "NEUTRAL" }
       });
       const parsed = typeof res === "string" ? JSON.parse(res) : res;
       const r = parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
       all.push(...r);
-      if (r.length < 100) break;
-      offset += 100;
+      if (r.length < 200) break;
+      offset += 200;
     }
     window.__tareasData = all;
     renderTareas();
@@ -8169,14 +8238,16 @@ function renderTareas() {
     <label style="font-size:12px; color:#555;">Estado <select onchange="window.__tareasFilter.estado=this.value; renderTareas();" style="padding:4px 8px; border:1px solid #d1d5db; border-radius:5px; font-size:12px;">${estadoOpts}</select></label>
     <input type="text" value="${escAttr(f.q || "")}" onchange="window.__tareasFilter.q=this.value; renderTareas();" placeholder="🔎 Tarea o deal… (Enter)" style="padding:6px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:12px; min-width:200px;">
     <button class="fc-btn secondary" onclick="toggleTareasMode()" style="font-size:12px;">${modo === "ocultas" ? "← Volver a activas" : `🙈 Ver ocultas (${nHid})`}</button>
+    <button id="tareas-close-sel" onclick="tareasCloseSel()" style="display:none; font-size:12px; padding:5px 12px; border:1px solid #FCA5A5; background:#FEF2F2; color:#b91c1c; border-radius:6px; cursor:pointer; font-weight:600;">✓ Cerrar seleccionadas (0)</button>
     <span class="small">${rows.length} de ${modo === "ocultas" ? nHid : activas.length} · <span style="color:#b91c1c;">${venc} vencidas</span> · <span style="color:#b45309;">${prox} por vencer</span></span>
   </div>`;
-  if (modo === "ocultas") html += `<div class="small" style="margin-bottom:8px; padding:6px 10px; background:#fef3c7; border:1px solid #fcd34d; border-radius:6px;">🙈 Estás viendo las tareas <strong>ocultas</strong> del dashboard (siguen abiertas en HubSpot). Usá 👁 para restaurarlas.</div>`;
+  if (modo === "ocultas") html += `<div class="small" style="margin-bottom:8px; padding:6px 10px; background:#fef3c7; border:1px solid #fcd34d; border-radius:6px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;"><span>🙈 Estás viendo las tareas <strong>ocultas</strong> del dashboard (siguen abiertas en HubSpot). Usá 👁 para restaurarlas.</span><button class="fc-btn secondary" onclick="tareasUnhideAll()" style="font-size:12px;">👁 Restaurar todas (${nHid})</button></div>`;
   const sentMap = getSlackSent();
   const ftIn = (key, ph) => `<input type="text" value="${escAttr(f[key] || "")}" onchange="window.__tareasFilter.${key}=this.value; renderTareas();" placeholder="${ph}" style="width:95%; box-sizing:border-box; padding:3px 6px; border:1px solid #d1d5db; border-radius:5px; font-size:11px; font-weight:400;">`;
   html += `<div style="overflow-x:auto; border:1px solid #e5e5e5; border-radius:8px;"><table class="std" style="white-space:nowrap;"><thead><tr>
-    <th>Tarea</th><th>Deal</th><th>Owner</th><th>Vence</th><th>Estado</th><th style="text-align:center;">Seguimiento</th><th style="text-align:center;">Acciones</th>
+    <th style="width:28px; text-align:center;"><input type="checkbox" onchange="tareasSelAll(this.checked)" title="Seleccionar todas las visibles"></th><th>Tarea</th><th>Deal</th><th>Owner</th><th>Vence</th><th>Estado</th><th style="text-align:center;">Seguimiento</th><th style="text-align:center;">Acciones</th>
   </tr><tr style="background:#fafafa;">
+    <th style="padding:4px 6px;"></th>
     <th style="padding:4px 6px;">${ftIn("tarea", "filtrar…")}</th>
     <th style="padding:4px 6px;">${ftIn("deal", "filtrar…")}</th>
     <th style="padding:4px 6px;">${msfBtn("ta-owner", DAILY_OWNERS.map(o => ({ v: o.id, l: o.name })), "renderTareas", { live: false })}</th>
@@ -8185,7 +8256,8 @@ function renderTareas() {
     <th style="padding:4px 6px;"></th>
     <th style="padding:4px 6px; text-align:center;"><button title="Limpiar filtros" onclick="clearTareasFilters()" style="padding:2px 8px; font-size:11px; border:1px solid #d1d5db; background:#fff; border-radius:5px; cursor:pointer;">✕</button></th>
   </tr></thead><tbody>`;
-  if (!rows.length) html += `<tr><td colspan="7" class="empty">${modo === "ocultas" ? "No hay tareas ocultas." : "Sin tareas para el filtro."}</td></tr>`;
+  if (!rows.length) html += `<tr><td colspan="8" class="empty">${modo === "ocultas" ? "No hay tareas ocultas." : "Sin tareas para el filtro."}</td></tr>`;
+  window.__tareasRendered = rows.map(t => String(t.id));
   rows.forEach(t => {
     const p = t.properties; const id = t.id;
     const est = tareaEstado(p.fecha_vencimiento);
@@ -8196,6 +8268,7 @@ function renderTareas() {
       ? `<button title="Restaurar al dashboard" onclick="tareaUnhide('${id}')" style="padding:3px 8px; font-size:12px; border:1px solid #d1d5db; background:#fff; border-radius:5px; cursor:pointer;">👁</button>`
       : `<button title="Ocultar del dashboard (no toca HubSpot)" onclick="tareaHide('${id}')" style="padding:3px 8px; font-size:12px; border:1px solid #d1d5db; background:#fff; border-radius:5px; cursor:pointer;">🙈</button>`;
     html += `<tr style="background:${est.bg};">
+      <td style="text-align:center;"><input type="checkbox" id="tsel-${id}" ${window.__tareasSel.has(String(id)) ? "checked" : ""} onchange="tareasSelToggle('${id}', this.checked)"></td>
       <td style="font-weight:500; max-width:280px; white-space:normal;"><a href="https://app.hubspot.com/contacts/${ACCOUNT_ID}/record/0-5/${id}" target="_blank">${p.subject || "(sin asunto)"}</a></td>
       <td id="tdeal-${id}" style="max-width:200px; white-space:normal; color:#4030C8;">${dealName === undefined ? '<span class="small" style="color:#9ca3af;">…</span>' : (dealName || "—")}</td>
       <td>${owner ? owner.name : "—"}</td>
@@ -8212,8 +8285,9 @@ function renderTareas() {
   });
   html += `</tbody></table></div>
     <div class="small" style="margin-top:8px; font-style:italic;">"Slack" arma un <strong>borrador</strong> de seguimiento al owner en Slack (no lo envía; lo revisás y mandás vos). Disponible dentro de Cowork.<br>
-    Acciones: <strong>✓</strong> cierra el ticket en HubSpot · <strong>✏️</strong> edita asunto/vencimiento · <strong>🙈</strong> oculta del dashboard (no toca HubSpot).</div>`;
+    Acciones: <strong>✓</strong> cierra el ticket en HubSpot · <strong>✏️</strong> edita asunto/vencimiento · <strong>🙈</strong> oculta del dashboard (no toca HubSpot). Tildá varias casillas y usá <strong>✓ Cerrar seleccionadas</strong> para cerrarlas juntas en HubSpot.</div>`;
   cont.innerHTML = html;
+  tareasSelPaint();
 }
 
 function tareaFVDate(fv) {
