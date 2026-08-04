@@ -2752,6 +2752,22 @@ async function genAsociarBuscar(id) {
     box.innerHTML = `<div class="small" style="color:#b91c1c;">Error al buscar: ${escAttr(e && e.message ? e.message : String(e))}</div>`;
   }
 }
+// HubSpot rechaza un updateRequest con properties vacío, aunque la intención sea SOLO asociar.
+// Por eso necesitamos el dealname actual para mandarlo como escritura no-op.
+async function genFetchDealName(id) {
+  try {
+    const res = await withTimeout(mcpCall("mcp__aaaa9eed-76e4-4bc8-a1a2-fad976f54ccb__search_crm_objects", {
+      objectType: "deals",
+      properties: ["dealname"],
+      filterGroups: [{ filters: [{ propertyName: "hs_object_id", operator: "EQ", value: String(id) }] }],
+      limit: 1,
+      chatInsights: { userIntent: "Daily Comercial: leer nombre del deal para asociar empresa", satisfaction: "NEUTRAL" }
+    }), 15000);
+    const parsed = typeof res === "string" ? JSON.parse(res) : res;
+    const rs = parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
+    return (rs[0] && rs[0].properties && rs[0].properties.dealname) || "";
+  } catch (e) { return ""; }
+}
 async function genAsociarConfirmar(id, idx) {
   const c = (window.__genAsoResults || [])[idx];
   if (!c) return;
@@ -2761,7 +2777,12 @@ async function genAsociarConfirmar(id, idx) {
   const box = document.getElementById("gen-aso-res");
   if (box) box.innerHTML = `<div class="small" style="color:#777;">Asociando…</div>`;
   try {
-    await hsWrite({ updateRequest: { objects: [{ objectType: "deals", objectId: Number(id), associations: [{ targetObjectType: "companies", targetObjectId: Number(companyId) }] }] } });
+    let dn = "";
+    const dRef = (typeof genFindDeal === "function") ? genFindDeal(id) : null;
+    if (dRef && dRef.properties) dn = dRef.properties.dealname || "";
+    if (!dn) dn = await genFetchDealName(id);
+    const props = dn ? { dealname: String(dn) } : { hs_next_step: (dRef && dRef.properties && dRef.properties.hs_next_step) || "" };
+    await hsWrite({ updateRequest: { objects: [{ objectType: "deals", objectId: Number(id), properties: props, associations: [{ targetObjectType: "companies", targetObjectId: Number(companyId) }] }] } });
     setDealCompany(id, { companyId: companyId, name: nm, lifecyclestage: lc });
     closeGenAsociar();
     genCoHydrate(id);
@@ -4887,6 +4908,20 @@ function metasWeighted(d) {
 }
 function metasMensual(d) {
   return dealMonthlyAmount(d, 0);
+}
+// Cuota bruta del deal que FACTURA en el mes mKey ("YYYY-MM") — offset desde el mes de cierre.
+// Mismo motor que la columna "Fact. [mes]" de Foco (dailyFactMes): respeta plan_de_pagos y devuelve 0 fuera de ventana.
+function metasCuotaEnMes(d, mKey) {
+  const p = (d && d.properties) || {}; if (!p.closedate) return 0;
+  const cd = new Date(p.closedate);
+  const parts = String(mKey).split("-");
+  const off = (Number(parts[0]) - cd.getFullYear()) * 12 + (Number(parts[1]) - 1 - cd.getMonth());
+  if (off < 0) return 0;
+  return dealMonthlyAmount(d, off);
+}
+function metasCuotaEnMesPond(d, mKey) {
+  const p = (d && d.properties) || {};
+  return metasCuotaEnMes(d, mKey) * getProbability(p.dealstage, p.hs_deal_stage_probability);
 }
 function metasHint(d) {
   const p = d.properties || {}; const now = new Date();
@@ -9084,18 +9119,16 @@ function goalStripBlock(offset, compact) {
   const mesLabel = d.toLocaleDateString("es-AR", { month: "long", year: "numeric" });
   const mesCorto = mesLabel.split(" ")[0];
 
-  // Capas del puente: deals abiertos con cierre en el mes, separados Foco vs Generación
+  // Capas del puente: deals abiertos con CUOTA que factura en el mes (mismo motor que la columna Fact. de Foco),
+  // no solo los que cierran en el mes — un deal cerrado en ago con 7 meses aporta su cuota de sep. (2026-08-03)
   const openAll = (window.__dailyOpen || []);
-  const mesDeals = openAll.filter(dd => {
-    const cd = dd.properties.closedate; if (!cd) return false;
-    const dt = new Date(cd); return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}` === mKey;
-  });
-  const focoDeals = mesDeals.filter(dd => !GEN_STAGE_IDS.includes(dd.properties.dealstage)).sort((a, b) => metasWeighted(b) - metasWeighted(a));
+  const mesDeals = openAll.filter(dd => metasCuotaEnMes(dd, mKey) > 0);
+  const focoDeals = mesDeals.filter(dd => !GEN_STAGE_IDS.includes(dd.properties.dealstage)).sort((a, b) => metasCuotaEnMesPond(b, mKey) - metasCuotaEnMesPond(a, mKey));
   const genDeals = mesDeals.filter(dd => GEN_STAGE_IDS.includes(dd.properties.dealstage));
   // Toggle pond./100%: "Hay que cerrar" (capa Foco) se puede ver ponderada o a valor completo
   const gsPond = window.__gsPond !== false;
-  const focoPond = focoDeals.reduce((s, dd) => s + (gsPond ? metasWeighted(dd) : metasMensual(dd)), 0);
-  const genPond = genDeals.reduce((s, dd) => s + metasWeighted(dd), 0);
+  const focoPond = focoDeals.reduce((s, dd) => s + (gsPond ? metasCuotaEnMesPond(dd, mKey) : metasCuotaEnMes(dd, mKey)), 0);
+  const genPond = genDeals.reduce((s, dd) => s + metasCuotaEnMesPond(dd, mKey), 0);
   const hueco = Math.max(0, meta - real - focoPond - genPond);
   const gapEjec = Math.max(0, meta - real);
   const ritmo = isNow && diasRest > 0 ? gapEjec / diasRest : 0;
@@ -9113,11 +9146,11 @@ function goalStripBlock(offset, compact) {
 
   // Tramo 1 — Convertir ámbar → verde (cerrar): top 3 deals del mes por ponderado
   const t1list = focoDeals.slice(0, 3).map(dd =>
-    `<li><a href="${HUBSPOT_DEAL(dd.id)}" target="_blank" rel="noopener">${dd.properties.dealname || "(sin nombre)"}</a> <b>${fmtMoneyK(metasMensual(dd))}</b> <span class="gsb-hint">${metasHint(dd)}</span></li>`
+    `<li><a href="${HUBSPOT_DEAL(dd.id)}" target="_blank" rel="noopener">${dd.properties.dealname || "(sin nombre)"}</a> <b>${fmtMoneyK(metasCuotaEnMes(dd, mKey))}</b> <span class="gsb-hint">${metasHint(dd)}</span></li>`
   ).join("");
   const t1 = t1list
     ? `<ul>${t1list}</ul>`
-    : `No hay deals del embudo con cierre en ${mesCorto} — adelantá cierres o traé pipeline al mes.`;
+    : `No hay deals del embudo que facturen en ${mesCorto} — adelantá cierres o traé pipeline al mes.`;
 
   // Tramo 2 — Generación (violeta): qué aporta el embudo temprano y cuánto falta generar
   const mens = openAll.map(metasMensual).filter(v => v > 0);
