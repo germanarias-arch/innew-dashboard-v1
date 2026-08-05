@@ -401,6 +401,7 @@ table.std tr:hover td { background: #fafafa; }
         <div class="view-toggle vt-priority">
           <button id="vt-foco" class="vt-btn active" onclick="setView('foco')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:5px;"><path d="M3.5 5.5l1.5 1.5l2.5 -2.5"/><path d="M3.5 11.5l1.5 1.5l2.5 -2.5"/><path d="M3.5 17.5l1.5 1.5l2.5 -2.5"/><path d="M11 6l9 0"/><path d="M11 12l9 0"/><path d="M11 18l9 0"/></svg>Foco</button>
           <button id="vt-emb" class="vt-btn" onclick="setView('emb')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:5px;"><path d="M4 4h16v2.172a2 2 0 0 1 -.586 1.414l-4.414 4.414v7l-6 2v-8.5l-4.48 -4.928a2 2 0 0 1 -.52 -1.345v-2.241z"/></svg>Embudo</button>
+          <button id="vt-ritmo" class="vt-btn" onclick="setView('ritmo')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:5px;"><path d="M4 12h3l2 -6l4 12l2 -6h5"/></svg>Ritmo semanal</button>
         </div>
       </div>
       <div class="nav-group">
@@ -792,6 +793,16 @@ table.std tr:hover td { background: #fafafa; }
     <div id="target-tabs"></div>
     <div id="target-body"></div>
   </div><!-- /view-target -->
+
+  <!-- ===================== RITMO SEMANAL (ritual de los lunes) ===================== -->
+  <div id="view-ritmo" style="display:none">
+    <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">📅 <b>Ritmo semanal</b> — el tablero del ritual de los lunes (30 min). Marcador de primeras reuniones · movimientos de la semana · compromisos que vencen · gap y deals necesarios · semáforo de las 5 estrategias. <i>No se discuten deals individuales: eso es Foco.</i></div>
+    <div id="ritmo-marcador"></div>
+    <div id="ritmo-wow"></div>
+    <div id="ritmo-compromisos"></div>
+    <div id="ritmo-gap"></div>
+    <div id="ritmo-semaforo"></div>
+  </div><!-- /view-ritmo -->
 
   <!-- ===================== GUÍA DE USO ===================== -->
   <div id="view-guia" style="display:none">
@@ -6015,8 +6026,8 @@ function renderTarget() {
 
 function setView(v) {
   // "foco" es la vista Daily (foco comercial del día). Comparten el mismo div view-daily.
-  const views = { foco: "view-daily", metas: "view-metas", fuentes: "view-fuentes", emb: "view-embudo", cur: "view-curaduria", cue: "view-cuentas", clientes: "view-clientes", nurt: "view-nurt", tareas: "view-tareas", agenda: "view-agenda", reseller: "view-reseller", target: "view-target", marcadores: "view-marcadores", bugs: "view-bugs", guia: "view-guia" };
-  const btns = { foco: "vt-foco", metas: "vt-metas", fuentes: "vt-fuentes", emb: "vt-emb", cur: "vt-cur", cue: "vt-cue", clientes: "vt-clientes", nurt: "vt-nurt", tareas: "vt-tareas", agenda: "vt-agenda", reseller: "vt-reseller", target: "vt-target", marcadores: "vt-marcadores", bugs: "vt-bugs", guia: "vt-guia" };
+  const views = { foco: "view-daily", metas: "view-metas", fuentes: "view-fuentes", emb: "view-embudo", ritmo: "view-ritmo", cur: "view-curaduria", cue: "view-cuentas", clientes: "view-clientes", nurt: "view-nurt", tareas: "view-tareas", agenda: "view-agenda", reseller: "view-reseller", target: "view-target", marcadores: "view-marcadores", bugs: "view-bugs", guia: "view-guia" };
+  const btns = { foco: "vt-foco", metas: "vt-metas", fuentes: "vt-fuentes", emb: "vt-emb", ritmo: "vt-ritmo", cur: "vt-cur", cue: "vt-cue", clientes: "vt-clientes", nurt: "vt-nurt", tareas: "vt-tareas", agenda: "vt-agenda", reseller: "vt-reseller", target: "vt-target", marcadores: "vt-marcadores", bugs: "vt-bugs", guia: "vt-guia" };
   Object.keys(views).forEach(k => {
     const el = document.getElementById(views[k]); if (el) el.style.display = (k === v) ? "block" : "none";
     const bt = document.getElementById(btns[k]); if (bt) bt.classList.toggle("active", k === v);
@@ -6030,6 +6041,7 @@ function setView(v) {
   if (v === "marcadores") renderMarcadores();
   if (v === "bugs") renderBugs();
   if (v === "target") renderTarget();
+  if (v === "ritmo") { if (!window.__tareasLoaded) loadTareas().then(() => { try { renderRitmo(); } catch (e) {} }); renderRitmo(); }
   if (v === "nurt") renderNurturing();
   if (v === "clientes") renderCuentas();
   if (v === "cue") { if (window.__cuentasData) renderClientes(); else renderCuentas(); }
@@ -9384,6 +9396,308 @@ function ensureSection(viewId, sectionId, prepend) {
   }
   return el;
 }
+
+// ====================================================
+// RITMO SEMANAL — tablero del ritual de los lunes (30 min)
+// 5 bloques: marcador de 1ª reuniones · movimientos WoW · compromisos ·
+// gap y deals necesarios · semáforo de las 5 estrategias
+// ====================================================
+
+// §3 del plan: distribución semanal de 1ª reuniones por owner.
+// Ale Becerra (93605053) NO está en DAILY_OWNERS, por eso la lista es propia.
+const RITMO_OWNERS = [
+  { id: "75005271",  name: "German",      tgt: 4 },
+  { id: "96437903",  name: "Fernando",    tgt: 1 },
+  { id: "93605053",  name: "Ale Becerra", tgt: 1 },
+  { id: "361714043", name: "Alfred",      tgt: 0.5 },
+  { id: "33015680",  name: "Joaquin",     tgt: 1 }
+];
+
+// §2 del plan: las 5 estrategias. `match` corre sobre las props del deal.
+const RITMO_ESTRATEGIAS = [
+  { key: "e1", label: "E1 · Base instalada",              owner: "German + CSMs",              def: 2, nota: "Sólo cuenta upsells creados desde la Matriz de producto (producto = Upsell - CA).", match: p => (p.producto || "") === "Upsell - CA" },
+  { key: "e2", label: "E2 · Middleware a IT (AR >$50M)",  owner: "German + Lautaro",           def: 1, nota: "Deals de Middleware con segmento Argentina.",                                       match: p => (p.producto || "") === "Middleware" && (p.segmento || "") === "AR" },
+  { key: "e3", label: "E3 · Disc–BI (cuña masiva)",       owner: "German + Sol",               def: 3, nota: "producto = IACS (Innew IA Commerce Suite). Falsación: 2026-11-02.",                 match: p => (p.producto || "") === "IACS" },
+  { key: "e4", label: "E4 · Partners (fábrica de leads)", owner: "German + dueños de relación", def: 3, nota: "lead_source de referido/reseller o con Detalle fuente cargado.",                    match: p => ["Referral", "Ref Med/peq (PR2)", "Reseller", "Ref de Cliente/ExCli (PR4)"].includes(p.lead_source || "") || !!(p.partner___empresa_referidora || "").trim() },
+  { key: "e5", label: "E5 · Chile / México",              owner: "Ale Becerra / Alfred",       def: 3, nota: "Deals con segmento CL o MX.",                                                       match: p => ["CL", "MX"].includes(p.segmento || "") }
+];
+
+const RITMO_STAGE_1RA = "1246562354"; // Primer reu
+
+function ritmoTargets() {
+  const c = dashLoad();
+  const t = c.ritmoTargets || {};
+  return { owners: t.owners || {}, estrategias: t.estrategias || {} };
+}
+function ritmoOwnerTgt(o) { const t = ritmoTargets().owners; const v = t[o.id]; return (v === undefined || v === null || v === "") ? o.tgt : Number(v); }
+function ritmoEstTgt(e) { const t = ritmoTargets().estrategias; const v = t[e.key]; return (v === undefined || v === null || v === "") ? e.def : Number(v); }
+function ritmoSetOwnerTgt(id, v) { const t = ritmoTargets(); t.owners[id] = v === "" ? "" : Number(v); dashSave({ ritmoTargets: t }); renderRitmo(); }
+function ritmoSetEstTgt(key, v) { const t = ritmoTargets(); t.estrategias[key] = v === "" ? "" : Number(v); dashSave({ ritmoTargets: t }); renderRitmo(); }
+
+// Clave de semana ISO-ish: lunes de esa semana en YYYY-MM-DD
+function ritmoMonday(d) {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const dow = (x.getDay() + 6) % 7; // 0 = lunes
+  x.setDate(x.getDate() - dow);
+  return x;
+}
+function ritmoWeekKey(d) {
+  const m = ritmoMonday(d || new Date());
+  return `${m.getFullYear()}-${String(m.getMonth() + 1).padStart(2, "0")}-${String(m.getDate()).padStart(2, "0")}`;
+}
+function ritmoHist() { const c = dashLoad(); return c.ritmoSemaforoHist || {}; }
+function ritmoSaveHist(week, colores) {
+  const h = ritmoHist();
+  h[week] = colores;
+  // conservamos las últimas 12 semanas nomás
+  const keys = Object.keys(h).sort();
+  while (keys.length > 12) { delete h[keys.shift()]; }
+  dashSave({ ritmoSemaforoHist: h });
+}
+function ritmoPrevWeekColor(week, key) {
+  const h = ritmoHist();
+  const keys = Object.keys(h).sort();
+  const i = keys.indexOf(week);
+  const prev = i > 0 ? keys[i - 1] : (i === -1 && keys.length ? keys[keys.length - 1] : null);
+  return prev && h[prev] ? h[prev][key] : null;
+}
+
+function ritmoTs(v) {
+  if (!v) return 0;
+  if (/^\d+$/.test(String(v))) return Number(v);
+  const t = new Date(v).getTime();
+  return isNaN(t) ? 0 : t;
+}
+
+function renderRitmo() {
+  const ago7 = Date.now() - 7 * 86400000;
+  const open = window.__dailyOpen || [];
+  const closed = window.__closedDeals || [];
+  // un deal puede haber pasado de Primer reu a otra etapa (o cerrado) dentro de la misma semana
+  const seen = new Set();
+  const universo = [];
+  [...open, ...closed].forEach(d => { if (!seen.has(String(d.id))) { seen.add(String(d.id)); universo.push(d); } });
+
+  const nombreOwner = id => {
+    const r = RITMO_OWNERS.find(o => o.id === String(id));
+    if (r) return r.name;
+    const o = (typeof DAILY_OWNERS !== "undefined" ? DAILY_OWNERS : []).find(x => x.id === String(id));
+    return o ? o.name : "Sin owner";
+  };
+
+  // ---------- BLOQUE 1 · Marcador de la semana (1ª reuniones generadas) ----------
+  const reusSemana = universo.filter(d => {
+    const t = ritmoTs(d.properties && d.properties["hs_v2_date_entered_" + RITMO_STAGE_1RA]);
+    return t && t >= ago7;
+  });
+  const porOwner = {};
+  reusSemana.forEach(d => {
+    const oid = String((d.properties && d.properties.hubspot_owner_id) || "");
+    (porOwner[oid] = porOwner[oid] || []).push(d);
+  });
+  const filasOwner = RITMO_OWNERS.map(o => ({ o, n: (porOwner[o.id] || []).length, tgt: ritmoOwnerTgt(o) }));
+  // owners fuera de la lista del ritual que igual generaron
+  const otrosIds = Object.keys(porOwner).filter(id => !RITMO_OWNERS.some(o => o.id === id));
+  const otrosN = otrosIds.reduce((a, id) => a + porOwner[id].length, 0);
+  const totalReu = reusSemana.length;
+  const totalTgt = filasOwner.reduce((a, f) => a + (isNaN(f.tgt) ? 0 : f.tgt), 0);
+  const pctTot = totalTgt > 0 ? Math.round(totalReu / totalTgt * 100) : 0;
+  const colTot = pctTot >= 100 ? "#047857" : pctTot >= 60 ? "#b45309" : "#b91c1c";
+
+  const bar = (n, tgt, color) => {
+    const max = Math.max(n, tgt, 1);
+    const wN = Math.round(n / max * 100), wT = Math.round(tgt / max * 100);
+    return `<div style="position:relative; height:14px; background:#f3f4f6; border-radius:7px; overflow:hidden;">
+      <div style="position:absolute; left:0; top:0; height:100%; width:${wN}%; background:${color}; border-radius:7px;"></div>
+      <div style="position:absolute; left:${wT}%; top:-2px; width:2px; height:18px; background:#111; opacity:.55;"></div>
+    </div>`;
+  };
+
+  const b1 = `<div style="background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:14px 16px; margin-bottom:14px;">
+    <div style="display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+      <div style="font-weight:700; font-size:15px;">1️⃣ Marcador de la semana — primeras reuniones generadas</div>
+      <div style="font-size:13px; color:#6b7280;">últimos 7 días · entrada a <b>Primer reu</b></div>
+    </div>
+    <div style="display:flex; align-items:baseline; gap:12px; margin:10px 0 4px;">
+      <div style="font-size:34px; font-weight:800; color:${colTot}; line-height:1;">${totalReu}</div>
+      <div style="font-size:14px; color:#6b7280;">de <b>${totalTgt}</b> objetivo semanal · <b style="color:${colTot};">${pctTot}%</b></div>
+    </div>
+    <table style="width:100%; border-collapse:collapse; margin-top:10px; font-size:13px;">
+      <thead><tr style="background:#fafafa;">
+        <th style="text-align:left; padding:6px 8px; border-bottom:1px solid #e5e7eb;">Owner</th>
+        <th style="text-align:center; padding:6px 8px; border-bottom:1px solid #e5e7eb; width:70px;">Generó</th>
+        <th style="text-align:center; padding:6px 8px; border-bottom:1px solid #e5e7eb; width:90px;">Objetivo</th>
+        <th style="text-align:left; padding:6px 8px; border-bottom:1px solid #e5e7eb;">Avance</th>
+      </tr></thead>
+      <tbody>
+      ${filasOwner.map(f => {
+        const c = f.tgt <= 0 ? "#6b7280" : f.n >= f.tgt ? "#047857" : f.n >= f.tgt / 2 ? "#b45309" : "#b91c1c";
+        return `<tr>
+          <td style="padding:6px 8px; border-bottom:1px solid #f3f4f6;"><b>${f.o.name}</b></td>
+          <td style="padding:6px 8px; border-bottom:1px solid #f3f4f6; text-align:center; font-weight:700; color:${c};">${f.n}</td>
+          <td style="padding:6px 8px; border-bottom:1px solid #f3f4f6; text-align:center;"><input type="number" step="0.5" min="0" value="${f.tgt}" onchange="ritmoSetOwnerTgt('${f.o.id}', this.value)" style="width:60px; padding:3px 5px; border:1px solid #d1d5db; border-radius:5px; text-align:center; font-size:12px;"></td>
+          <td style="padding:6px 8px; border-bottom:1px solid #f3f4f6;">${bar(f.n, f.tgt, c)}</td>
+        </tr>`;
+      }).join("")}
+      </tbody>
+    </table>
+    ${otrosN ? `<div class="small" style="color:#6b7280; margin-top:8px;">＋ ${otrosN} primera(s) reunión(es) de owners fuera de la distribución del ritual: ${otrosIds.map(id => nombreOwner(id) + " (" + porOwner[id].length + ")").join(" · ")}</div>` : ""}
+    <div class="small" style="color:#9ca3af; margin-top:8px;">Los objetivos son editables y arrancan con la propuesta del plan (§3): German 4 · Fernando 1 · Ale Becerra 1 · Alfred 0,5 · Joaquin 1 = 7,5/semana. <b>Pendiente el visto bueno de Joaquin.</b></div>
+  </div>`;
+
+  // ---------- BLOQUE 2 · Movimientos de la semana (WoW) ----------
+  const w = typeof computeWoW === "function" ? computeWoW() : null;
+  let b2;
+  if (!w) {
+    b2 = `<div style="background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:14px 16px; margin-bottom:14px;">
+      <div style="font-weight:700; font-size:15px; margin-bottom:6px;">2️⃣ Movimientos de la semana</div>
+      <div class="small" style="color:#6b7280;">📸 Primer snapshot guardado. A partir de la próxima semana vas a ver acá qué avanzó, qué se cayó y qué patinó de fecha.</div>
+    </div>`;
+  } else {
+    const dt = ts => new Date(ts).toLocaleDateString("es-AR", { day: "2-digit", month: "short" });
+    const li = (arr, fmt, empty) => arr.length ? arr.map(fmt).join("") : `<div class="small" style="color:#9ca3af; padding:2px 0;">${empty}</div>`;
+    const dealLine = (name, extra, amt, color) => `<div style="display:flex; gap:8px; align-items:baseline; padding:3px 0; border-bottom:1px dashed #f0f0f0; font-size:12.5px;"><span style="flex:1;"><b>${name}</b> <span style="color:#6b7280;">${extra}</span></span><span style="font-weight:600; color:${color};">${amt}</span></div>`;
+    const col = (title, color, inner) => `<div style="flex:1; min-width:220px; background:#fff; border:1px solid #e5e7eb; border-top:3px solid ${color}; border-radius:8px; padding:10px 12px;"><div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; color:${color}; margin-bottom:6px;">${title}</div>${inner}</div>`;
+    b2 = `<div style="margin-bottom:14px;">
+      <div style="display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
+        <div style="font-weight:700; font-size:15px;">2️⃣ Movimientos de la semana</div>
+        <div style="font-size:13px; color:#6b7280;">${dt(w.prevTs)} → ${dt(w.currTs)}</div>
+      </div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap;">
+        ${col("🆕 Nuevos (" + w.nuevos.length + ")", "#4030C8", li(w.nuevos, x => dealLine(x.name, stageLabel(x.stage), fmtMoneyK(x.amount), "#4030C8"), "Sin deals nuevos"))}
+        ${col("⬆️ Avanzaron (" + w.avanzados.length + ")", "#047857", li(w.avanzados, x => dealLine(x.d.name, stageLabel(x.from) + " → " + stageLabel(x.d.stage), fmtMoneyK(x.d.amount), "#047857"), "Sin avances de etapa"))}
+        ${col("🐌 Patinaron fecha (" + w.slipped.length + ")", "#d97706", li(w.slipped, x => dealLine(x.d.name, "+" + x.days + " días de cierre", fmtMoneyK(x.d.amount), "#d97706"), "Sin slippage de fechas"))}
+        ${col("🏁 Cerraron (" + (w.ganados.length + w.perdidos.length) + ")", "#111", li([...w.ganados.map(g => ({ ...g, won: true })), ...w.perdidos.map(p => ({ ...p, won: false }))], x => dealLine(x.name, x.won ? "GANADO" : "perdido", fmtMoneyK(x.amount), x.won ? "#059669" : "#dc2626"), "Sin cierres esta semana"))}
+      </div>
+      ${w.retrocedidos.length ? `<div class="small" style="color:#b91c1c; margin-top:8px;">⬇️ Retrocedieron: ${w.retrocedidos.map(x => `<b>${x.d.name}</b> (${stageLabel(x.from)} → ${stageLabel(x.d.stage)})`).join(" · ")}</div>` : ""}
+    </div>`;
+  }
+
+  // ---------- BLOQUE 3 · Compromisos que vencen esta semana ----------
+  const lun = ritmoMonday(new Date());
+  const dom = new Date(lun.getFullYear(), lun.getMonth(), lun.getDate() + 6);
+  const tareas = (window.__tareasData || []).filter(t => !((t.properties && t.properties.subject) || "").startsWith("🐞"));
+  const enSemana = tareas.filter(t => {
+    const fv = tareaFVDate(t.properties && t.properties.fecha_vencimiento);
+    if (!fv) return false;
+    const p = fv.split("-");
+    const d = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+    return d >= lun && d <= dom;
+  });
+  const vencidasAll = tareas.filter(t => tareaEstado(t.properties && t.properties.fecha_vencimiento).key === "vencida");
+  const compOwner = {};
+  enSemana.forEach(t => {
+    const oid = String((t.properties && t.properties.hubspot_owner_id) || "");
+    (compOwner[oid] = compOwner[oid] || []).push(t);
+  });
+  const compIds = Object.keys(compOwner).sort((a, b) => compOwner[b].length - compOwner[a].length);
+  const b3 = `<div style="background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:14px 16px; margin-bottom:14px;">
+    <div style="display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+      <div style="font-weight:700; font-size:15px;">3️⃣ Compromisos que vencen esta semana</div>
+      <div style="font-size:13px; color:#6b7280;">${lun.toLocaleDateString("es-AR", { day: "2-digit", month: "short" })} → ${dom.toLocaleDateString("es-AR", { day: "2-digit", month: "short" })}</div>
+    </div>
+    <div style="display:flex; gap:18px; margin:10px 0 12px; flex-wrap:wrap;">
+      <div><div style="font-size:26px; font-weight:800; color:#4030C8; line-height:1;">${enSemana.length}</div><div class="small" style="color:#6b7280;">vencen esta semana</div></div>
+      <div><div style="font-size:26px; font-weight:800; color:${vencidasAll.length ? "#b91c1c" : "#047857"}; line-height:1;">${vencidasAll.length}</div><div class="small" style="color:#6b7280;">ya vencidas (arrastre)</div></div>
+    </div>
+    ${compIds.length ? compIds.map(id => {
+      const arr = compOwner[id].slice().sort((a, b) => {
+        const da = tareaEstado(a.properties.fecha_vencimiento).days, db = tareaEstado(b.properties.fecha_vencimiento).days;
+        return (da === undefined ? 99 : da) - (db === undefined ? 99 : db);
+      });
+      return `<div style="margin-bottom:10px;">
+        <div style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; color:#4030C8; margin-bottom:4px;">${nombreOwner(id)} · ${arr.length}</div>
+        ${arr.map(t => {
+          const st = tareaEstado(t.properties.fecha_vencimiento);
+          const deal = (window.__ticketDeal && window.__ticketDeal[t.id]) || "";
+          return `<div style="display:flex; gap:8px; align-items:baseline; padding:3px 0; border-bottom:1px dashed #f0f0f0; font-size:12.5px;">
+            <span style="flex:1;"><a href="https://app.hubspot.com/contacts/${ACCOUNT_ID}/record/0-5/${t.id}" target="_blank" style="color:#111; text-decoration:none;"><b>${t.properties.subject || "(sin asunto)"}</b></a>${deal ? ` <span style="color:#6b7280;">· ${deal}</span>` : ""}</span>
+            <span style="font-weight:600; color:${st.color};">${st.label}</span>
+          </div>`;
+        }).join("")}
+      </div>`;
+    }).join("") : `<div class="small" style="color:#9ca3af;">${window.__tareasLoaded ? "No hay compromisos con vencimiento esta semana." : "Cargando tickets…"}</div>`}
+    <div class="small" style="color:#9ca3af; margin-top:6px;">Se cuentan tickets abiertos con fecha de vencimiento. El detalle y el cierre viven en la vista <b>Tareas</b>.</div>
+  </div>`;
+
+  // ---------- BLOQUE 4 · Gap y deals necesarios ----------
+  const gap = typeof genGapSemestre === "function" ? genGapSemestre() : 0;
+  const ticket = typeof genTicketProm === "function" ? genTicketProm() : 0;
+  const wr = typeof genWinRate === "function" ? genWinRate() : 0.2;
+  const dealsNec = (gap > 0 && ticket > 0 && wr > 0) ? Math.ceil(gap / (ticket * wr)) : 0;
+  const pipeNec = wr > 0 ? gap / wr : 0;
+  const kpi = (label, valor, sub, color) => `<div style="flex:1; min-width:170px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:10px 12px;">
+    <div class="small" style="color:#6b7280; text-transform:uppercase; letter-spacing:.4px; font-size:11px; font-weight:700;">${label}</div>
+    <div style="font-size:24px; font-weight:800; color:${color}; line-height:1.15; margin-top:3px;">${valor}</div>
+    <div class="small" style="color:#9ca3af;">${sub}</div>
+  </div>`;
+  const b4 = `<div style="margin-bottom:14px;">
+    <div style="font-weight:700; font-size:15px; margin-bottom:8px;">4️⃣ Gap y deals necesarios</div>
+    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+      ${kpi("Gap del semestre", fmtMoneyK(gap), "MRR que falta construir", gap > 0 ? "#b91c1c" : "#047857")}
+      ${kpi("Deals necesarios", dealsNec || "—", ticket > 0 ? "ticket prom. " + fmtMoneyK(ticket) + "/mes" : "sin ticket promedio aún", "#4030C8")}
+      ${kpi("Pipeline a generar", pipeNec > 0 ? fmtMoneyK(pipeNec) : "—", "para cubrir el gap al win rate actual", "#b45309")}
+      ${kpi("Win rate", Math.round(wr * 100) + "%", "temprano (editable en Generación)", "#047857")}
+    </div>
+    <div class="small" style="color:#9ca3af; margin-top:6px;">La ventana de generación se cierra en <b>octubre</b>: noviembre y diciembre son meses de cierre, no de siembra.</div>
+  </div>`;
+
+  // ---------- BLOQUE 5 · Semáforo de las 5 estrategias ----------
+  const week = ritmoWeekKey(new Date());
+  const colores = {};
+  const filasEst = RITMO_ESTRATEGIAS.map(e => {
+    const n = universo.filter(d => {
+      const c = ritmoTs(d.properties && d.properties.createdate);
+      return c && c >= ago7 && e.match(d.properties || {});
+    }).length;
+    const tgt = ritmoEstTgt(e);
+    const color = (tgt > 0 && n >= tgt) ? "verde" : (tgt > 0 && n >= tgt / 2) ? "amarillo" : "rojo";
+    colores[e.key] = color;
+    return { e, n, tgt, color, prev: ritmoPrevWeekColor(week, e.key) };
+  });
+  ritmoSaveHist(week, colores);
+  const luz = { verde: { c: "#047857", bg: "#ecfdf5", ic: "🟢" }, amarillo: { c: "#b45309", bg: "#fffbeb", ic: "🟡" }, rojo: { c: "#b91c1c", bg: "#fef2f2", ic: "🔴" } };
+  const dosRojas = filasEst.filter(f => f.color === "rojo" && f.prev === "rojo");
+  const b5 = `<div style="background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:14px 16px; margin-bottom:14px;">
+    <div style="display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+      <div style="font-weight:700; font-size:15px;">5️⃣ Semáforo de las 5 estrategias</div>
+      <div style="font-size:13px; color:#6b7280;">deals creados en los últimos 7 días</div>
+    </div>
+    <table style="width:100%; border-collapse:collapse; margin-top:10px; font-size:13px;">
+      <thead><tr style="background:#fafafa;">
+        <th style="text-align:left; padding:6px 8px; border-bottom:1px solid #e5e7eb;">Estrategia</th>
+        <th style="text-align:left; padding:6px 8px; border-bottom:1px solid #e5e7eb;">Dueño</th>
+        <th style="text-align:center; padding:6px 8px; border-bottom:1px solid #e5e7eb; width:70px;">Semana</th>
+        <th style="text-align:center; padding:6px 8px; border-bottom:1px solid #e5e7eb; width:90px;">Objetivo</th>
+        <th style="text-align:center; padding:6px 8px; border-bottom:1px solid #e5e7eb; width:110px;">Semáforo</th>
+        <th style="text-align:center; padding:6px 8px; border-bottom:1px solid #e5e7eb; width:100px;">Sem. anterior</th>
+      </tr></thead>
+      <tbody>
+      ${filasEst.map(f => {
+        const L = luz[f.color], P = f.prev ? luz[f.prev] : null;
+        return `<tr style="background:${L.bg};">
+          <td style="padding:7px 8px; border-bottom:1px solid #f3f4f6;"><b>${f.e.label}</b><div class="small" style="color:#9ca3af;">${f.e.nota}</div></td>
+          <td style="padding:7px 8px; border-bottom:1px solid #f3f4f6; color:#6b7280;">${f.e.owner}</td>
+          <td style="padding:7px 8px; border-bottom:1px solid #f3f4f6; text-align:center; font-weight:800; font-size:16px; color:${L.c};">${f.n}</td>
+          <td style="padding:7px 8px; border-bottom:1px solid #f3f4f6; text-align:center;"><input type="number" step="1" min="0" value="${f.tgt}" onchange="ritmoSetEstTgt('${f.e.key}', this.value)" style="width:60px; padding:3px 5px; border:1px solid #d1d5db; border-radius:5px; text-align:center; font-size:12px;"></td>
+          <td style="padding:7px 8px; border-bottom:1px solid #f3f4f6; text-align:center; font-weight:700; color:${L.c};">${L.ic} ${f.color}</td>
+          <td style="padding:7px 8px; border-bottom:1px solid #f3f4f6; text-align:center; color:${P ? P.c : "#d1d5db"};">${P ? P.ic : "—"}</td>
+        </tr>`;
+      }).join("")}
+      </tbody>
+    </table>
+    ${dosRojas.length ? `<div style="margin-top:10px; padding:10px 12px; background:#fef2f2; border:1px solid #fecaca; border-radius:8px; color:#b91c1c; font-size:13px;">⚠️ <b>Rojo dos semanas seguidas:</b> ${dosRojas.map(f => f.e.label).join(" · ")}. Regla del ritual: <b>la estrategia se replantea o se abandona</b>. No se deja correr una tercera semana.</div>` : ""}
+    <div class="small" style="color:#9ca3af; margin-top:8px;">Los objetivos semanales son editables y quedan guardados en este navegador. El color de cada semana se archiva solo para poder detectar el doble rojo.</div>
+  </div>`;
+
+  const set = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
+  set("ritmo-marcador", b1);
+  set("ritmo-wow", b2);
+  set("ritmo-compromisos", b3);
+  set("ritmo-gap", b4);
+  set("ritmo-semaforo", b5);
+}
+
 
 // ====================================================
 // SCORECARD por owner (cuotas MRR nuevo/mes + attainment) — se inyecta en Foco
