@@ -1014,6 +1014,174 @@ async function mcpCall(tool, args) {
   return await r.json();
 }
 
+// ====================================================
+// SYNC DE ESTADO (Cloudflare KV vía /api/state)
+// Lo que antes vivía SOLO en localStorage (Base contratada, snapshots, matriz de
+// producto, fuentes/partners, Cuentas Target, agenda, marcadores, cuotas, notas…)
+// ahora se espeja al servidor, keyed por el email de la sesión Google.
+// Sobrevive cambio de dominio, de navegador y de máquina.
+// HubSpot sigue siendo la fuente de verdad de deals/companies/tickets — esto es
+// SOLO para el estado propio del dashboard, que HubSpot no puede almacenar.
+// ====================================================
+const STATE_KEYS = [
+  "dashComercial_v2",        // blob principal: base contratada, metas, PxQ, fuentes, matriz, target, marcadores, cuotas…
+  "dashComercial_dealCo",    // cache deal↔company
+  "dashComercial_genWR",     // override win rate
+  "dashSnapshots_v1",        // snapshots semanales (WoW + accuracy) — IRRECUPERABLE si se pierde
+  "cuentas_meta",            // financiero + notas + GMV histórico por cuenta
+  "cuentas_usd_rate",
+  "cuentas_estado_migrado",
+  "agenda_meta", "agenda_trip", "agenda_plan", "agenda_history",
+  "daily_hidden_deals", "daily_foco_deals", "daily_col_order", "daily_hidden_cols",
+  "tareas_hidden", "tarea_slack_sent"
+];
+const STATE_BASE_LS  = "dashState_base";     // NO se espeja: versión del server con la que estamos sincronizados
+const STATE_RELOAD_SS = "dashState_reloads"; // guard anti-loop de reload
+
+window.__stateSync = { enabled: false, updatedAt: 0, dirty: false, timer: null, status: "off" };
+window.__stateApplying = false;
+
+// Accesos crudos (no disparan el espejo)
+const _rawSet = Storage.prototype.setItem;
+const _rawRem = Storage.prototype.removeItem;
+const _rawGet = Storage.prototype.getItem;
+function _lsGet(k) { try { return _rawGet.call(localStorage, k); } catch (e) { return null; } }
+function _lsSet(k, v) { try { return _rawSet.call(localStorage, k, v); } catch (e) {} }
+function _lsRem(k) { try { return _rawRem.call(localStorage, k); } catch (e) {} }
+
+function stateSnapshot() {
+  const o = {};
+  STATE_KEYS.forEach(k => { const v = _lsGet(k); if (v !== null && v !== undefined) o[k] = v; });
+  return o;
+}
+// Espejo completo: aplicar un snapshot también BORRA las claves trackeadas que no vengan.
+function stateApply(snap) {
+  window.__stateApplying = true;
+  try {
+    STATE_KEYS.forEach(k => {
+      if (snap && Object.prototype.hasOwnProperty.call(snap, k)) _lsSet(k, String(snap[k]));
+      else _lsRem(k);
+    });
+  } catch (e) {}
+  window.__stateApplying = false;
+}
+function stateBadge(txt, color) {
+  const S = window.__stateSync; S.status = txt;
+  try {
+    let el = document.getElementById("state-sync-badge");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "state-sync-badge";
+      el.style.cssText = "position:fixed;right:10px;bottom:10px;z-index:9999;font:11px/1.4 -apple-system,system-ui,sans-serif;padding:4px 9px;border-radius:999px;background:#fff;border:1px solid #e5e7eb;box-shadow:0 1px 4px rgba(0,0,0,.08);opacity:.85;pointer-events:none";
+      (document.body || document.documentElement).appendChild(el);
+    }
+    el.textContent = txt;
+    el.style.color = color || "#64748b";
+  } catch (e) {}
+}
+function stateReloadOnce() {
+  let n = 0;
+  try { n = Number(sessionStorage.getItem(STATE_RELOAD_SS) || 0) || 0; } catch (e) {}
+  if (n >= 2) { stateBadge("☁︎ recargá la página", "#b45309"); return; }
+  try { sessionStorage.setItem(STATE_RELOAD_SS, String(n + 1)); } catch (e) {}
+  location.reload();
+}
+function stateSchedulePush() {
+  const S = window.__stateSync;
+  if (!S.enabled || window.__stateApplying) return;
+  S.dirty = true;
+  stateBadge("☁︎ guardando…", "#b45309");
+  if (S.timer) clearTimeout(S.timer);
+  S.timer = setTimeout(stateFlush, 1500);
+}
+async function stateFlush() {
+  const S = window.__stateSync;
+  if (S.timer) { clearTimeout(S.timer); S.timer = null; }
+  if (!S.enabled || !S.dirty) return;
+  S.dirty = false;
+  try {
+    const r = await fetch("/api/state", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ state: stateSnapshot(), base: S.updatedAt || 0 })
+    });
+    if (r.status === 409) {
+      const j = await r.json();
+      if (j && j.state) {
+        stateApply(j.state);
+        S.updatedAt = Number(j.updatedAt || 0);
+        _lsSet(STATE_BASE_LS, String(S.updatedAt));
+        stateReloadOnce();
+      }
+      return;
+    }
+    if (!r.ok) { S.dirty = true; stateBadge("☁︎ sin sync", "#b91c1c"); return; }
+    const j = await r.json();
+    S.updatedAt = Number(j.updatedAt || Date.now());
+    _lsSet(STATE_BASE_LS, String(S.updatedAt));
+    stateBadge("☁︎ guardado", "#047857");
+  } catch (e) {
+    S.dirty = true;
+    stateBadge("☁︎ sin sync", "#b91c1c");
+  }
+}
+// Carga el estado del server ANTES de renderizar. Como dashInitPersist() ya corrió al
+// parsear el script, si el server trae algo distinto aplicamos y recargamos UNA vez.
+async function stateHydrate() {
+  const S = window.__stateSync;
+  if (!WEB_MODE || !/^https?:/.test(location.protocol)) return;   // en Cowork o file:// no hay backend
+  const base = Number(_lsGet(STATE_BASE_LS) || 0) || 0;
+  let r;
+  try { r = await fetch("/api/state", { credentials: "include" }); }
+  catch (e) { stateBadge("☁︎ sin sync", "#b91c1c"); return; }
+  if (r.status === 401) return;                                    // sin sesión: el login ya redirige
+  if (r.status === 501) { console.warn("[state] KV no configurado (falta binding DASH_STATE)"); return; }
+  if (!r.ok) { stateBadge("☁︎ sin sync", "#b91c1c"); return; }
+  let j = null;
+  try { j = await r.json(); } catch (e) { return; }
+  S.enabled = true;
+  const srvAt = Number((j && j.updatedAt) || 0);
+  if (!j || !j.state) {                                            // server vacío → sembrar con este navegador
+    S.updatedAt = 0;
+    S.dirty = true;
+    await stateFlush();
+    return;
+  }
+  if (srvAt === base) {                                            // ya estamos al día
+    S.updatedAt = srvAt;
+    try { sessionStorage.removeItem(STATE_RELOAD_SS); } catch (e) {}
+    stateBadge("☁︎ guardado", "#047857");
+    return;
+  }
+  stateApply(j.state);                                             // el server manda
+  S.updatedAt = srvAt;
+  _lsSet(STATE_BASE_LS, String(srvAt));
+  stateReloadOnce();
+}
+// Espejo automático: cualquier escritura a una clave trackeada agenda un push.
+try {
+  Storage.prototype.setItem = function (k, v) {
+    const res = _rawSet.call(this, k, v);
+    if (this === window.localStorage && STATE_KEYS.indexOf(String(k)) !== -1) stateSchedulePush();
+    return res;
+  };
+  Storage.prototype.removeItem = function (k) {
+    const res = _rawRem.call(this, k);
+    if (this === window.localStorage && STATE_KEYS.indexOf(String(k)) !== -1) stateSchedulePush();
+    return res;
+  };
+} catch (e) {}
+// Al cerrar/refrescar, mandar lo que quede pendiente (sendBeacon → POST con cookies).
+window.addEventListener("beforeunload", function () {
+  const S = window.__stateSync;
+  if (!S.enabled || !S.dirty) return;
+  try {
+    const blob = new Blob([JSON.stringify({ state: stateSnapshot(), base: S.updatedAt || 0 })], { type: "application/json" });
+    navigator.sendBeacon("/api/state", blob);
+  } catch (e) {}
+});
+
 // Stages con sus probabilidades
 const STAGE_PROBABILITIES = {
   "qualifiedtobuy": 0.05,
@@ -6124,13 +6292,182 @@ function cuSetMonto(cli, companyId, v) {
   cuFinWrite(companyId, { monto_mensual_us: der.monto_mensual_us != null ? der.monto_mensual_us : "" });
   renderCuentas();
 }
-// S&G h/mes editable inline → prop horas_de_sg_contratadas (optimista)
+// S&G h/mes editable inline → prop horas_de_sg_contratadas (optimista) + snapshot al histórico
 function cuSetSgh(companyId, v) {
   const n = cuNum(v);
   const c = (window.__cuentasData || []).find(x => String(x.id) === String(companyId));
   if (c) { c.properties = c.properties || {}; c.properties.horas_de_sg_contratadas = n === null ? "" : String(n); }
-  cuFinWrite(companyId, { horas_de_sg_contratadas: n === null ? "" : String(n) });
+  const props = { horas_de_sg_contratadas: n === null ? "" : String(n) };
+  const cli = ((c && c.properties && c.properties.name) || "").trim();
+  if (cli) {
+    const hist = Object.assign({}, cuHorasHist(cli));
+    const k = cuMonthKey();
+    const prev = cuHorasEntry(cli, k);
+    hist[k] = { c: prev.c, k: n };
+    cuentasSetMeta(cli, { horasHist: hist });
+    props.horas_hist = JSON.stringify(hist);
+  }
+  cuFinWrite(companyId, props);
   renderCuentas();
+}
+
+// ===== Horas contratadas vs consumidas · Scale · Estado de facturación =====
+const CU_FACT_OPTS = ["al día", "pendiente", "con error"];
+const CU_FACT_COLORS = {
+  "al día": { bg: "#ECFDF5", fg: "#047857" },
+  "pendiente": { bg: "#FFFBEB", fg: "#b45309" },
+  "con error": { bg: "#FEF2F2", fg: "#b91c1c" }
+};
+function cuHistParse(s) {
+  if (!s) return {};
+  if (typeof s === "object") return s;
+  try { const o = JSON.parse(s); return (o && typeof o === "object") ? o : {}; } catch (e) { return {}; }
+}
+function cuHorasHist(cli) { return cuHistParse(cuentasGetMeta(cli).horasHist); }
+// Cada entrada puede ser {c:consumidas, k:contratadas} o un número suelto (legacy)
+function cuHorasEntry(cli, key) {
+  const e = cuHorasHist(cli)[key];
+  if (e == null) return { c: null, k: null };
+  if (typeof e === "number") return { c: e, k: null };
+  return { c: (e.c == null ? null : e.c), k: (e.k == null ? null : e.k) };
+}
+function cuHorasCurrent(cli) { const v = cuHorasEntry(cli, cuMonthKey()).c; return v == null ? "" : v; }
+function cuSghOf(companyId) {
+  const c = (window.__cuentasData || []).find(x => String(x.id) === String(companyId));
+  const p = (c && c.properties) || {};
+  return p.horas_de_sg_contratadas ? parseFloat(p.horas_de_sg_contratadas) : null;
+}
+function cuSetHorasConsumidas(cli, companyId, v) {
+  const hist = Object.assign({}, cuHorasHist(cli));
+  const k = cuMonthKey();
+  const n = cuNum(v);
+  const contr = cuSghOf(companyId);
+  if (n === null && contr === null) delete hist[k]; else hist[k] = { c: n, k: contr };
+  cuentasSetMeta(cli, { horasHist: hist });
+  cuFinWrite(companyId, { horas_consumidas_mes: n === null ? "" : String(n), horas_hist: JSON.stringify(hist) });
+  renderCuentas();
+}
+function cuIsScale(cli) { return !!cuentasGetMeta(cli).esScale; }
+function cuSetScale(cli, companyId, v) {
+  cuentasSetMeta(cli, { esScale: !!v });
+  cuFinWrite(companyId, { es_scale: v ? "true" : "false" });
+  renderCuentas();
+}
+function cuSetFacturacion(cli, companyId, v) {
+  cuentasSetMeta(cli, { estadoFact: v });
+  cuFinWrite(companyId, { estado_facturacion: v || "" });
+  renderCuentas();
+}
+function cuFactSelect(cli, companyId) {
+  const cur = cuentasGetMeta(cli).estadoFact || "";
+  const col = CU_FACT_COLORS[cur] || { bg: "#fff", fg: "#374151" };
+  const cliJs = String(cli).replace(/'/g, "");
+  return `<select onchange="cuSetFacturacion('${cliJs}','${companyId || ""}',this.value)" style="padding:3px 5px; font-size:11px; border:1px solid ${cur ? col.fg : "#d1d5db"}; border-radius:5px; background:${col.bg}; color:${col.fg}; font-weight:${cur ? 600 : 400};"><option value="">—</option>${CU_FACT_OPTS.map(o => `<option value="${o}" ${cur === o ? "selected" : ""}>${o}</option>`).join("")}</select>`;
+}
+// Serie de los últimos n meses: [{key, c, k}] — contratadas cae al valor vigente si falta el snapshot
+function cuHorasSeries(cli, companyId, nMonths) {
+  const hist = cuHorasHist(cli);
+  const keys = Object.keys(hist).sort().slice(-(nMonths || 6));
+  const fallbackK = cuSghOf(companyId);
+  return keys.map(key => {
+    const e = cuHorasEntry(cli, key);
+    return { key: key, c: e.c, k: (e.k != null ? e.k : fallbackK) };
+  });
+}
+function cuHorasPct(c, k) { if (c == null || !k) return null; return Math.round(c / k * 100); }
+function cuHorasColor(c, k, isScale) {
+  if (isScale) return "#7c3aed";
+  const p = cuHorasPct(c, k);
+  if (p === null) return "#9ca3af";
+  if (p <= 100) return "#059669";
+  if (p <= 130) return "#b45309";
+  return "#dc2626";
+}
+// Sparkline doble: contratadas (gris punteado) + consumidas (color según sobreconsumo)
+function cuHorasSparkSvg(series, w, h, isScale) {
+  const pts = (series || []).filter(s => s.c != null || s.k != null);
+  if (pts.length < 2) return "";
+  const all = [];
+  pts.forEach(s => { if (s.c != null) all.push(s.c); if (s.k != null) all.push(s.k); });
+  if (!all.length) return "";
+  const min = Math.min.apply(null, all), max = Math.max.apply(null, all);
+  const span = (max - min) || 1, pad = 3;
+  const xy = (v, i) => {
+    const x = pad + i * ((w - pad * 2) / (pts.length - 1));
+    const y = h - pad - ((v - min) / span) * (h - pad * 2);
+    return [Math.round(x * 10) / 10, Math.round(y * 10) / 10];
+  };
+  const lineK = pts.map((s, i) => s.k != null ? xy(s.k, i) : null).filter(Boolean);
+  const lineC = pts.map((s, i) => s.c != null ? xy(s.c, i) : null).filter(Boolean);
+  const last = pts[pts.length - 1];
+  const color = cuHorasColor(last.c, last.k, isScale);
+  let svg = `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="display:block;">`;
+  if (lineK.length >= 2) svg += `<polyline points="${lineK.map(p => p.join(",")).join(" ")}" fill="none" stroke="#94a3b8" stroke-width="1.4" stroke-dasharray="3 2" stroke-linejoin="round"/>`;
+  if (lineC.length >= 2) svg += `<polyline points="${lineC.map(p => p.join(",")).join(" ")}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>`;
+  if (lineC.length) { const l = lineC[lineC.length - 1]; svg += `<circle cx="${l[0]}" cy="${l[1]}" r="2.2" fill="${color}"/>`; }
+  return svg + `</svg>`;
+}
+function cuHorasCell(cli, companyId) {
+  const isScale = cuIsScale(cli);
+  const e = cuHorasEntry(cli, cuMonthKey());
+  const k = e.k != null ? e.k : cuSghOf(companyId);
+  const pct = cuHorasPct(e.c, k);
+  const color = cuHorasColor(e.c, k, isScale);
+  const badge = pct === null
+    ? `<span style="font-size:10px; color:#9ca3af; font-style:italic;">sin datos</span>`
+    : `<span style="font-size:11px; font-weight:700; color:${color};">${pct}%</span>`;
+  const series = cuHorasSeries(cli, companyId, 6);
+  const spark = cuHorasSparkSvg(series, 78, 24, isScale);
+  const cliJs = String(cli).replace(/'/g, "");
+  return `<div style="display:flex; align-items:center; gap:5px; justify-content:center;">${badge}${spark}<a href="#" onclick="cuHorasDetail('${cliJs}','${companyId || ""}');return false;" style="font-size:10px; color:#4030C8; white-space:nowrap;">detalle ↗</a></div>`;
+}
+function closeHorasModal() { const m = document.getElementById("horas-modal"); if (m) m.remove(); }
+function cuHorasDetail(cli, companyId) {
+  closeHorasModal();
+  const isScale = cuIsScale(cli);
+  const c = (window.__cuentasData || []).find(x => String(x.id) === String(companyId));
+  const isArg = normPais((c && c.properties && c.properties.country) || "") === "AR";
+  const vh = cuVhUsdEff(cli, isArg);
+  const series = cuHorasSeries(cli, companyId, 12);
+  const rows = series.map(s => {
+    const pct = cuHorasPct(s.c, s.k);
+    const col = cuHorasColor(s.c, s.k, isScale);
+    const dif = (s.c != null && s.k != null) ? (s.c - s.k) : null;
+    const difTxt = dif === null ? "—" : (dif > 0 ? "+" : "") + (Math.round(dif * 10) / 10);
+    const difUsd = (dif !== null && vh !== null) ? (dif > 0 ? "+" : "") + fmtMoney(Math.round(dif * vh)) : "—";
+    const difCol = dif === null ? "#9ca3af" : (dif > 0 ? (isScale ? "#7c3aed" : "#dc2626") : "#059669");
+    return `<tr>
+      <td style="padding:4px 8px; border-bottom:1px solid #f1f5f9;">${cuMonthLabel(s.key)}</td>
+      <td style="padding:4px 8px; border-bottom:1px solid #f1f5f9; text-align:right; font-variant-numeric:tabular-nums;">${s.k != null ? s.k : "—"}</td>
+      <td style="padding:4px 8px; border-bottom:1px solid #f1f5f9; text-align:right; font-variant-numeric:tabular-nums;">${s.c != null ? s.c : "—"}</td>
+      <td style="padding:4px 8px; border-bottom:1px solid #f1f5f9; text-align:right; color:${difCol}; font-weight:600;">${difTxt}</td>
+      <td style="padding:4px 8px; border-bottom:1px solid #f1f5f9; text-align:right; color:${difCol}; font-weight:600;">${difUsd}</td>
+      <td style="padding:4px 8px; border-bottom:1px solid #f1f5f9; text-align:right; color:${col}; font-weight:700;">${pct === null ? "—" : pct + "%"}</td>
+    </tr>`;
+  }).join("");
+  const chart = cuHorasSparkSvg(series, 320, 70, isScale) || `<div style="font-size:11px; color:#9ca3af; font-style:italic;">Cargá al menos 2 meses de consumo para ver la curva.</div>`;
+  const leyenda = `<div style="display:flex; gap:14px; font-size:10px; color:#6b7280; margin-top:4px;"><span><svg width="18" height="6" style="vertical-align:middle;"><line x1="0" y1="3" x2="18" y2="3" stroke="#94a3b8" stroke-width="1.4" stroke-dasharray="3 2"/></svg> contratadas</span><span><svg width="18" height="6" style="vertical-align:middle;"><line x1="0" y1="3" x2="18" y2="3" stroke="${isScale ? "#7c3aed" : "#059669"}" stroke-width="1.8"/></svg> consumidas</span>${isScale ? `<span style="color:#7c3aed; font-weight:600;">⚡ Scale — el sobreconsumo es esperado</span>` : ""}</div>`;
+  const vhNota = vh === null ? `<div style="font-size:10px; color:#b45309; margin-top:6px;">⚠ Cargá el valor hora para ver la diferencia en U$S.</div>` : `<div style="font-size:10px; color:#6b7280; margin-top:6px;">Dif. U$S calculada a u$s ${Math.round(vh * 100) / 100}/h.</div>`;
+  const hsLink = companyId ? `<a href="${HUBSPOT_COMPANY(companyId)}" target="_blank" style="font-size:11px; color:#4030C8;">Ver empresa en HubSpot ↗</a>` : "";
+  const div = document.createElement("div");
+  div.id = "horas-modal";
+  div.style.cssText = "position:fixed; inset:0; background:rgba(15,23,42,.45); z-index:9999; display:flex; align-items:center; justify-content:center;";
+  div.innerHTML = `<div style="background:#fff; border-radius:12px; padding:18px 20px; width:460px; max-height:82vh; overflow:auto; box-shadow:0 20px 50px rgba(0,0,0,.25);" onclick="event.stopPropagation()">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <strong style="font-size:14px;">⏱ Horas — ${escAttr(cli)}${isScale ? ' <span style="font-size:10px; color:#7c3aed; font-weight:700;">⚡ SCALE</span>' : ""}</strong>
+      <button onclick="closeHorasModal()" style="border:none; background:none; font-size:16px; cursor:pointer; color:#6b7280;">✕</button>
+    </div>
+    <div>${chart}</div>${leyenda}
+    <table style="width:100%; border-collapse:collapse; font-size:11px; margin-top:12px;">
+      <tr style="color:#6b7280; text-transform:uppercase; font-size:9px;">
+        <th style="text-align:left; padding:4px 8px;">Mes</th><th style="text-align:right; padding:4px 8px;">Contrat.</th><th style="text-align:right; padding:4px 8px;">Consum.</th><th style="text-align:right; padding:4px 8px;">Dif h</th><th style="text-align:right; padding:4px 8px;">Dif U$S</th><th style="text-align:right; padding:4px 8px;">%</th>
+      </tr>
+      ${rows || `<tr><td colspan="6" style="padding:8px 10px; color:#9ca3af; font-style:italic;">Sin datos cargados.</td></tr>`}
+    </table>${vhNota}
+    <div style="margin-top:10px; text-align:right;">${hsLink}</div>
+  </div>`;
+  div.onclick = closeHorasModal;
+  document.body.appendChild(div);
 }
 // Hidratación al cargar: HubSpot gana sobre el cache local (1 vez por fetch)
 function cuFinHydrateFromHS(list) {
@@ -6147,6 +6484,18 @@ function cuFinHydrateFromHS(list) {
       const hist = Object.assign({}, cuentasGetMeta(cli).gmvHist || {});
       if (isFinite(n) && hist[cuMonthKey()] == null) { hist[cuMonthKey()] = n; patch.gmvHist = hist; }
     }
+    // horas: el histórico serializado de HubSpot gana sobre el cache local (es la fuente portable)
+    const hh = cuHistParse(p.horas_hist);
+    let horasHist = Object.keys(hh).length ? Object.assign({}, hh) : Object.assign({}, cuHorasHist(cli));
+    const kNow = cuMonthKey();
+    if (horasHist[kNow] == null && p.horas_consumidas_mes != null && p.horas_consumidas_mes !== "") {
+      const hc = parseFloat(p.horas_consumidas_mes);
+      const hk = p.horas_de_sg_contratadas ? parseFloat(p.horas_de_sg_contratadas) : null;
+      if (isFinite(hc)) horasHist[kNow] = { c: hc, k: (hk != null && isFinite(hk)) ? hk : null };
+    }
+    if (Object.keys(horasHist).length) patch.horasHist = horasHist;
+    if (p.es_scale != null && p.es_scale !== "") patch.esScale = (String(p.es_scale) === "true");
+    if (p.estado_facturacion) patch.estadoFact = p.estado_facturacion;
     if (Object.keys(patch).length) cuentasSetMeta(cli, patch);
     // monto: sólo se toma como override manual si local está vacío y difiere del auto computable
     if (p.monto_mensual_us != null && p.monto_mensual_us !== "" && cuNum(cuentasGetMeta(cli).montoUsd) === null) {
@@ -6178,6 +6527,11 @@ async function cuSyncAllToHS() {
     if (m.finAcuerdo) props.fin_acuerdo = m.finAcuerdo;
     if (m.semaforo && SEMAFORO_TO_HS[m.semaforo]) props.semaforo = SEMAFORO_TO_HS[m.semaforo];
     const g = cuNum(cuGmvCurrent(cli)); if (g !== null) props.gmv_mensual = String(g);
+    const hh = cuHorasHist(cli);
+    if (Object.keys(hh).length) props.horas_hist = JSON.stringify(hh);
+    const hc = cuHorasEntry(cli, cuMonthKey()).c; if (hc !== null) props.horas_consumidas_mes = String(hc);
+    if (m.esScale != null) props.es_scale = m.esScale ? "true" : "false";
+    if (m.estadoFact) props.estado_facturacion = m.estadoFact;
     if (Object.keys(props).length) objs.push({ objectType: "companies", objectId: Number(c.id), properties: props });
   });
   if (!objs.length) { if (st) st.textContent = "nada para sincronizar"; return; }
@@ -6357,7 +6711,7 @@ async function fetchCuentas() {
     const res = await mcpCall("mcp__aaaa9eed-76e4-4bc8-a1a2-fad976f54ccb__search_crm_objects", {
       objectType: "companies",
       filterGroups: [{ filters: [{ propertyName: "lifecyclestage", operator: "EQ", value: "customer" }] }],
-      properties: ["name", "csm_asignado", "horas_de_sg_contratadas", "country", "num_associated_deals", "calificacion_matriz_bcg", "valor_hora", "valor_hora_us", "monto_mensual_us", "tipo_de_plan", "fin_acuerdo", "semaforo", "gmv_mensual"],
+      properties: ["name", "csm_asignado", "horas_de_sg_contratadas", "country", "num_associated_deals", "calificacion_matriz_bcg", "valor_hora", "valor_hora_us", "monto_mensual_us", "tipo_de_plan", "fin_acuerdo", "semaforo", "gmv_mensual", "horas_consumidas_mes", "horas_hist", "es_scale", "estado_facturacion"],
       sorts: [{ propertyName: "name", direction: "ASCENDING" }],
       limit: 100, offset,
       chatInsights: { userIntent: "Dashboard: cuentas activas (customer) con CSM y horas S&G", satisfaction: "NEUTRAL" }
@@ -6443,7 +6797,7 @@ async function cuentaSave() {
 }
 
 function cueColFSet(k, v) { window.__cueColF = window.__cueColF || {}; window.__cueColF[k] = v; renderCuentas(); }
-function clearCueColFilters() { window.__cueColF = {}; msfClearUids(["cu-csm", "cu-bcg", "cu-pais", "cu-plan", "cu-sem"]); renderCuentas(); }
+function clearCueColFilters() { window.__cueColF = {}; msfClearUids(["cu-csm", "cu-bcg", "cu-pais", "cu-plan", "cu-sem", "cu-scale", "cu-fact"]); renderCuentas(); }
 async function renderCuentas() {
   cuMigrateEstadoToSemaforo();
   const cont = document.getElementById("cue-tabla");
@@ -6495,9 +6849,11 @@ async function renderCuentas() {
     const cfMeta = cuentasGetMeta(a.cli);
     if (!msfMatch("cu-plan", cfMeta.plan || "")) return false;
     if (!msfMatch("cu-sem", cfMeta.semaforo || "")) return false;
+    if (!msfMatch("cu-scale", cfMeta.esScale ? "1" : "0")) return false;
+    if (!msfMatch("cu-fact", cfMeta.estadoFact || "")) return false;
     return true;
   });
-  const cfActivo = !!cfNom || ["cu-csm", "cu-bcg", "cu-pais", "cu-plan", "cu-sem"].some(u => msfSel(u).length);
+  const cfActivo = !!cfNom || ["cu-csm", "cu-bcg", "cu-pais", "cu-plan", "cu-sem", "cu-scale", "cu-fact"].some(u => msfSel(u).length);
   rows = [...rows].sort((a, b) => (b.sgh || 0) - (a.sgh || 0) || a.cli.localeCompare(b.cli));
 
   const totalH = rows.reduce((s, a) => s + (a.sgh || 0), 0);
@@ -6516,28 +6872,32 @@ async function renderCuentas() {
     <span style="font-size:12px; color:#6b7280;">$</span>
     <input type="number" value="${usdRate || ""}" placeholder="ej. 1350" onchange="cuSetUsdRate(this.value)" style="padding:5px 9px; font-size:13px; border:1px solid #C7BDFF; border-radius:6px; width:120px;">
     <span style="font-size:11px; color:#9ca3af;">se usa para convertir Valor hora $ → u$s en las cuentas de Argentina</span>
-    <button class="fc-btn secondary" onclick="cuSyncAllToHS()" title="Escribe los campos financieros de todas las cuentas visibles en HubSpot (valor hora, monto, plan, fin acuerdo, semáforo, GMV)" style="font-size:12px; margin-left:auto;">⬆ Sincronizar a HubSpot</button>
+    <button class="fc-btn secondary" onclick="cuSyncAllToHS()" title="Escribe los campos financieros de todas las cuentas visibles en HubSpot (valor hora, monto, plan, fin acuerdo, semáforo, GMV, horas consumidas, histórico de horas, Scale, estado de facturación)" style="font-size:12px; margin-left:auto;">⬆ Sincronizar a HubSpot</button>
     <span id="cufin-sync-st" style="font-size:11px; color:#4030C8;"></span>
   </div>`;
 
   let html = cotBar + bcgLegendHtml() + `<div style="overflow-x:auto; border:1px solid #e5e5e5; border-radius:8px;"><table class="std"><thead><tr>
     <th style="position:sticky; left:0; z-index:3; background:#fafafa; width:200px; min-width:200px; max-width:200px;">Cliente</th><th>CSM</th><th style="text-align:center;">Matriz BCG</th><th style="text-align:center;">País</th><th style="text-align:center;">S&G h/mes</th>
+    <th style="text-align:center;">Scale</th><th style="text-align:center;">Hs consumidas</th><th style="text-align:center;">Consumo</th>
     <th style="text-align:center;">Valor hora $</th><th style="text-align:center;">Valor hora u$s</th><th style="text-align:center;">Monto mensual u$s</th>
-    <th style="text-align:center;">Tipo plan</th><th style="text-align:center;">Fin acuerdo</th><th style="text-align:center;">Semáforo</th><th style="text-align:center;">GMV mensual</th><th style="text-align:center;">GMV últ. 6m</th>
+    <th style="text-align:center;">Tipo plan</th><th style="text-align:center;">Fin acuerdo</th><th style="text-align:center;">Semáforo</th><th style="text-align:center;">Facturación</th><th style="text-align:center;">GMV mensual</th><th style="text-align:center;">GMV últ. 6m</th>
     <th style="text-align:center;">Deals</th><th>Nota</th><th style="text-align:center;">Baja</th>
   </tr><tr style="background:#fafafa;">
     <th style="position:sticky; left:0; z-index:3; background:#fafafa; width:200px; min-width:200px; max-width:200px; padding:4px 6px;"><input type="text" value="${escAttr(CF.nombre || "")}" placeholder="filtrar… (Enter)" onchange="cueColFSet('nombre',this.value)" style="width:95%; box-sizing:border-box; padding:3px 6px; border:1px solid #d1d5db; border-radius:5px; font-size:11px; font-weight:400;"></th>
     <th style="padding:4px 6px;">${msfBtn("cu-csm", [{ v: "", l: "— sin CSM" }].concat(csms.map(c => ({ v: c, l: c }))), "renderCuentas", { live: false })}</th>
     <th style="padding:4px 6px; text-align:center;">${msfBtn("cu-bcg", CUENTAS_BCG.map(b => ({ v: b.v, l: b.icon + " " + b.label })), "renderCuentas", { live: false })}</th>
     <th style="padding:4px 6px; text-align:center;">${msfBtn("cu-pais", [...new Set(accounts.map(a => a.pais).filter(Boolean))].sort().map(p => ({ v: p, l: p })), "renderCuentas", { live: false })}</th>
-    <th></th><th></th><th></th><th></th>
+    <th></th>
+    <th style="padding:4px 6px; text-align:center;">${msfBtn("cu-scale", [{ v: "1", l: "⚡ Scale" }, { v: "0", l: "— no Scale" }], "renderCuentas", { live: false })}</th>
+    <th></th><th></th><th></th><th></th><th></th>
     <th style="padding:4px 6px; text-align:center;">${msfBtn("cu-plan", CUENTAS_PLANES.map(p => ({ v: p, l: p })), "renderCuentas", { live: false })}</th>
     <th></th>
     <th style="padding:4px 6px; text-align:center;">${msfBtn("cu-sem", Object.keys(CUENTAS_SEMAFORO).map(k => ({ v: k, l: CUENTAS_SEMAFORO[k].label })), "renderCuentas", { live: false })}</th>
+    <th style="padding:4px 6px; text-align:center;">${msfBtn("cu-fact", [{ v: "", l: "— sin estado" }].concat(CU_FACT_OPTS.map(o => ({ v: o, l: o }))), "renderCuentas", { live: false })}</th>
     <th></th><th></th><th></th><th></th>
     <th style="padding:4px 6px; text-align:center;"><button title="Limpiar filtros" onclick="clearCueColFilters()" style="padding:2px 8px; font-size:11px; border:1px solid #d1d5db; background:#fff; border-radius:5px; cursor:pointer;">✕</button>${cfActivo ? `<div style="font-size:10px; color:#4030C8; font-weight:700; margin-top:2px;">${rows.length} de ${totalPreCF}</div>` : ""}</th>
   </tr></thead><tbody>`;
-  if (!rows.length) html += `<tr><td colspan="16" class="empty">Sin cuentas en esta selección.</td></tr>`;
+  if (!rows.length) html += `<tr><td colspan="20" class="empty">Sin cuentas en esta selección.</td></tr>`;
   rows.forEach(r => {
     const meta = cuentasGetMeta(r.cli);
     const nota = meta.nota || "";
@@ -6577,19 +6937,23 @@ async function renderCuentas() {
       <td style="text-align:center;"><select onchange="cuentasSetBcg('${r.id}',this.value,this)" title="Calificación matriz BCG (escribe calificacion_matriz_bcg en HubSpot)" style="padding:3px 6px; font-size:12px; border:1px solid ${r.bcg ? ((bcgDef(r.bcg) || {}).color || "#d1d5db") : "#d1d5db"}; border-radius:5px; background:${r.bcg ? ((bcgDef(r.bcg) || {}).bg || "#fff") : "#fff"};">${bcgOptions(r.bcg)}</select> <span id="bcgst-${r.id}" style="font-size:11px;"></span></td>
       <td style="text-align:center;">${r.pais || "—"}</td>
       <td style="text-align:center;"><input type="number" value="${r.sgh != null ? r.sgh : ""}" placeholder="h/mes" onchange="cuSetSgh('${r.id}',this.value)" style="padding:3px 6px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; width:70px; text-align:right;"></td>
+      <td style="text-align:center;"><input type="checkbox" ${cuIsScale(r.cli) ? "checked" : ""} onchange="cuSetScale('${cliJs}','${r.id}',this.checked)" title="Cuenta Scale: el sobreconsumo de horas es esperado" style="cursor:pointer; width:15px; height:15px; accent-color:#7c3aed;"></td>
+      <td style="text-align:center;"><input type="number" value="${cuHorasCurrent(r.cli)}" placeholder="hs" onchange="cuSetHorasConsumidas('${cliJs}','${r.id}',this.value)" style="padding:3px 6px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; width:70px; text-align:right;"></td>
+      <td style="text-align:center;">${cuHorasCell(r.cli, r.id)}</td>
       <td style="text-align:center;">${vhPesoCell}</td>
       <td style="text-align:center;">${vhUsdCell}</td>
       <td style="text-align:center;">${montoCell}</td>
       <td style="text-align:center;">${planCell}</td>
       <td style="text-align:center;">${finCell}</td>
       <td style="text-align:center;">${semCell}</td>
+      <td style="text-align:center;">${cuFactSelect(r.cli, r.id)}</td>
       <td style="text-align:center;">${gmvCell}</td>
       <td style="text-align:center;">${cuGmvSparkCell(r.cli, r.id)}</td>
       <td style="text-align:center;">${r.deals ? `<button onclick="cuentasToggleDeals('${r.id}')" style="cursor:pointer; border:1px solid #C7BDFF; background:#F1EFFF; color:#4030C8; border-radius:6px; padding:2px 9px; font-size:12px; font-weight:600;"><span id="dealscaret-${r.id}">▸</span> ${r.deals}</button>` : '<span style="color:#9ca3af;">0</span>'}</td>
       <td><input type="text" value="${escAttr(nota)}" placeholder="—" onchange="cuentasSetNota('${cliJs}',this.value)" style="padding:3px 6px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; width:160px;"></td>
       <td style="text-align:center;"><button id="baja-${r.id}" onclick="cuentasDarBaja('${r.id}','${cliJs}')" title="Da de baja el cliente: crea el deal Reactivación en Nurturing y saca la empresa de customer" style="cursor:pointer; border:1px solid #fecaca; background:#fef2f2; color:#b91c1c; border-radius:6px; padding:2px 9px; font-size:11px; font-weight:600;">🚫 Baja</button></td>
     </tr>
-    <tr id="deals-row-${r.id}" style="display:none;"><td colspan="16" style="padding:0; background:#faf9ff;"><div id="deals-panel-${r.id}" data-cli="${escAttr(r.cli)}" style="padding:10px 16px;"></div></td></tr>`;
+    <tr id="deals-row-${r.id}" style="display:none;"><td colspan="20" style="padding:0; background:#faf9ff;"><div id="deals-panel-${r.id}" data-cli="${escAttr(r.cli)}" style="padding:10px 16px;"></div></td></tr>`;
   });
   html += `</tbody></table></div>`;
   document.getElementById("cue-tabla").innerHTML = html;
@@ -9455,6 +9819,8 @@ function renderAccuracy() {
 // ====================================================
 (async () => {
   try {
+    await stateHydrate();   // trae el estado guardado en el server (KV) antes de renderizar
+
     const [deals, closedDeals, cycleClosed] = await Promise.all([
       fetchAllOpenDeals(),
       fetchRecentClosedDeals(),
