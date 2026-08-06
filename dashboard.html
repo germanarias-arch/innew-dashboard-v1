@@ -796,10 +796,9 @@ table.std tr:hover td { background: #fafafa; }
 
   <!-- ===================== RITMO SEMANAL (ritual de los lunes) ===================== -->
   <div id="view-ritmo" style="display:none">
-    <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">📅 <b>Ritmo semanal</b> — el tablero del ritual de los lunes (30 min). Marcador de primeras reuniones · movimientos de la semana · compromisos que vencen · gap y deals necesarios · semáforo de las 5 estrategias. <i>No se discuten deals individuales: eso es Foco.</i></div>
+    <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">📅 <b>Ritmo semanal</b> — el tablero del ritual de los lunes (30 min). Marcador de primeras reuniones · movimientos de la semana · gap y deals necesarios · semáforo de las 5 estrategias. <i>No se discuten deals individuales: eso es Foco. Los compromisos que vencen viven en Tareas.</i></div>
     <div id="ritmo-marcador"></div>
     <div id="ritmo-wow"></div>
-    <div id="ritmo-compromisos"></div>
     <div id="ritmo-gap"></div>
     <div id="ritmo-semaforo"></div>
   </div><!-- /view-ritmo -->
@@ -945,6 +944,7 @@ table.std tr:hover td { background: #fafafa; }
   <!-- ===================== TAREAS / SEGUIMIENTO ===================== -->
   <div id="view-tareas" style="display:none">
     <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">📋 Todas las tareas (tickets con vencimiento). Color por estado · filtrá por owner · "Slack" arma un borrador de seguimiento al owner.</div>
+    <div id="tareas-compromisos"></div>
     <div id="tareas-tabla"><div class="loading">Abrí la pestaña para cargar las tareas…</div></div>
   </div><!-- /view-tareas -->
 
@@ -1049,7 +1049,7 @@ const STATE_KEYS = [
 const STATE_BASE_LS  = "dashState_base";     // NO se espeja: versión del server con la que estamos sincronizados
 const STATE_RELOAD_SS = "dashState_reloads"; // guard anti-loop de reload
 
-window.__stateSync = { enabled: false, updatedAt: 0, dirty: false, timer: null, status: "off" };
+window.__stateSync = { enabled: false, updatedAt: 0, dirty: false, timer: null, pollTimer: null, status: "off" };
 window.__stateApplying = false;
 
 // Accesos crudos (no disparan el espejo)
@@ -1076,7 +1076,7 @@ function stateApply(snap) {
   } catch (e) {}
   window.__stateApplying = false;
 }
-function stateBadge(txt, color) {
+function stateBadge(txt, color, onClick) {
   const S = window.__stateSync; S.status = txt;
   try {
     let el = document.getElementById("state-sync-badge");
@@ -1088,6 +1088,17 @@ function stateBadge(txt, color) {
     }
     el.textContent = txt;
     el.style.color = color || "#64748b";
+    if (typeof onClick === "function") {
+      el.style.pointerEvents = "auto";
+      el.style.cursor = "pointer";
+      el.style.opacity = "1";
+      el.onclick = onClick;
+    } else {
+      el.style.pointerEvents = "none";
+      el.style.cursor = "default";
+      el.style.opacity = ".85";
+      el.onclick = null;
+    }
   } catch (e) {}
 }
 function stateReloadOnce() {
@@ -1152,6 +1163,7 @@ async function stateHydrate() {
   let j = null;
   try { j = await r.json(); } catch (e) { return; }
   S.enabled = true;
+  stateStartPoll();
   const srvAt = Number((j && j.updatedAt) || 0);
   if (!j || !j.state) {                                            // server vacío → sembrar con este navegador
     S.updatedAt = 0;
@@ -1169,6 +1181,28 @@ async function stateHydrate() {
   S.updatedAt = srvAt;
   _lsSet(STATE_BASE_LS, String(srvAt));
   stateReloadOnce();
+}
+// Estado COMPARTIDO por todo el equipo: chequeo cada 60s si alguien más guardó.
+// NO recarga solo (sería insoportable mientras editás): avisa con un badge clickeable.
+function stateStartPoll() {
+  const S = window.__stateSync;
+  if (!S.enabled || S.pollTimer) return;
+  S.pollTimer = setInterval(async function () {
+    if (!S.enabled || S.dirty || window.__stateApplying) return;
+    try {
+      const r = await fetch("/api/state", { credentials: "include" });
+      if (!r.ok) return;
+      const j = await r.json();
+      const srvAt = Number((j && j.updatedAt) || 0);
+      if (!srvAt || srvAt === (S.updatedAt || 0)) return;
+      const who = (j && (j.byName || j.by)) || "el equipo";
+      stateBadge("☁︎ " + who + " actualizó · recargar", "#b45309", function () {
+        try { sessionStorage.removeItem(STATE_RELOAD_SS); } catch (e) {}
+        if (j && j.state) { stateApply(j.state); _lsSet(STATE_BASE_LS, String(srvAt)); }
+        location.reload();
+      });
+    } catch (e) {}
+  }, 60000);
 }
 // Espejo automático: cualquier escritura a una clave trackeada agenda un push.
 try {
@@ -1603,6 +1637,8 @@ function buildForecast(deals) {
     }));
   });
 
+  window.__fcVencidos = [];
+
   deals.forEach(d => {
     const p = d.properties;
     if (p.pipeline === NURTURING_PIPELINE_ID) return;
@@ -1618,7 +1654,12 @@ function buildForecast(deals) {
 
     const cd = new Date(p.closedate);
     let startMonthIdx = (cd.getFullYear() - startMonth.getFullYear()) * 12 + (cd.getMonth() - startMonth.getMonth());
-    if (startMonthIdx < 0) startMonthIdx = 0;
+    // Fecha de cierre vencida: NO se re-imputa al mes en curso (inflaba el mes actual).
+    // Se aparta y se muestra en el aviso "Deals con fecha vencida" para recalendarizar.
+    if (startMonthIdx < 0) {
+      window.__fcVencidos.push({ id: d.id, dealname: p.dealname, amount, prob, closedate: p.closedate, stage: p.dealstage, stageLabel: stageLabel(p.dealstage) });
+      return;
+    }
 
     const pais = getPais(p.segmento);
     const categorias = getCategorias(p.producto);
@@ -3852,6 +3893,7 @@ function buildReforePipeline() {
   const weighted = new Array(N).fill(0);
   const unweighted = new Array(N).fill(0);
   const byMonth = Array.from({ length: N }, () => []);
+  const vencidos = [];
 
   deals.forEach(d => {
     const p = d.properties;
@@ -3863,22 +3905,41 @@ function buildReforePipeline() {
     if (!p.closedate) return;
 
     const meses = Math.max(1, Math.min(12, parseInt(p.meses_de_facturacion__hasta_6_) || 1));
-    const wPerMes = (amount * prob) / meses;
-    const uPerMes = amount / meses;
+    const planFr = planPagosFracs(d); // plan de pagos (CU1/CU2): null = lineal
 
     const cd = new Date(p.closedate);
     let startIdx = (cd.getFullYear() - startMonth.getFullYear()) * 12 + (cd.getMonth() - startMonth.getMonth());
-    if (startIdx < 0) startIdx = 0;
+    // Fecha de cierre vencida: se aparta en vez de re-imputarse al mes en curso.
+    if (startIdx < 0) {
+      vencidos.push({ id: d.id, dealname: p.dealname, amount, prob, closedate: p.closedate, stage: p.dealstage, stageLabel: stageLabel(p.dealstage) });
+      return;
+    }
 
     for (let i = 0; i < meses; i++) {
       const idx = startIdx + i;
       if (idx < 0 || idx >= N) continue;
+      const uPerMes = planFr ? amount * (planFr[i] || 0) : amount / meses;
+      const wPerMes = uPerMes * prob;
       weighted[idx] += wPerMes;
       unweighted[idx] += uPerMes;
-      byMonth[idx].push({ dealname: p.dealname, amount, prob, wPerMes, meses, stage: p.dealstage, stageLabel: stageLabel(p.dealstage), closedate: p.closedate });
+      byMonth[idx].push({ dealname: p.dealname, amount, prob, wPerMes, meses, stage: p.dealstage, stageLabel: stageLabel(p.dealstage), closedate: p.closedate, planPagos: !!planFr });
     }
   });
-  return { weighted, unweighted, byMonth };
+  return { weighted, unweighted, byMonth, vencidos };
+}
+
+// Aviso de deals con fecha de cierre vencida (ya no se re-imputan al mes en curso).
+function vencidosBannerHtml(list) {
+  if (!list || !list.length) return "";
+  const tot = list.reduce((s, d) => s + d.amount, 0);
+  const top = list.slice().sort((a, b) => b.amount - a.amount).slice(0, 5);
+  const filas = top.map(d => `<span style="display:inline-block; margin-right:14px;"><a href="${HUBSPOT_DEAL}${d.id}" target="_blank" style="color:#b45309; text-decoration:underline;">${escAttr(d.dealname || "(sin nombre)")}</a> <span style="color:#92400e;">${fmtMoneyK(d.amount)} · venció ${d.closedate}</span></span>`).join("");
+  const resto = list.length > top.length ? `<span style="color:#92400e;">y ${list.length - top.length} más</span>` : "";
+  return `<div style="flex-basis:100%; background:#fffbeb; border:1px solid #fcd34d; border-radius:8px; padding:10px 14px; margin-top:4px;">
+    <div style="font-weight:700; color:#92400e; font-size:13px;">⚠️ ${list.length} deal(s) con fecha de cierre vencida · ${fmtMoneyK(tot)}</div>
+    <div class="small" style="color:#92400e; margin:3px 0 6px;">No se cuentan en la proyección hasta que les corrijas la fecha de cierre en HubSpot.</div>
+    <div class="small">${filas}${resto}</div>
+  </div>`;
 }
 
 function renderReforecast() {
@@ -3929,7 +3990,8 @@ function renderReforecast() {
       const cov = need ? pipe.unweighted[ci] / need : Infinity;
       const covTxt = need ? cov.toFixed(1) + "×" : "✓";
       return kpi("Cobertura mes actual", covTxt, need ? `pipe ${fmtMoneyK(pipe.unweighted[ci])} / gap ${fmtMoneyK(need)} · sano ≥3×` : "base ya cubre la meta", cov >= 3 ? "#059669" : cov >= 1.5 ? "#d97706" : "#dc2626");
-    })(); }
+    })() +
+    vencidosBannerHtml(pipe.vencidos); }
 
   // ---- Chart (SVG): barras apiladas Base + Hay que cerrar (Foco pond.) + Total en Generación (pond.) vs Meta ----
   // Mismos colores y criterio que la barra puente de Metas/Foco. Sin curvas de escenario (quitadas 2026-07-29).
@@ -7953,7 +8015,8 @@ function dailyFactMes(p, offset) {
   const startMonth = new Date(now.getFullYear(), now.getMonth(), 1);
   const cd = new Date(p.closedate);
   let startIdx = (cd.getFullYear() - startMonth.getFullYear()) * 12 + (cd.getMonth() - startMonth.getMonth());
-  if (startIdx < 0) startIdx = 0;
+  // Fecha de cierre vencida: no se re-imputa al mes en curso (inflaba la facturación del mes).
+  if (startIdx < 0) return 0;
   const tramo = offset - startIdx;
   if (tramo < 0 || tramo >= meses) return 0;
   const fr = planPagosFracs({ properties: p }); // plan de pagos CU1/CU2 (null = lineal)
@@ -8398,7 +8461,7 @@ async function curVCNext(id) {
 const SLACK_TOOL_SEARCH = "mcp__d7cb6f43-f7ee-4f18-af93-d69528c2a522__slack_search_users";
 const SLACK_TOOL_SEND = "mcp__d7cb6f43-f7ee-4f18-af93-d69528c2a522__slack_send_message";
 const SLACK_VENTAS_CHANNEL = "GB0NP0XP1"; // #ventas-innew
-window.__tareasFilter = window.__tareasFilter || { owner: "", estado: "", tarea: "", deal: "", vence: "" };
+window.__tareasFilter = window.__tareasFilter || { owner: "", estado: "", tarea: "", deal: "", vence: "", semana: "" };
 window.__ticketDeal = window.__ticketDeal || {};
 window.__tareasMode = window.__tareasMode || "activas";
 function getHiddenTareas() {
@@ -8455,7 +8518,83 @@ async function tareasCloseSel() {
     renderTareas();
   }
 }
-function clearTareasFilters() { window.__tareasFilter = { owner: "", estado: "", tarea: "", deal: "", vence: "", q: "" }; msfClearUids(["ta-owner", "ta-estado"]); renderTareas(); }
+function clearTareasFilters() { window.__tareasFilter = { owner: "", estado: "", tarea: "", deal: "", vence: "", q: "", semana: "" }; msfClearUids(["ta-owner", "ta-estado"]); renderTareas(); }
+// --- Compromisos de la semana (bloque portado desde Ritmo semanal) ---
+function tareasSemanaRange() {
+  const lun = ritmoMonday(new Date());
+  const dom = new Date(lun.getFullYear(), lun.getMonth(), lun.getDate() + 6);
+  return { lun, dom };
+}
+function tareaEnSemana(fvRaw) {
+  const fv = tareaFVDate(fvRaw);
+  if (!fv) return false;
+  const p = String(fv).split("-");
+  const d = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+  const r = tareasSemanaRange();
+  return d >= r.lun && d <= r.dom;
+}
+function tareasFiltroSemana() {
+  const f = window.__tareasFilter;
+  const on = f.semana === "1";
+  f.semana = on ? "" : "1";
+  if (f.semana) f.estado = "";
+  renderTareas();
+}
+function tareasFiltroVencidas() {
+  const f = window.__tareasFilter;
+  const on = f.estado === "vencida";
+  f.estado = on ? "" : "vencida";
+  if (f.estado) f.semana = "";
+  renderTareas();
+}
+function renderCompromisos() {
+  const cont = document.getElementById("tareas-compromisos");
+  if (!cont) return;
+  const f = window.__tareasFilter;
+  const r = tareasSemanaRange();
+  const hidden = getHiddenTareas();
+  const tareas = (window.__tareasData || []).filter(t => !hidden.has(String(t.id)) && !((t.properties && t.properties.subject) || "").startsWith("🐞"));
+  const enSemana = tareas.filter(t => tareaEnSemana(t.properties && t.properties.fecha_vencimiento));
+  const vencidasAll = tareas.filter(t => tareaEstado(t.properties && t.properties.fecha_vencimiento).key === "vencida");
+  const compOwner = {};
+  enSemana.forEach(t => {
+    const oid = String((t.properties && t.properties.hubspot_owner_id) || "");
+    (compOwner[oid] = compOwner[oid] || []).push(t);
+  });
+  const compIds = Object.keys(compOwner).sort((a, b) => compOwner[b].length - compOwner[a].length);
+  const semOn = f.semana === "1";
+  const vencOn = f.estado === "vencida";
+  const card = (on, color) => `cursor:pointer; border:2px solid ${on ? color : "transparent"}; background:${on ? color + "12" : "transparent"}; border-radius:8px; padding:6px 12px 6px 8px; transition:all .12s;`;
+  cont.innerHTML = `<div style="background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:14px 16px; margin-bottom:14px;">
+    <div style="display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+      <div style="font-weight:700; font-size:15px;">📌 Compromisos que vencen esta semana</div>
+      <div style="font-size:13px; color:#6b7280;">${r.lun.toLocaleDateString("es-AR", { day: "2-digit", month: "short" })} → ${r.dom.toLocaleDateString("es-AR", { day: "2-digit", month: "short" })}</div>
+    </div>
+    <div style="display:flex; gap:12px; margin:10px 0 12px; flex-wrap:wrap;">
+      <div onclick="tareasFiltroSemana()" title="Filtrar la tabla por las que vencen esta semana" style="${card(semOn, "#4030C8")}">
+        <div style="font-size:26px; font-weight:800; color:#4030C8; line-height:1;">${enSemana.length}</div>
+        <div class="small" style="color:#6b7280;">vencen esta semana ${semOn ? "· <b style=\"color:#4030C8;\">filtrando ✕</b>" : "<span style=\"color:#9ca3af;\">· clic para filtrar</span>"}</div>
+      </div>
+      <div onclick="tareasFiltroVencidas()" title="Filtrar la tabla por las ya vencidas" style="${card(vencOn, "#b91c1c")}">
+        <div style="font-size:26px; font-weight:800; color:${vencidasAll.length ? "#b91c1c" : "#047857"}; line-height:1;">${vencidasAll.length}</div>
+        <div class="small" style="color:#6b7280;">ya vencidas (arrastre) ${vencOn ? "· <b style=\"color:#b91c1c;\">filtrando ✕</b>" : "<span style=\"color:#9ca3af;\">· clic para filtrar</span>"}</div>
+      </div>
+    </div>
+    ${compIds.length ? compIds.map(id => {
+      const o = DAILY_OWNERS.find(x => String(x.id) === id);
+      const nom = o ? o.name : (id ? "Owner " + id : "Sin owner");
+      const list = compOwner[id];
+      return `<div style="margin-bottom:8px;">
+        <div style="font-size:13px; font-weight:600; color:#374151; margin-bottom:3px;">${nom} <span style="color:#9ca3af; font-weight:400;">· ${list.length}</span></div>
+        ${list.slice(0, 6).map(t => {
+          const st = tareaEstado(t.properties && t.properties.fecha_vencimiento);
+          return `<div style="font-size:12.5px; color:#4b5563; padding:2px 0 2px 10px;">• <a href="https://app.hubspot.com/contacts/${ACCOUNT_ID}/record/0-5/${t.id}" target="_blank" style="color:#374151; text-decoration:none;">${escAttr((t.properties && t.properties.subject) || "(sin asunto)")}</a> <span style="color:${st.color};">· ${st.label}</span></div>`;
+        }).join("")}
+        ${list.length > 6 ? `<div style="font-size:12px; color:#9ca3af; padding-left:10px;">+${list.length - 6} más…</div>` : ""}
+      </div>`;
+    }).join("") : `<div class="small" style="color:#9ca3af;">${window.__tareasLoaded ? "No hay compromisos con vencimiento esta semana." : "Cargando tickets…"}</div>`}
+  </div>`;
+}
 function getSlackSent() { try { return JSON.parse(localStorage.getItem("tarea_slack_sent") || "{}"); } catch (e) { return {}; } }
 function setSlackSent(map) { try { localStorage.setItem("tarea_slack_sent", JSON.stringify(map)); } catch (e) {} }
 function fmtSent(iso) { if (!iso) return ""; const d = new Date(iso); return d.toLocaleDateString("es-AR", { day: "2-digit", month: "short" }) + " " + d.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }); }
@@ -8626,6 +8765,7 @@ function renderTareas() {
     const p = t.properties;
     if (f.owner && String(p.hubspot_owner_id) !== f.owner) return false;
     if (f.estado && tareaEstado(p.fecha_vencimiento).key !== f.estado) return false;
+    if (f.semana === "1" && !tareaEnSemana(p.fecha_vencimiento)) return false;
     if (!msfMatch("ta-owner", String(p.hubspot_owner_id || ""))) return false;
     if (!msfMatch("ta-estado", tareaEstado(p.fecha_vencimiento).key)) return false;
     if (fTarea && !(p.subject || "").toLowerCase().includes(fTarea)) return false;
@@ -8699,6 +8839,7 @@ function renderTareas() {
     Acciones: <strong>✓</strong> cierra el ticket en HubSpot · <strong>✏️</strong> edita asunto/vencimiento · <strong>🙈</strong> oculta del dashboard (no toca HubSpot). Tildá varias casillas y usá <strong>✓ Cerrar seleccionadas</strong> para cerrarlas juntas en HubSpot.</div>`;
   cont.innerHTML = html;
   tareasSelPaint();
+  try { renderCompromisos(); } catch (e) {}
 }
 
 function tareaFVDate(fv) {
@@ -9399,8 +9540,9 @@ function ensureSection(viewId, sectionId, prepend) {
 
 // ====================================================
 // RITMO SEMANAL — tablero del ritual de los lunes (30 min)
-// 5 bloques: marcador de 1ª reuniones · movimientos WoW · compromisos ·
+// 4 bloques: marcador de 1ª reuniones · movimientos WoW ·
 // gap y deals necesarios · semáforo de las 5 estrategias
+// (los compromisos que vencen se movieron a la vista Tareas)
 // ====================================================
 
 // §3 del plan: distribución semanal de 1ª reuniones por owner.
@@ -9573,53 +9715,6 @@ function renderRitmo() {
     </div>`;
   }
 
-  // ---------- BLOQUE 3 · Compromisos que vencen esta semana ----------
-  const lun = ritmoMonday(new Date());
-  const dom = new Date(lun.getFullYear(), lun.getMonth(), lun.getDate() + 6);
-  const tareas = (window.__tareasData || []).filter(t => !((t.properties && t.properties.subject) || "").startsWith("🐞"));
-  const enSemana = tareas.filter(t => {
-    const fv = tareaFVDate(t.properties && t.properties.fecha_vencimiento);
-    if (!fv) return false;
-    const p = fv.split("-");
-    const d = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
-    return d >= lun && d <= dom;
-  });
-  const vencidasAll = tareas.filter(t => tareaEstado(t.properties && t.properties.fecha_vencimiento).key === "vencida");
-  const compOwner = {};
-  enSemana.forEach(t => {
-    const oid = String((t.properties && t.properties.hubspot_owner_id) || "");
-    (compOwner[oid] = compOwner[oid] || []).push(t);
-  });
-  const compIds = Object.keys(compOwner).sort((a, b) => compOwner[b].length - compOwner[a].length);
-  const b3 = `<div style="background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:14px 16px; margin-bottom:14px;">
-    <div style="display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px;">
-      <div style="font-weight:700; font-size:15px;">3️⃣ Compromisos que vencen esta semana</div>
-      <div style="font-size:13px; color:#6b7280;">${lun.toLocaleDateString("es-AR", { day: "2-digit", month: "short" })} → ${dom.toLocaleDateString("es-AR", { day: "2-digit", month: "short" })}</div>
-    </div>
-    <div style="display:flex; gap:18px; margin:10px 0 12px; flex-wrap:wrap;">
-      <div><div style="font-size:26px; font-weight:800; color:#4030C8; line-height:1;">${enSemana.length}</div><div class="small" style="color:#6b7280;">vencen esta semana</div></div>
-      <div><div style="font-size:26px; font-weight:800; color:${vencidasAll.length ? "#b91c1c" : "#047857"}; line-height:1;">${vencidasAll.length}</div><div class="small" style="color:#6b7280;">ya vencidas (arrastre)</div></div>
-    </div>
-    ${compIds.length ? compIds.map(id => {
-      const arr = compOwner[id].slice().sort((a, b) => {
-        const da = tareaEstado(a.properties.fecha_vencimiento).days, db = tareaEstado(b.properties.fecha_vencimiento).days;
-        return (da === undefined ? 99 : da) - (db === undefined ? 99 : db);
-      });
-      return `<div style="margin-bottom:10px;">
-        <div style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; color:#4030C8; margin-bottom:4px;">${nombreOwner(id)} · ${arr.length}</div>
-        ${arr.map(t => {
-          const st = tareaEstado(t.properties.fecha_vencimiento);
-          const deal = (window.__ticketDeal && window.__ticketDeal[t.id]) || "";
-          return `<div style="display:flex; gap:8px; align-items:baseline; padding:3px 0; border-bottom:1px dashed #f0f0f0; font-size:12.5px;">
-            <span style="flex:1;"><a href="https://app.hubspot.com/contacts/${ACCOUNT_ID}/record/0-5/${t.id}" target="_blank" style="color:#111; text-decoration:none;"><b>${t.properties.subject || "(sin asunto)"}</b></a>${deal ? ` <span style="color:#6b7280;">· ${deal}</span>` : ""}</span>
-            <span style="font-weight:600; color:${st.color};">${st.label}</span>
-          </div>`;
-        }).join("")}
-      </div>`;
-    }).join("") : `<div class="small" style="color:#9ca3af;">${window.__tareasLoaded ? "No hay compromisos con vencimiento esta semana." : "Cargando tickets…"}</div>`}
-    <div class="small" style="color:#9ca3af; margin-top:6px;">Se cuentan tickets abiertos con fecha de vencimiento. El detalle y el cierre viven en la vista <b>Tareas</b>.</div>
-  </div>`;
-
   // ---------- BLOQUE 4 · Gap y deals necesarios ----------
   const gap = typeof genGapSemestre === "function" ? genGapSemestre() : 0;
   const ticket = typeof genTicketProm === "function" ? genTicketProm() : 0;
@@ -9693,7 +9788,6 @@ function renderRitmo() {
   const set = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
   set("ritmo-marcador", b1);
   set("ritmo-wow", b2);
-  set("ritmo-compromisos", b3);
   set("ritmo-gap", b4);
   set("ritmo-semaforo", b5);
 }
