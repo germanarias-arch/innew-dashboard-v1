@@ -1256,8 +1256,10 @@ const PRODUCTO_TO_CATEGORIA = {
   "IDP": "IDP", "IDE": "IDP", "Middleware": "IDP",
   "S&G": "S&G",
   "Servicios de Consultoría": "Consultoría", "SEO/CRO": "Consultoría",
+  "IACS": "Consultoría",
   "FullService (FS)": "FS", "Ampliación de Negocio": "FS",
-  "Productos de 3ro": "Otros", "App Propias": "Otros"
+  "Productos de 3ro": "Otros", "App Propias": "Otros",
+  "Upsell - CA": "Otros", "(NN) Nuevos Negocios": "Otros"
 };
 
 const SEGMENTO_TO_PAIS = {
@@ -1269,6 +1271,9 @@ const SEGMENTO_TO_PAIS = {
 
 const PAISES = ["Argentina", "Paraguay", "México", "Chile", "Resto Latam"];
 const SERVICIOS = ["IDP", "S&G", "Consultoría", "FS"];
+// Columnas visibles del forecast: incluye "Otros" para que ningún producto
+// sin categoría propia quede fuera de los totales.
+const SERVICIOS_ALL = SERVICIOS.concat(["Otros"]);
 
 // META MENSUAL (USD) — del plan Innew 2026
 const META_MENSUAL = {
@@ -1979,27 +1984,25 @@ function renderForecastTable(months) {
   let html = "";
   months.forEach(month => {
     const colTotals = {};
-    SERVICIOS.forEach(s => colTotals[s] = 0);
+    SERVICIOS_ALL.forEach(s => colTotals[s] = 0);
     let grandTotal = 0;
     const rowTotals = {};
     [...PAISES, "Otros"].forEach(pais => {
       let rt = 0;
-      SERVICIOS.forEach(s => { const v = month.matrix[`${pais}|${s}`] || 0; colTotals[s] += v; rt += v; });
+      SERVICIOS_ALL.forEach(s => { const v = month.matrix[`${pais}|${s}`] || 0; colTotals[s] += v; rt += v; });
       rowTotals[pais] = rt;
       grandTotal += rt;
     });
-    let otrosTotal = 0;
-    [...PAISES, "Otros"].forEach(pais => { otrosTotal += month.matrix[`${pais}|Otros`] || 0; });
 
     html += `<div class="fc-month"><h3>FACTURACIÓN ESTIMADA — ${month.label}</h3>`;
     html += `<table class="fc-table"><thead><tr><th></th>`;
-    SERVICIOS.forEach(s => html += `<th>${s}</th>`);
+    SERVICIOS_ALL.forEach(s => html += `<th>${s}</th>`);
     html += `<th class="col-total">TOTAL</th><th class="col-total">%</th></tr></thead><tbody>`;
     [...PAISES, "Otros"].forEach(pais => {
       const rowTotal = rowTotals[pais];
       if (rowTotal === 0 && pais === "Otros") return;
       html += `<tr><td>${pais}</td>`;
-      SERVICIOS.forEach(s => {
+      SERVICIOS_ALL.forEach(s => {
         const v = month.matrix[`${pais}|${s}`] || 0;
         if (v > 0) {
           html += `<td class="monto fc-cell" id="cell-${month.idx}-${pais}-${s}" onclick="showCellDetail(${month.idx}, '${pais}', '${s}')" title="Click para ver desagregado">${fmtMoneyK(v)}</td>`;
@@ -2011,13 +2014,13 @@ function renderForecastTable(months) {
       html += `<td class="pct">${grandTotal > 0 ? ((rowTotal / grandTotal) * 100).toFixed(1) + "%" : "—"}</td></tr>`;
     });
     html += `<tr class="row-total"><td>TOTAL</td>`;
-    SERVICIOS.forEach(s => html += `<td class="monto">${fmtMoneyK(colTotals[s])}</td>`);
+    SERVICIOS_ALL.forEach(s => html += `<td class="monto">${fmtMoneyK(colTotals[s])}</td>`);
     html += `<td class="monto">${fmtMoneyK(grandTotal)}</td><td></td></tr>`;
     html += `<tr class="pct"><td>%</td>`;
-    SERVICIOS.forEach(s => html += `<td>${grandTotal > 0 ? ((colTotals[s] / grandTotal) * 100).toFixed(1) + "%" : "—"}</td>`);
+    SERVICIOS_ALL.forEach(s => html += `<td>${grandTotal > 0 ? ((colTotals[s] / grandTotal) * 100).toFixed(1) + "%" : "—"}</td>`);
     html += `<td></td><td></td></tr></tbody></table>`;
-    if (otrosTotal > 0) {
-      html += `<div class="small" style="margin-top:6px">Productos de 3ro + App Propias (fuera del cuadro principal): ${fmtMoneyK(otrosTotal)}</div>`;
+    if ((colTotals["Otros"] || 0) > 0) {
+      html += `<div class="small" style="margin-top:6px">"Otros" incluye: Upsell - CA, Nuevos Negocios, Productos de 3ro y App Propias.</div>`;
     }
     html += `<div id="fc-cell-detail-${month.idx}" class="fc-cell-detail"></div>`;
     html += `<div class="fc-detail-toggle" onclick="toggleForecastDetail(${month.idx})">▸ Ver detalle de los ${month.deals.length} deal(s) que componen el mes</div>`;
@@ -6124,28 +6127,28 @@ function buildGmailHtml(months) {
   let html = `<p>Hola,</p><p>Adjunto el Forecast HS (HubSpot) de facturación ponderada para los próximos ${FORECAST_MONTHS} meses (${start} — ${end}).</p>`;
   html += `<p><strong>Metodología:</strong> Por cada deal abierto se calcula <em>(Amount × Probabilidad de etapa) / Meses de facturación</em>, distribuido mes a mes desde la <em>fecha de cierre</em>.</p>`;
   months.forEach(month => {
-    const colTotals = {}; SERVICIOS.forEach(s => colTotals[s] = 0);
+    const colTotals = {}; SERVICIOS_ALL.forEach(s => colTotals[s] = 0);
     let grandTotal = 0; const rowTotals = {};
     [...PAISES, "Otros"].forEach(pais => {
       let rt = 0;
-      SERVICIOS.forEach(s => { const v = month.matrix[`${pais}|${s}`] || 0; colTotals[s] += v; rt += v; });
+      SERVICIOS_ALL.forEach(s => { const v = month.matrix[`${pais}|${s}`] || 0; colTotals[s] += v; rt += v; });
       rowTotals[pais] = rt; grandTotal += rt;
     });
     html += `<h3 style="color:#4030C8;font-family:Arial,sans-serif;margin-top:18px">FACTURACIÓN ESTIMADA — ${month.label}</h3>`;
     html += `<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px">`;
     html += `<thead><tr style="background:#f3f4f6"><th></th>`;
-    SERVICIOS.forEach(s => html += `<th>${s}</th>`);
+    SERVICIOS_ALL.forEach(s => html += `<th>${s}</th>`);
     html += `<th>TOTAL</th><th>%</th></tr></thead><tbody>`;
     [...PAISES, "Otros"].forEach(pais => {
       const rt = rowTotals[pais];
       if (rt === 0 && pais === "Otros") return;
       html += `<tr><td><strong>${pais}</strong></td>`;
-      SERVICIOS.forEach(s => { const v = month.matrix[`${pais}|${s}`] || 0; html += `<td align="right">${v > 0 ? fmtMoneyK(v) : "—"}</td>`; });
+      SERVICIOS_ALL.forEach(s => { const v = month.matrix[`${pais}|${s}`] || 0; html += `<td align="right">${v > 0 ? fmtMoneyK(v) : "—"}</td>`; });
       html += `<td align="right" style="background:#f3f4f6"><strong>${fmtMoneyK(rt)}</strong></td>`;
       html += `<td align="right" style="color:#6b7280">${grandTotal > 0 ? ((rt / grandTotal) * 100).toFixed(1) + "%" : "—"}</td></tr>`;
     });
     html += `<tr style="background:#f3f4f6"><td><strong>TOTAL</strong></td>`;
-    SERVICIOS.forEach(s => html += `<td align="right"><strong>${fmtMoneyK(colTotals[s])}</strong></td>`);
+    SERVICIOS_ALL.forEach(s => html += `<td align="right"><strong>${fmtMoneyK(colTotals[s])}</strong></td>`);
     html += `<td align="right"><strong>${fmtMoneyK(grandTotal)}</strong></td><td></td></tr></tbody></table>`;
   });
   html += `<p style="font-family:Arial,sans-serif;font-size:12px;color:#6b7280;margin-top:20px">Reporte generado automáticamente desde HubSpot · Dashboard Comercial Innew.</p>`;
