@@ -1381,6 +1381,46 @@ function fmtMoneyCompact(n) {
 }
 function fmtDate(d) { if (!d) return "—"; return d.slice(0, 10); }
 function daysSince(iso) { if (!iso) return null; return Math.floor((Date.now() - new Date(iso).getTime()) / 86400000); }
+// ── Inactividad: UNA sola definición para todo el dashboard ──────────────
+// Antes cada vista medía "días sin tocar" distinto (unas sólo por nota, otras
+// sólo por fecha de modificación, otras cayendo a epoch 0). Ahora todas usan
+// esta cascada: última nota → última modificación → fecha de creación.
+const INACT_DIAS = 14;
+function inactBaseDate(d) {
+  const p = (d && d.properties) || {};
+  return p.notes_last_updated || p.hs_lastmodifieddate || p.createdate || null;
+}
+function inactDias(d) {
+  const base = inactBaseDate(d);
+  if (!base) return null;
+  const n = daysSince(base);
+  return (n == null || isNaN(n)) ? null : n;
+}
+// Sin rastro alguno de actividad = stuck (antes estos deals se escondían).
+function inactIsStuck(d, umbral) {
+  const n = inactDias(d);
+  if (n == null) return true;
+  return n > (umbral == null ? INACT_DIAS : umbral);
+}
+function inactSinNota(d) {
+  const p = (d && d.properties) || {};
+  return !p.notes_last_updated;
+}
+// ── Single-threaded: deals que dependen de UN solo interlocutor ──────────
+// 0 o 1 contacto asociado = frágil: si esa persona se va, se enfría o pierde
+// poder, el deal se cae. num_associated_contacts ya viene en el fetch.
+function dealContactos(d) {
+  const p = (d && d.properties) || {};
+  const n = parseInt(p.num_associated_contacts, 10);
+  return isNaN(n) ? 0 : n;
+}
+function dealSingleThreaded(d) { return dealContactos(d) <= 1; }
+function stBadge(d) {
+  const n = dealContactos(d);
+  if (n > 1) return "";
+  const txt = n === 0 ? "sin contacto" : "1 contacto";
+  return ` <span title="Single-threaded: el deal depende de un solo interlocutor. Sumá un segundo contacto para no quedar expuesto." style="display:inline-block;margin-left:6px;padding:1px 6px;border-radius:10px;font-size:10px;font-weight:600;background:#fef3c7;color:#b45309;border:1px solid #fcd34d;vertical-align:middle;white-space:nowrap;">🧵 ${txt}</span>`;
+}
 function stageLabel(stage) { return STAGE_LABELS[stage] || stage; }
 function getProbability(stage, fallback) {
   // HubSpot (back) es la fuente de verdad: usamos la probabilidad por deal
@@ -1551,10 +1591,7 @@ function buildPulso(deals, closedDeals) {
   const perdidosLast = closedDeals.filter(d => d.properties.dealstage === "closedlost" && d.properties.hs_v2_date_entered_closedlost && isLastMonth(new Date(d.properties.hs_v2_date_entered_closedlost))).length;
 
   // % Stuck +14d
-  const stuckCount = dealsOpen.filter(d => {
-    const notes = d.properties.notes_last_updated;
-    return notes && daysSince(notes) > 14;
-  }).length;
+  const stuckCount = dealsOpen.filter(d => inactIsStuck(d)).length;
   const pctStuck = dealsOpen.length ? Math.round(100 * stuckCount / dealsOpen.length) : 0;
 
   return {
@@ -2194,11 +2231,12 @@ function renderSaludEmbudo(deals, closedDeals) {
   const top3Pct = totalAmount ? Math.round(100 * top3Amount / totalAmount) : 0;
 
   // Stuck %
-  const stuckCount = open.filter(d => {
-    const notes = d.properties.notes_last_updated;
-    return notes && daysSince(notes) > 14;
-  }).length;
+  const stuckCount = open.filter(d => inactIsStuck(d)).length;
   const pctStuck = open.length ? Math.round(100 * stuckCount / open.length) : 0;
+
+  // Single-threaded %: deals con 0 o 1 contacto asociado (frágiles)
+  const stCount = open.filter(d => dealSingleThreaded(d)).length;
+  const pctSingle = open.length ? Math.round(100 * stCount / open.length) : 0;
 
   const html = `
     <div class="salud-grid">
@@ -2361,6 +2399,7 @@ function renderSaludEmbudo(deals, closedDeals) {
         <h4>⚠ Concentración y riesgo</h4>
         <div class="salud-row"><span>Top 3 deals = % pipeline</span><span class="salud-val">${top3Pct}% ${top3Pct > 30 ? "🟡" : "🟢"}</span></div>
         <div class="salud-row"><span>% Stuck +14d</span><span class="salud-val">${pctStuck}% ${pctStuck > 25 ? "🟡" : "🟢"}</span></div>
+        <div class="salud-row"><span title="Deals con 0 o 1 contacto asociado: si esa persona se va, el deal se cae.">🧵 % Single-threaded</span><span class="salud-val">${pctSingle}% ${pctSingle > 40 ? "🔴" : pctSingle > 20 ? "🟡" : "🟢"} <span style="font-weight:400;color:#64748b;font-size:11px;">(${stCount})</span></span></div>
         <div class="salud-row"><span>Deals abiertos totales</span><span class="salud-val">${open.length}</span></div>
       </div>
       <div class="salud-block">
@@ -2368,6 +2407,7 @@ function renderSaludEmbudo(deals, closedDeals) {
         <div class="salud-row" style="display: block;">
           ${top3Pct > 30 ? "<div>⚠ Concentración alta — top 3 deals son >30% del pipeline.</div>" : ""}
           ${pctStuck > 25 ? "<div>⚠ % Stuck alto (>25%) — revisar deals sin actividad reciente.</div>" : ""}
+          ${pctSingle > 40 ? `<div>🧵 ${stCount} deals dependen de un solo contacto (${pctSingle}% del pipeline) — sumar un segundo interlocutor.</div>` : ""}
           ${vc < 5 ? "<div>⚠ Pocos Verbal Commit (<5) — empujar deals en Negociación.</div>" : ""}
           ${winRate >= 80 ? "<div>🟢 Win rate sólido (≥80%).</div>" : ""}
           ${propEnv > nego * 3 ? "<div>⚠ Cuello de botella en Propuesta → Negociación.</div>" : ""}
@@ -2379,7 +2419,7 @@ function renderSaludEmbudo(deals, closedDeals) {
       Para conversión histórica precisa entre stages se necesita histórico de stage_changes (próxima versión).
     </div>`;
   document.getElementById("content-salud").innerHTML = html;
-  return { winRate, cicloMedio, avgGanado, top3Pct, pctStuck };
+  return { winRate, cicloMedio, avgGanado, top3Pct, pctStuck, pctSingle, stCount };
 }
 
 // ====================================================
@@ -2420,9 +2460,10 @@ function categorize(deals) {
       buckets.won.push(d);
       return;
     }
-    if (lastNote) {
-      const days = daysSince(p.notes_last_updated);
-      if (days > 14) buckets.stuck.push({ ...d, _days: days });
+    // Criterio unificado: un deal sin NINGUNA actividad también es stuck
+    // (antes se escondía porque el filtro exigía tener nota previa).
+    if (inactIsStuck(d)) {
+      buckets.stuck.push({ ...d, _days: inactDias(d), _sinNota: inactSinNota(d) });
     }
     if (closeDate && closeDate < now && !CLOSED_STAGES.includes(p.dealstage)) {
       buckets.overdue.push(d);
@@ -2436,7 +2477,7 @@ function categorize(deals) {
 }
 
 function renderBuckets(buckets) {
-  const dealCol = r => `<a href="${HUBSPOT_DEAL(r.id)}" target="_blank">${r.properties.dealname || "(sin nombre)"}</a>`;
+  const dealCol = r => `<a href="${HUBSPOT_DEAL(r.id)}" target="_blank">${r.properties.dealname || "(sin nombre)"}</a>${stBadge(r)}`;
 
   // Verbal Commit
   let html = `<table class="std"><thead><tr><th>Deal</th><th>Monto</th><th>Días sin nota</th><th>Close date</th><th>Acción</th></tr></thead><tbody>`;
@@ -2489,7 +2530,7 @@ function renderBuckets(buckets) {
   if (!buckets.stuck.length) html += `<tr><td colspan="5" class="empty">Sin stuck.</td></tr>`;
   buckets.stuck.forEach(r => {
     window.__stuckDeals[r.id] = { amount: r.properties.amount || "0", name: r.properties.dealname || "este deal" };
-    html += `<tr id="stuck-${r.id}"><td>${dealCol(r)}</td><td>${fmtMoney(r.properties.amount)}</td><td>${r._days}</td><td>${fmtDate(r.properties.notes_last_updated)}</td>
+    html += `<tr id="stuck-${r.id}"><td>${dealCol(r)}</td><td>${fmtMoney(r.properties.amount)}</td><td>${r._days != null ? r._days : "—"}</td><td>${r._sinNota ? `<span style="color:#b45309;" title="Nunca se registró una nota en este deal">sin nota</span>` : fmtDate(r.properties.notes_last_updated)}</td>
       <td style="white-space:nowrap;"><button onclick="stuckToggleActivity('${r.id}')" title="Registrar actividad (nota) en HubSpot" style="font-size:11px; padding:2px 7px; border:1px solid #d1d5db; border-radius:5px; background:white; cursor:pointer;">➕ Actividad</button>
       <button onclick="stuckNurturing('${r.id}')" title="Mover a Nurturing (amount→0, close +6m, nota)" style="font-size:11px; padding:2px 7px; border:1px solid #c4b5fd; color:#5b21b6; border-radius:5px; background:#f5f3ff; cursor:pointer; margin-left:4px;">→ Nurturing</button>
       <span id="stuckst-${r.id}" class="fc-status" style="font-size:11px; margin-left:6px;"></span></td></tr>
@@ -2505,7 +2546,7 @@ function renderBuckets(buckets) {
   document.getElementById("tbl-stuck").innerHTML = html;
   const stuckTotal = buckets.stuck.reduce((s, d) => s + parseFloat(d.properties.amount || 0), 0);
   const topStuck = buckets.stuck[0];
-  document.getElementById("preview-stuck").textContent = `(${buckets.stuck.length} deals · ${fmtMoneyK(stuckTotal)}${topStuck ? ` · top: ${topStuck.properties.dealname.substring(0,20)} ${fmtMoneyK(parseFloat(topStuck.properties.amount||0))} · ${topStuck._days}d` : ""})`;
+  document.getElementById("preview-stuck").textContent = `(${buckets.stuck.length} deals · ${fmtMoneyK(stuckTotal)}${topStuck ? ` · top: ${topStuck.properties.dealname.substring(0,20)} ${fmtMoneyK(parseFloat(topStuck.properties.amount||0))} · ${topStuck._days != null ? topStuck._days + "d" : "sin actividad"}` : ""})`;
 
   // Overdue
   html = `<table class="std"><thead><tr><th>Deal</th><th>Monto</th><th>Close date (editable)</th></tr></thead><tbody>`;
@@ -5212,8 +5253,9 @@ function metasHint(d) {
   if (p.dealstage === VERBAL_COMMIT_STAGE) return "→ empujar la firma";
   if (p.closedate && new Date(p.closedate) < now) return "→ cierre vencido: recalendarizar o cerrar";
   if (!p.hs_next_step) return "→ definir próximo paso";
-  const inact = hoyDaysSince(p.hs_lastmodifieddate) || 0;
-  if (inact > 14) return `→ ${inact}d sin actividad: retomar`;
+  const inact = inactDias(d);
+  if (inact == null) return "→ sin actividad registrada: retomar";
+  if (inact > INACT_DIAS) return `→ ${inact}d sin actividad: retomar`;
   return "→ avanzar de etapa";
 }
 // Puente a la meta (imagen): un mes/periodo por card. Barra apilada de 4 capas
@@ -9855,7 +9897,7 @@ function renderScorecard() {
     // MRR nuevo cerrado este mes: amount/meses de closedwon con closedate en el mes
     const wonMes = closed.filter(d => d.properties.dealstage === "closedwon" && String(d.properties.hubspot_owner_id) === o.id && String(d.properties.closedate || "").slice(0, 7) === mKey);
     const mrrWon = wonMes.reduce((s, d) => { const amt = parseFloat(d.properties.amount) || 0; const m = parseInt(d.properties.meses_de_facturacion__hasta_6_) || 1; return s + amt / Math.max(1, m); }, 0);
-    const stuck = mine.filter(d => { const lm = new Date(d.properties.notes_last_updated || d.properties.hs_lastmodifieddate || 0); return (now - lm) / 86400000 > 14; }).length;
+    const stuck = mine.filter(d => inactIsStuck(d)).length;
     const venc = tareas.filter(t => String(t.properties.hubspot_owner_id) === o.id && tareaEstado(t.properties.fecha_vencimiento).key === "vencida").length;
     const cuota = cuotas[o.id] || 0;
     const att = cuota ? Math.round(100 * mrrWon / cuota) : null;
@@ -10069,7 +10111,7 @@ function hoyBuildAcciones(open) {
   open.forEach(d => {
     const p = d.properties;
     const amt = parseFloat(p.amount) || 0;
-    const inact = hoyDaysSince(p.notes_last_updated || p.hs_lastmodifieddate) || 0;
+    const inact = inactDias(d) || 0;
     const href = HUBSPOT_DEAL(d.id);
     // 1) Verbal Commit sin firma
     if (p.dealstage === "1365872702") {
