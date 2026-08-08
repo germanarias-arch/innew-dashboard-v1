@@ -1683,6 +1683,10 @@ function buildForecast(deals) {
       month.deals.push({
         id: d.id, dealname: p.dealname, amount, prob, montoPonderado: totalPonderado,
         meses, cuotaBruta: cuotaBrutaI, montoPorMes: montoPorMesI,
+        // montoPorMesPond = ponderado COMPLETO del deal en el mes (no dividido por categoría).
+        // Se usa en todos los agregados (calcPeriodo, rollup por país, totales), porque el push
+        // ocurre 1 vez por deal-mes y no 1 vez por categoría: sumar el dividido perdía plata.
+        montoPorMesPond: montoPorMesI,
         montoPorMesPorCategoria: montoPorMesCatI, pais, categoriasArr: categorias,
         categorias: categorias.join(" + "), stage: p.dealstage, stageLabel: stageLabel(p.dealstage),
         closedate: p.closedate, planPagos: !!planFr
@@ -1735,12 +1739,13 @@ function calcPeriodo(forecastMonths, monthIndices) {
   let fcTotal = 0, fcSeguro = 0, fcRiesgo = 0, focoPond = 0, genPond = 0;
   monthIndices.forEach(i => {
     forecastMonths[i].deals.forEach(d => {
-      if (d.prob >= 0.9) fcSeguro += d.montoPorMesPorCategoria;
-      else fcRiesgo += d.montoPorMesPorCategoria;
-      fcTotal += d.montoPorMesPorCategoria;
+      const mp = (d.montoPorMesPond != null) ? d.montoPorMesPond : d.montoPorMesPorCategoria;
+      if (d.prob >= 0.9) fcSeguro += mp;
+      else fcRiesgo += mp;
+      fcTotal += mp;
       // Mismo criterio de vistas: embudo temprano (SQL/1ª reu) = Generación; el resto (Propuesta+) = Foco.
-      if (GEN_STAGE_IDS.includes(d.stage)) genPond += d.montoPorMesPorCategoria;
-      else focoPond += d.montoPorMesPorCategoria;
+      if (GEN_STAGE_IDS.includes(d.stage)) genPond += mp;
+      else focoPond += mp;
     });
   });
   const totalEsp = realTotal + fcTotal;
@@ -1898,7 +1903,7 @@ function renderMonthlyTable(forecastMonths) {
   forecastMonths.forEach(m => {
     const real = REAL_FACTURABLE[m.key] || 0;
     let fc = 0;
-    m.deals.forEach(d => fc += d.montoPorMesPorCategoria);
+    m.deals.forEach(d => fc += ((d.montoPorMesPond != null) ? d.montoPorMesPond : d.montoPorMesPorCategoria));
     const suma = real + fc;
     const meta = META_MENSUAL[m.key] || 0;
     const pct = meta ? Math.round(100 * suma / meta) : 0;
@@ -2107,7 +2112,7 @@ function renderPais(forecastMonths) {
   const fcPorPais = {};
   [...PAISES, "Otros"].forEach(p => fcPorPais[p] = 0);
   forecastMonths.forEach(m => {
-    m.deals.forEach(d => { fcPorPais[d.pais] = (fcPorPais[d.pais] || 0) + d.montoPorMesPorCategoria; });
+    m.deals.forEach(d => { fcPorPais[d.pais] = (fcPorPais[d.pais] || 0) + ((d.montoPorMesPond != null) ? d.montoPorMesPond : d.montoPorMesPorCategoria); });
   });
   let realTotal = 0;
   forecastMonths.forEach(m => realTotal += (REAL_FACTURABLE[m.key] || 0));
@@ -5167,6 +5172,41 @@ function metasCuotaEnMesPond(d, mKey) {
   const p = (d && d.properties) || {};
   return metasCuotaEnMes(d, mKey) * getProbability(p.dealstage, p.hs_deal_stage_probability);
 }
+// ===== Motor único de cadencia (Tanda 2, 2026-08-06) =====
+// Una sola función alimenta las 4 cards de Metas (este mes / mes que viene / trimestre / semestre)
+// y la franja de Foco. Criterio: CUOTA QUE FACTURA EN EL MES (respeta plan_de_pagos), el mismo
+// motor que la columna "Fact. [mes]" de Foco. Así el semestre ES la suma de sus meses por
+// construcción, y la generación teórica PxQ queda donde corresponde: en Reforecast.
+function metasPeriodo(monthKeys, opts) {
+  opts = opts || {};
+  const keys = (monthKeys || []).filter(Boolean);
+  const gsPond = opts.pond !== false;          // capa Foco ponderada (default) o a valor pleno
+  const meta = keys.reduce((s, k) => s + (META_MENSUAL[k] || 0), 0);
+  const real = keys.reduce((s, k) => s + (REAL_FACTURABLE[k] || 0), 0);
+  const openAll = (window.__dailyOpen || []);
+  let focoPond = 0, genPond = 0, commit = 0, upside = 0;
+  openAll.forEach(dd => {
+    const p = dd.properties || {};
+    let pond = 0, pleno = 0;
+    keys.forEach(k => { pond += metasCuotaEnMesPond(dd, k); pleno += metasCuotaEnMes(dd, k); });
+    if (pond <= 0 && pleno <= 0) return;
+    const esGen = GEN_STAGE_IDS.includes(p.dealstage);
+    if (esGen) genPond += pond;
+    else focoPond += (gsPond ? pond : pleno);
+    // Commit vs. upside: mismo corte que el forecast probabilístico (prob >= 90%)
+    if (getProbability(p.dealstage, p.hs_deal_stage_probability) >= 0.9) commit += pond;
+    else upside += pond;
+  });
+  const hueco = Math.max(0, meta - real - focoPond - genPond);
+  const proy = real + focoPond + genPond;
+  return {
+    keys: keys, meta: meta, real: real, focoPond: focoPond, genPond: genPond, hueco: hueco,
+    commit: commit, upside: upside, proy: proy,
+    pctProy: meta ? Math.round(100 * proy / meta) : 0,
+    pctCommit: (commit + upside) > 0 ? Math.round(100 * commit / (commit + upside)) : 0,
+    monthCount: keys.length
+  };
+}
 function metasHint(d) {
   const p = d.properties || {}; const now = new Date();
   if (p.dealstage === VERBAL_COMMIT_STAGE) return "→ empujar la firma";
@@ -5182,30 +5222,23 @@ function metasHint(d) {
 // opts = { isNow, offset (0=este mes,1=mes sig, null=multi), diasRest, wide, monthKeys }
 function metasCadCard(titulo, rango, s, opts) {
   opts = opts || {};
-  const meta = s.metaRef;                 // Piso si aplica, sino Meta
-  const real = s.realTotal;               // facturado real / base contratada
-  const focoPond = s.focoPond;            // embudo Propuesta+ ponderado (CERRAR)
-  const genPond = s.genPond;              // embudo temprano ponderado (GENERAR)
-  const proy = s.totalEsp;                // proyección probabilística
-  const hueco = Math.max(0, s.porConstruir); // sin pipeline detrás (a generar)
   const isNow = !!opts.isNow;
   const esMes = opts.offset != null;      // mes individual vs período
-  const pctProy = meta ? Math.round(100 * proy / meta) : 0;
+  // Motor único de cadencia (Tanda 2, 2026-08-06): las 4 cards de Metas y la franja de Foco
+  // usan la MISMA función → el semestre es exactamente la suma de sus meses, y la generación
+  // teórica PxQ queda donde corresponde (Reforecast), fuera de la proyección.
+  const monthKeys = opts.monthKeys || (esMes ? [metasMonthKey(opts.offset)] : []);
+  const P = metasPeriodo(monthKeys);
+  const meta = P.meta;
+  const real = P.real;                    // facturado real / base contratada
+  const focoPond = P.focoPond;            // embudo Propuesta+ ponderado (CERRAR)
+  const genPond = P.genPond;              // embudo temprano ponderado (GENERAR)
+  const proy = P.proy;                    // facturable + pipeline ponderado (sin PxQ teórico)
+  const hueco = P.hueco;                  // sin pipeline detrás (a generar)
+  const pctProy = P.pctProy;
   const estadoCol = pctProy >= 100 ? "#047857" : pctProy >= 80 ? "#b45309" : "#dc2626";
   const mesCorto = esMes ? (rango.split(" ")[0] || "el mes") : "período";
   const metaLabel = esMes ? `Meta de ${mesCorto.toLowerCase()}` : "Meta del período";
-
-  // Deals de la ventana para los tramos: mes en curso/sig → 1 key; período → varias keys
-  const monthKeys = opts.monthKeys || (esMes ? [metasMonthKey(opts.offset)] : []);
-  const openAll = (window.__dailyOpen || []);
-  const inWin = d => {
-    const cd = d.properties.closedate; if (!cd) return false;
-    const dt = new Date(cd); const k = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`;
-    return monthKeys.includes(k);
-  };
-  const periodDeals = monthKeys.length ? openAll.filter(inWin) : [];
-  const focoDeals = periodDeals.filter(d => !GEN_STAGE_IDS.includes(d.properties.dealstage)).sort((a, b) => metasWeighted(b) - metasWeighted(a));
-  const genDeals = periodDeals.filter(d => GEN_STAGE_IDS.includes(d.properties.dealstage));
 
   // Barra: anchos relativos a la meta con clamp si el total la supera
   const w = n => meta ? (100 * n / meta) : 0;
@@ -5220,7 +5253,7 @@ function metasCadCard(titulo, rango, s, opts) {
   const ritmo = isNow && opts.diasRest > 0 ? gapEjec / opts.diasRest : 0;
   const cadTxt = esMes
     ? (isNow ? `quedan ${opts.diasRest}d` + (ritmo > 0 ? ` · ritmo ${fmtMoneyK(ritmo)}/día` : "") : `mes completo (${opts.diasRest}d)`)
-    : `${s.monthCount} meses`;
+    : `${P.monthCount} meses`;
 
   const head = `<div class="mc-head">
       <span class="mc-title">${titulo} <span class="mc-r">${rango}</span></span>
@@ -5241,13 +5274,21 @@ function metasCadCard(titulo, rango, s, opts) {
       <span class="mc-leg"><span class="mc-sw hueco"></span><span class="ll">Sin cubrir — a generar</span> <span class="lv">${fmtMoneyK(hueco)}</span></span>
     </div>`;
 
+  // Commit vs. upside (Tanda 2, ítem 5): del pipeline abierto que factura en el período,
+  // cuánto está prácticamente firmado (prob >= 90%) y cuánto todavía depende de convencer.
+  const cuTot = P.commit + P.upside;
+  const commitLine = cuTot > 0 ? `<div style="margin-top:9px; display:flex; align-items:center; gap:9px; flex-wrap:wrap;">
+      <span style="flex:0 0 92px; height:7px; border-radius:4px; background:#e2e8f0; overflow:hidden; display:inline-block;"><span style="display:block; height:100%; width:${P.pctCommit}%; background:#047857;"></span></span>
+      <span style="font-size:11px; color:#475569;"><b style="color:#047857;">Comprometido</b> ${fmtMoneyK(P.commit)} (${P.pctCommit}%) · <b style="color:#b45309;">por convencer</b> ${fmtMoneyK(P.upside)}</span>
+    </div>` : "";
+
   // Resumen compacto — el detalle accionable (deals, hints, decisión) vive en el bloque
   // del mes actual (arriba) y en los bloques FOCO (abajo); acá no se repite.
   const compact = `<div style="margin-top:10px; font-size:11.5px; color:#475569; background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; padding:8px 11px;">${hueco > 0
     ? `⚠️ <b>${fmtMoneyK(hueco)}</b> sin pipeline en el período ${hueco > 0 ? '<span class="mc-chip">DECISIÓN</span>' : ""} → owner + fecha con Joa, o se arrastra.`
     : `✓ El embudo cubre la meta del período si se ejecuta sin fugas.`} <span class="mc-hint">Detalle accionable: bloque del mes actual (arriba) y FOCO (abajo).</span></div>`;
 
-  return `<div class="metas-cad ${isNow ? "now" : ""} ${opts.wide ? "wide" : ""}">${head}${bridge}${legend}${compact}</div>`;
+  return `<div class="metas-cad ${isNow ? "now" : ""} ${opts.wide ? "wide" : ""}">${head}${bridge}${legend}${commitLine}${compact}</div>`;
 }
 function metasFocoMes(open, offset, s) {
   const mk = metasMonthKey(offset);
@@ -9881,12 +9922,15 @@ function goalStripBlock(offset, compact) {
   const base = new Date();
   const d = new Date(base.getFullYear(), base.getMonth() + offset, 1);
   const mKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-  const idx = (d.getFullYear() - 2026) * 12 + (d.getMonth() - 6);
-  const inH2 = idx >= 0 && idx < 6;
-  const real = REAL_FACTURABLE[mKey] || 0;
-  let proy = real;
-  try { if (inH2) { const pipe = buildReforePipeline(); proy = scenTotal(REFORE.activeScen, pipe.weighted)[idx]; } } catch (e) {}
-  const meta = META_MENSUAL[mKey] || REFORE.piso || 0;
+  // Toggle pond./100%: "Hay que cerrar" (capa Foco) se puede ver ponderada o a valor completo
+  const gsPond = window.__gsPond !== false;
+  // Motor único de cadencia (Tanda 2, 2026-08-06): las mismas capas que usan las cards de Metas.
+  // La proyección ya NO suma generación teórica PxQ (eso vive en Reforecast): así el titular
+  // coincide con la barra de abajo y el semestre es exactamente la suma de sus meses.
+  const P = metasPeriodo([mKey], { pond: gsPond });
+  const meta = P.meta || REFORE.piso || 0;
+  const real = P.real, focoPond = P.focoPond, genPond = P.genPond, proy = P.proy;
+  const hueco = Math.max(0, meta - real - focoPond - genPond);
   const isNow = offset === 0;
   const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
   const diasRest = isNow ? (lastDay - base.getDate()) : lastDay;
@@ -9900,11 +9944,6 @@ function goalStripBlock(offset, compact) {
   const mesDeals = openAll.filter(dd => metasCuotaEnMes(dd, mKey) > 0);
   const focoDeals = mesDeals.filter(dd => !GEN_STAGE_IDS.includes(dd.properties.dealstage)).sort((a, b) => metasCuotaEnMesPond(b, mKey) - metasCuotaEnMesPond(a, mKey));
   const genDeals = mesDeals.filter(dd => GEN_STAGE_IDS.includes(dd.properties.dealstage));
-  // Toggle pond./100%: "Hay que cerrar" (capa Foco) se puede ver ponderada o a valor completo
-  const gsPond = window.__gsPond !== false;
-  const focoPond = focoDeals.reduce((s, dd) => s + (gsPond ? metasCuotaEnMesPond(dd, mKey) : metasCuotaEnMes(dd, mKey)), 0);
-  const genPond = genDeals.reduce((s, dd) => s + metasCuotaEnMesPond(dd, mKey), 0);
-  const hueco = Math.max(0, meta - real - focoPond - genPond);
   const gapEjec = Math.max(0, meta - real);
   const ritmo = isNow && diasRest > 0 ? gapEjec / diasRest : 0;
 
