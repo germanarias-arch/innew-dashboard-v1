@@ -1437,7 +1437,7 @@ const PROB_COM = { alta: 1.00, media: 0.90, baja: 0.20, nula: 0.00 };
 // El numero TAMBIEN vive en HubSpot: prop numerica probabilidad_comercial_pct (100/90/20/0).
 function probComPct(k) { const v = PROB_COM[String(k || "").trim().toLowerCase()]; return v == null ? "" : String(Math.round(v * 100)); }
 function probComProps(k) { const s = String(k || "").trim().toLowerCase(); return { probabilidad_comercial: s, probabilidad_comercial_pct: probComPct(s) }; }
-const PROB_COM_OPTS = [["alta", "Alta (100%)"], ["media", "Media (90%)"], ["baja", "Baja (20%)"], ["nula", "Nula (0%)"]];
+const PROB_COM_OPTS = [["alta", "Alta (x100%)"], ["media", "Media (x90%)"], ["baja", "Baja (x20%)"], ["nula", "Nula (0%)"]];
 const PROB_COM_COLOR = {
   alta:  { bg: "#ecfdf5", bd: "#a7f3d0", fg: "#047857" },
   media: { bg: "#eff6ff", bd: "#bfdbfe", fg: "#1d4ed8" },
@@ -1469,11 +1469,13 @@ function probComKey(p) {
 function dealProb(d) {
   const p = (d && d.properties) || d || {};
   if (p.pipeline === NURTURING_PIPELINE_ID) return 0;
+  // Complementarias: prob. de etapa (HubSpot) x factor de prob. comercial.
+  const et = getProbability(p.dealstage, p.hs_deal_stage_probability);
   const k = probComKey(p);
-  if (k) return PROB_COM[k];
+  if (k) return et * PROB_COM[k];
   const pct = parseFloat(p.probabilidad_comercial_pct);
-  if (!isNaN(pct)) return pct > 1 ? pct / 100 : pct;
-  return getProbability(p.dealstage, p.hs_deal_stage_probability);
+  if (!isNaN(pct)) return et * (pct > 1 ? pct / 100 : pct);
+  return et;
 }
 function fechaCambBadge(p, id) {
   const n = cierreCambN(p, id);
@@ -1489,7 +1491,7 @@ function probComSelect(id, p, updFn, stPrefix) {
   const st = cur ? `background:${c.bg}; border:1px solid ${c.bd}; color:${c.fg}; font-weight:600;` : "";
   const opts = `<option value="">— sin definir</option>` + PROB_COM_OPTS.map(o => `<option value="${o[0]}"${o[0] === cur ? " selected" : ""}>${o[1]}</option>`).join("");
   if (enNur) return `<select disabled title="En Nurturing la probabilidad comercial es Nula (0%)" style="${PROB_COM_INS} width:112px; ${st} opacity:.85;">${opts}</select>`;
-  return `<select title="Probabilidad comercial (independiente de la etapa)" style="${PROB_COM_INS} width:112px; ${st}" onchange="probComSet('${id}','${updFn}','${stPrefix}',this.value)">${opts}</select>`;
+  return `<select title="Probabilidad comercial: multiplica la probabilidad de la etapa (etapa x factor)" style="${PROB_COM_INS} width:112px; ${st}" onchange="probComSet('${id}','${updFn}','${stPrefix}',this.value)">${opts}</select>`;
 }
 async function probComSet(id, updFn, stPrefix, val) {
   const stEl = document.getElementById(stPrefix + "-" + id);
