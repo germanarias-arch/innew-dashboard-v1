@@ -1444,6 +1444,7 @@ const PROB_COM_COLOR = {
   baja:  { bg: "#fffbeb", bd: "#fcd34d", fg: "#b45309" },
   nula:  { bg: "#fef2f2", bd: "#fecaca", fg: "#b91c1c" }
 };
+const PROB_COM_INS = "padding:3px 5px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; background:white;";
 const CIERRE_CAMB_LS = "dashComercial_cierreCamb";
 function cierreCambAll() { try { return JSON.parse(localStorage.getItem(CIERRE_CAMB_LS) || "{}") || {}; } catch (e) { return {}; } }
 function cierreCambSave(m) { try { localStorage.setItem(CIERRE_CAMB_LS, JSON.stringify(m)); } catch (e) {} }
@@ -1487,8 +1488,8 @@ function probComSelect(id, p, updFn, stPrefix) {
   const c = PROB_COM_COLOR[cur || "alta"];
   const st = cur ? `background:${c.bg}; border:1px solid ${c.bd}; color:${c.fg}; font-weight:600;` : "";
   const opts = `<option value="">— sin definir</option>` + PROB_COM_OPTS.map(o => `<option value="${o[0]}"${o[0] === cur ? " selected" : ""}>${o[1]}</option>`).join("");
-  if (enNur) return `<select disabled title="En Nurturing la probabilidad comercial es Nula (0%)" style="${inS} width:112px; ${st} opacity:.85;">${opts}</select>`;
-  return `<select title="Probabilidad comercial (independiente de la etapa)" style="${inS} width:112px; ${st}" onchange="probComSet('${id}','${updFn}','${stPrefix}',this.value)">${opts}</select>`;
+  if (enNur) return `<select disabled title="En Nurturing la probabilidad comercial es Nula (0%)" style="${PROB_COM_INS} width:112px; ${st} opacity:.85;">${opts}</select>`;
+  return `<select title="Probabilidad comercial (independiente de la etapa)" style="${PROB_COM_INS} width:112px; ${st}" onchange="probComSet('${id}','${updFn}','${stPrefix}',this.value)">${opts}</select>`;
 }
 async function probComSet(id, updFn, stPrefix, val) {
   const stEl = document.getElementById(stPrefix + "-" + id);
