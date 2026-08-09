@@ -1431,6 +1431,122 @@ function getProbability(stage, fallback) {
   if (STAGE_PROBABILITIES[stage] != null) return STAGE_PROBABILITIES[stage];
   return 0;
 }
+
+// ===== Probabilidad comercial + alertas de cambio de fecha de cierre (2026-08-08) =====
+const PROB_COM = { alta: 1.00, media: 0.90, baja: 0.20, nula: 0.00 };
+// El numero TAMBIEN vive en HubSpot: prop numerica probabilidad_comercial_pct (100/90/20/0).
+function probComPct(k) { const v = PROB_COM[String(k || "").trim().toLowerCase()]; return v == null ? "" : String(Math.round(v * 100)); }
+function probComProps(k) { const s = String(k || "").trim().toLowerCase(); return { probabilidad_comercial: s, probabilidad_comercial_pct: probComPct(s) }; }
+const PROB_COM_OPTS = [["alta", "Alta (100%)"], ["media", "Media (90%)"], ["baja", "Baja (20%)"], ["nula", "Nula (0%)"]];
+const PROB_COM_COLOR = {
+  alta:  { bg: "#ecfdf5", bd: "#a7f3d0", fg: "#047857" },
+  media: { bg: "#eff6ff", bd: "#bfdbfe", fg: "#1d4ed8" },
+  baja:  { bg: "#fffbeb", bd: "#fcd34d", fg: "#b45309" },
+  nula:  { bg: "#fef2f2", bd: "#fecaca", fg: "#b91c1c" }
+};
+const CIERRE_CAMB_LS = "dashComercial_cierreCamb";
+function cierreCambAll() { try { return JSON.parse(localStorage.getItem(CIERRE_CAMB_LS) || "{}") || {}; } catch (e) { return {}; } }
+function cierreCambSave(m) { try { localStorage.setItem(CIERRE_CAMB_LS, JSON.stringify(m)); } catch (e) {} }
+function cierreCambN(p, id) {
+  const hs = parseInt(p && p.cambios_fecha_cierre);
+  const loc = parseInt(cierreCambAll()[String(id)]);
+  return Math.max(isNaN(hs) ? 0 : hs, isNaN(loc) ? 0 : loc);
+}
+function cierreCambBump(id, base) {
+  const m = cierreCambAll();
+  const n = (parseInt(base) || 0) + 1;
+  m[String(id)] = n; cierreCambSave(m);
+  return n;
+}
+function probPorCambios(n) { return n >= 3 ? "baja" : n >= 1 ? "media" : "alta"; }
+function probComKey(p) {
+  if (!p) return "";
+  if (p.pipeline === NURTURING_PIPELINE_ID) return "nula";
+  const k = String(p.probabilidad_comercial || "").trim().toLowerCase();
+  return PROB_COM[k] != null ? k : "";
+}
+function dealProb(d) {
+  const p = (d && d.properties) || d || {};
+  if (p.pipeline === NURTURING_PIPELINE_ID) return 0;
+  const k = probComKey(p);
+  if (k) return PROB_COM[k];
+  const pct = parseFloat(p.probabilidad_comercial_pct);
+  if (!isNaN(pct)) return pct > 1 ? pct / 100 : pct;
+  return getProbability(p.dealstage, p.hs_deal_stage_probability);
+}
+function fechaCambBadge(p, id) {
+  const n = cierreCambN(p, id);
+  if (!n) return "";
+  if (n === 1) return `<span title="Se cambió 1 vez la fecha de cierre. Probabilidad comercial bajada a Media." style="margin-left:4px; font-size:12px; cursor:help;">⚠️</span>`;
+  if (n === 2) return `<span title="Se cambió 2 veces la fecha de cierre. Ojo: el deal está patinando." style="margin-left:4px; font-size:12px; cursor:help; background:#fffbeb; border:1px solid #fcd34d; color:#b45309; border-radius:4px; padding:1px 4px; font-weight:700;">⚠️⚠️ 2</span>`;
+  return `<span title="Se cambió ${n} veces la fecha de cierre. Recomendación: llevarlo a Nurturing." style="margin-left:4px; font-size:12px; cursor:help; background:#fef2f2; border:1px solid #fecaca; color:#b91c1c; border-radius:4px; padding:1px 4px; font-weight:700;">🚨 ${n} → Nurturing</span>`;
+}
+function probComSelect(id, p, updFn, stPrefix) {
+  const enNur = p && p.pipeline === NURTURING_PIPELINE_ID;
+  const cur = enNur ? "nula" : probComKey(p);
+  const c = PROB_COM_COLOR[cur || "alta"];
+  const st = cur ? `background:${c.bg}; border:1px solid ${c.bd}; color:${c.fg}; font-weight:600;` : "";
+  const opts = `<option value="">— sin definir</option>` + PROB_COM_OPTS.map(o => `<option value="${o[0]}"${o[0] === cur ? " selected" : ""}>${o[1]}</option>`).join("");
+  if (enNur) return `<select disabled title="En Nurturing la probabilidad comercial es Nula (0%)" style="${inS} width:112px; ${st} opacity:.85;">${opts}</select>`;
+  return `<select title="Probabilidad comercial (independiente de la etapa)" style="${inS} width:112px; ${st}" onchange="probComSet('${id}','${updFn}','${stPrefix}',this.value)">${opts}</select>`;
+}
+async function probComSet(id, updFn, stPrefix, val) {
+  const stEl = document.getElementById(stPrefix + "-" + id);
+  if (stEl) stEl.textContent = "…";
+  const d = typeof genFindDeal === "function" ? genFindDeal(id) : null;
+  const pr = probComProps(val);
+  if (d) { d.properties.probabilidad_comercial = val; d.properties.probabilidad_comercial_pct = pr.probabilidad_comercial_pct; }
+  try {
+    await hsWrite({ updateRequest: { objects: [{ objectType: "deals", objectId: Number(id), properties: pr }] } });
+    if (stEl) stEl.textContent = "✓";
+  } catch (e) {
+    try {
+      await hsWrite({ updateRequest: { objects: [{ objectType: "deals", objectId: Number(id), properties: { probabilidad_comercial: val } }] } });
+      if (stEl) stEl.textContent = "✓ (sin %)";
+    } catch (e2) {
+      if (stEl) stEl.textContent = "✗";
+      alert("No se pudo guardar la probabilidad comercial en HubSpot.\n\n" + (e2 && e2.message ? e2.message : e2) + "\n\nFaltan crear en HubSpot: la opción \"nula\" en probabilidad_comercial y/o la propiedad numérica probabilidad_comercial_pct.");
+    }
+  }
+  probRerender(updFn);
+}
+function probRerender(updFn) {
+  try {
+    if (updFn === "genUpdate") { if (typeof renderFuentes === "function") renderFuentes(); }
+    else if (typeof renderDaily === "function") renderDaily(window.__dailyOpen || []);
+    if (typeof renderGoalStrip === "function") renderGoalStrip();
+  } catch (e) {}
+}
+async function updateCierre(id, value, statusId, updFn) {
+  const stEl = document.getElementById(statusId);
+  if (stEl) stEl.textContent = "…";
+  const d = typeof genFindDeal === "function" ? genFindDeal(id) : null;
+  const p = d ? d.properties : {};
+  const prev = String(p.closedate || "").slice(0, 10);
+  const nuevo = String(value || "").slice(0, 10);
+  let n = cierreCambN(p, id);
+  let bumped = false;
+  if (prev && nuevo && prev !== nuevo) { n = cierreCambBump(id, n); bumped = true; }
+  const prob = (p.pipeline === NURTURING_PIPELINE_ID) ? "nula" : probPorCambios(n);
+  const props = { closedate: nuevo, probabilidad_comercial: prob, probabilidad_comercial_pct: probComPct(prob), cambios_fecha_cierre: String(n) };
+  if (d) { d.properties.closedate = nuevo; d.properties.probabilidad_comercial = prob; d.properties.probabilidad_comercial_pct = probComPct(prob); d.properties.cambios_fecha_cierre = String(n); }
+  try {
+    await hsWrite({ updateRequest: { objects: [{ objectType: "deals", objectId: Number(id), properties: props }] } });
+    if (stEl) stEl.textContent = "✓";
+  } catch (e) {
+    try {
+      await hsWrite({ updateRequest: { objects: [{ objectType: "deals", objectId: Number(id), properties: { closedate: nuevo } }] } });
+      if (stEl) stEl.textContent = "✓ (sólo fecha)";
+    } catch (e2) {
+      if (stEl) stEl.textContent = "✗";
+    }
+  }
+  if (bumped && n >= 3) {
+    alert("⚠️ Este deal ya cambió " + n + " veces la fecha de cierre.\n\nRecomendación: llevalo a Nurturing (deja de contar en la proyección de la meta y pasa a probabilidad Nula = 0%).");
+  }
+  probRerender(updFn);
+}
+
 function getCategorias(productoRaw) {
   if (!productoRaw) return ["Otros"];
   const productos = productoRaw.split(/[;,]/).map(s => s.trim()).filter(Boolean);
@@ -1497,7 +1613,7 @@ async function fetchAllOpenDeals() {
       filterGroups: [{ filters: [
         { propertyName: "dealstage", operator: "NOT_IN", values: CLOSED_STAGES }
       ]}],
-      properties: ["dealname", "dealstage", "amount", "deal_currency_code", "closedate", "createdate", "hs_lastmodifieddate", "hubspot_owner_id", "hs_deal_stage_probability", "notes_last_updated", "num_associated_contacts", "producto", "segmento", "meses_de_facturacion__hasta_6_", "pipeline", "fecha_envio_propuesta", "fecha_de_primer_reunion", "fecha_de_verbal_commit", "hs_next_step", "lead_source", "partner___empresa_referidora", "hs_priority", "plan_de_pagos", "hs_v2_date_entered_qualifiedtobuy", "hs_v2_date_entered_1246562354", "hs_v2_date_entered_presentationscheduled", "hs_v2_date_entered_bda4aa78-3d32-45c0-8f73-5acaedfbb854", "hs_v2_date_entered_1365872702"],
+      properties: ["dealname", "dealstage", "amount", "deal_currency_code", "closedate", "createdate", "hs_lastmodifieddate", "hubspot_owner_id", "hs_deal_stage_probability", "probabilidad_comercial", "probabilidad_comercial_pct", "cambios_fecha_cierre", "notes_last_updated", "num_associated_contacts", "producto", "segmento", "meses_de_facturacion__hasta_6_", "pipeline", "fecha_envio_propuesta", "fecha_de_primer_reunion", "fecha_de_verbal_commit", "hs_next_step", "lead_source", "partner___empresa_referidora", "hs_priority", "plan_de_pagos", "hs_v2_date_entered_qualifiedtobuy", "hs_v2_date_entered_1246562354", "hs_v2_date_entered_presentationscheduled", "hs_v2_date_entered_bda4aa78-3d32-45c0-8f73-5acaedfbb854", "hs_v2_date_entered_1365872702"],
       sorts: [{ propertyName: "hs_lastmodifieddate", direction: "DESCENDING" }],
       limit: 100, offset,
       chatInsights: { userIntent: "Dashboard Comercial carga de deals abiertos", satisfaction: "NEUTRAL" }
@@ -1686,7 +1802,7 @@ function buildForecast(deals) {
     if (p.pipeline === NURTURING_PIPELINE_ID) return;
     const amount = parseFloat(p.amount || "0");
     if (!amount) return;
-    const prob = getProbability(p.dealstage, p.hs_deal_stage_probability);
+    const prob = dealProb(p);
     if (prob === 0) return;
     if (!p.closedate) return;
 
@@ -1995,7 +2111,7 @@ function renderTopDeals(deals) {
     .filter(d => !CLOSED_STAGES.includes(d.properties.dealstage))
     .map(d => {
       const amount = parseFloat(d.properties.amount || "0");
-      const prob = getProbability(d.properties.dealstage, d.properties.hs_deal_stage_probability);
+      const prob = dealProb(d);
       return { d, amount, prob, ponderado: amount * prob };
     })
     .filter(x => x.ponderado > 0)
@@ -3404,6 +3520,7 @@ function renderFuentes() {
     ${gfTh(gfTxt("gfl-detalle", gf.detalle))}
     ${gfTh(gfTxt("gfl-producto", gf.producto))}
     ${gfTh(`<input type="number" id="gfl-amount" value="${escAttr(gf.amount)}" placeholder="≥" oninput="filterGenRows()" style="${gfS} text-align:right;">`)}
+    <th style="padding:4px 6px; background:#fafafa;"></th>
     ${gfTh(msfBtn("g-meses", [1,2,3,4,5,6,7,8,9,10,11,12].map(n => ({ v: String(n), l: String(n) })), "filterGenRows", { live: true }))}
     <th style="padding:4px 6px; background:#fafafa;"></th>
     ${gfTh(gfTxt("gfl-cierre", gf.cierre, "AAAA-MM"))}
@@ -3413,11 +3530,11 @@ function renderFuentes() {
   const genQ = (window.__genSearch || "").trim();
   const trows = genQ ? rows.filter(d => dealSearchMatch(d, genQ)) : rows;
   window.__genRendered = trows;
-  let t = `<table class="std" style="white-space:nowrap; min-width:1080px;"><thead><tr>${thStar}${thDeal}${th("Cuenta", "cuenta")}${thHi("Owner", "owner")}${th("Stage", "stage")}${th("País", "pais")}${thHi("Fuente", "fuente")}${th("Detalle fuente", "detalle")}${th("Producto", "producto")}${th("Amount", "amount")}${th("Meses", "meses")}${th("Plan pagos")}${th("Cierre", "cierre")}${th("Siguiente paso", "next")}${th("")}</tr>${filterRow}</thead><tbody>`;
+  let t = `<table class="std" style="white-space:nowrap; min-width:1200px;"><thead><tr>${thStar}${thDeal}${th("Cuenta", "cuenta")}${thHi("Owner", "owner")}${th("Stage", "stage")}${th("País", "pais")}${thHi("Fuente", "fuente")}${th("Detalle fuente", "detalle")}${th("Producto", "producto")}${th("Amount", "amount")}${th("Prob. com.")}${th("Meses", "meses")}${th("Plan pagos")}${th("Cierre", "cierre")}${th("Siguiente paso", "next")}${th("")}</tr>${filterRow}</thead><tbody>`;
   if (!trows.length) {
     t += genQ
-      ? `<tr><td colspan="15" class="empty">Sin deals que coincidan con "${escAttr(genQ)}".</td></tr>`
-      : `<tr><td colspan="15" class="empty">Sin deals de generación todavía. Sumá el primero con <b>＋ Nuevo deal</b>.</td></tr>`;
+      ? `<tr><td colspan="16" class="empty">Sin deals que coincidan con "${escAttr(genQ)}".</td></tr>`
+      : `<tr><td colspan="16" class="empty">Sin deals de generación todavía. Sumá el primero con <b>＋ Nuevo deal</b>.</td></tr>`;
   }
   trows.forEach(d => {
     const p = d.properties, id = d.id, cur = getDealFuente(id);
@@ -3433,13 +3550,14 @@ function renderFuentes() {
       <td>${detalleFuenteSelect(id, p.lead_source || "", p.partner___empresa_referidora || "", "genUpdate", "gst")}</td>
       <td><select style="${inS} width:160px;" title="Producto - Servicio (HubSpot)" onchange="genUpdate('${id}','producto',this.value,'gst-${id}')">${productoOptions(p.producto)}</select></td>
       <td style="text-align:right;"><input type="number" value="${escAttr(p.amount || "")}" placeholder="0" style="${inS} width:90px; text-align:right;" onchange="genUpdate('${id}','amount',this.value,'gst-${id}')"></td>
+      <td style="text-align:center;">${probComSelect(id, p, "genUpdate", "gst")}</td>
       <td style="text-align:center;"><select style="${inS} width:54px;" onchange="genUpdate('${id}','meses_de_facturacion__hasta_6_',this.value,'gst-${id}')">${mesesOptions(p.meses_de_facturacion__hasta_6_ || 1)}</select></td>
       <td style="text-align:center;">${ppgBtn(id, p)}</td>
-      <td><input type="date" value="${p.closedate ? String(p.closedate).slice(0, 10) : ""}" style="${inS} width:140px;" onchange="genUpdate('${id}','closedate',this.value,'gst-${id}')"></td>
+      <td><input type="date" value="${p.closedate ? String(p.closedate).slice(0, 10) : ""}" style="${inS} width:140px;" onchange="updateCierre('${id}',this.value,'gst-${id}','genUpdate')">${fechaCambBadge(p, id)}</td>
       <td style="max-width:280px;"><div style="display:flex; align-items:center; gap:6px;"><span ${p.hs_next_step ? `title="${escAttr(p.hs_next_step)}"` : ""} style="flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; ${p.hs_next_step ? "cursor:help;" : "color:#9ca3af;"}">${p.hs_next_step ? escAttr(p.hs_next_step) : "— sin ticket"}</span>${p.hs_next_step ? `<span style="flex:0 0 auto; display:flex; gap:4px;"><button onclick="dailyDone('${id}')" title="Hecho: cerrar el ticket y vaciar el siguiente paso" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #a7f3d0; color:#047857; border-radius:5px; background:#ecfdf5;">✓</button><button onclick="dailyDefer('${id}')" title="Baja: cerrar el ticket y vaciar el siguiente paso" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #fecaca; color:#b91c1c; border-radius:5px; background:#fef2f2;">✗</button><button onclick="dailyEditTask('${id}')" title="Editar el ticket" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #d1d5db; color:#6b7280; border-radius:5px; background:white;">✎</button></span>` : ""}</div></td>
       <td style="text-align:center; white-space:nowrap;"><button onclick="toggleDailyTask('${id}')" title="Crear ticket / siguiente paso" style="padding:3px 9px; font-size:13px; cursor:pointer; border:1px solid #d1d5db; border-radius:5px; background:white;">+</button> <span id="gst-${id}" class="fc-status" style="font-size:11px;"></span></td>
     </tr>
-    <tr id="dtask-${id}" style="display:none; background:#f9fafb;"><td colspan="15" style="padding:12px 16px; white-space:normal;">
+    <tr id="dtask-${id}" style="display:none; background:#f9fafb;"><td colspan="16" style="padding:12px 16px; white-space:normal;">
       <div style="position:sticky; left:16px; max-width:560px; display:flex; flex-direction:column; gap:10px;">
         <div id="tkh-${id}" style="font-size:12px; font-weight:600;">Nuevo ticket</div>
         <label style="display:flex; flex-direction:column; gap:3px; font-size:12px; color:#555;">Asunto<input type="text" id="tk-subj-${id}" placeholder="Próximo paso…" style="width:100%; box-sizing:border-box; padding:3px 7px; font-size:13px; border:1px solid #d1d5db; border-radius:5px;"></label>
@@ -3479,7 +3597,7 @@ const REQ_FIELD_DEFS = {
   lead_source: { label: "Fuente principal del lead", type: "leadsource" },
   partner___empresa_referidora: { label: "Dato específico de la fuente", type: "text" },
   hs_priority: { label: "Prioridad", type: "select", opts: [["low", "Low"], ["medium", "Medium"], ["high", "High"]] },
-  probabilidad_comercial: { label: "Probabilidad comercial", type: "select", opts: [["alta", "Alta"], ["media", "Media"], ["baja", "Baja"]] },
+  probabilidad_comercial: { label: "Probabilidad comercial", type: "select", opts: [["alta", "Alta (100%)"], ["media", "Media (90%)"], ["baja", "Baja (20%)"], ["nula", "Nula (0%)"]] },
   hubspot_owner_id: { label: "Propietario del negocio", type: "owner" },
   ultima_propuesta_comercial_pegar_link: { label: "Ultima Propuesta Comercial (pegar link)", type: "text" },
   cantidad_horas_de_servicio: { label: "Cantidad horas de servicio", type: "number" },
@@ -3557,6 +3675,7 @@ async function stageGateSubmit() {
     if (!v) { if (!gate.optional) still.push(REQ_FIELD_DEFS[k].label); return; }
     props[k] = v;
   });
+  if (props.probabilidad_comercial) props.probabilidad_comercial_pct = probComPct(props.probabilidad_comercial);
   const box = g("stage-gate-msg");
   if (still.length) { if (box) { box.style.color = "#dc2626"; box.textContent = "Faltan: " + still.join(", "); } return; }
   if (box) { box.style.color = "#555"; box.textContent = "Guardando en HubSpot…"; }
@@ -3949,7 +4068,7 @@ function buildReforePipeline() {
     if (p.pipeline === NURTURING_PIPELINE_ID) return;
     const amount = parseFloat(p.amount || "0");
     if (!amount) return;
-    const prob = getProbability(p.dealstage, p.hs_deal_stage_probability);
+    const prob = dealProb(p);
     if (prob === 0) return;
     if (!p.closedate) return;
 
@@ -5193,7 +5312,7 @@ function dealMonthlyAmount(d, i) {
 }
 function metasWeighted(d) {
   const p = d.properties || {};
-  const prob = getProbability(p.dealstage, p.hs_deal_stage_probability);
+  const prob = dealProb(p);
   return dealMonthlyAmount(d, 0) * prob;
 }
 function metasMensual(d) {
@@ -5211,7 +5330,7 @@ function metasCuotaEnMes(d, mKey) {
 }
 function metasCuotaEnMesPond(d, mKey) {
   const p = (d && d.properties) || {};
-  return metasCuotaEnMes(d, mKey) * getProbability(p.dealstage, p.hs_deal_stage_probability);
+  return metasCuotaEnMes(d, mKey) * dealProb(p);
 }
 // ===== Motor único de cadencia (Tanda 2, 2026-08-06) =====
 // Una sola función alimenta las 4 cards de Metas (este mes / mes que viene / trimestre / semestre)
@@ -5235,7 +5354,7 @@ function metasPeriodo(monthKeys, opts) {
     if (esGen) genPond += pond;
     else focoPond += (gsPond ? pond : pleno);
     // Commit vs. upside: mismo corte que el forecast probabilístico (prob >= 90%)
-    if (getProbability(p.dealstage, p.hs_deal_stage_probability) >= 0.9) commit += pond;
+    if (dealProb(p) >= 0.9) commit += pond;
     else upside += pond;
   });
   const hueco = Math.max(0, meta - real - focoPond - genPond);
@@ -7160,7 +7279,7 @@ async function cuentasReloadDeals(companyId) {
 async function fetchCuentaDeals(companyId) {
   const res = await withTimeout(mcpCall("mcp__aaaa9eed-76e4-4bc8-a1a2-fad976f54ccb__search_crm_objects", {
     objectType: "deals",
-    properties: ["dealname", "amount", "dealstage", "closedate", "hs_next_step", "hs_deal_stage_probability", "meses_de_facturacion__hasta_6_", "pipeline"].concat(DAILY_STAGES.map(function (s) { return "hs_v2_date_entered_" + s.id; })),
+    properties: ["dealname", "amount", "dealstage", "closedate", "hs_next_step", "hs_deal_stage_probability", "probabilidad_comercial", "probabilidad_comercial_pct", "cambios_fecha_cierre", "meses_de_facturacion__hasta_6_", "pipeline"].concat(DAILY_STAGES.map(function (s) { return "hs_v2_date_entered_" + s.id; })),
     filterGroups: [{ associatedWith: [{ objectType: "companies", operator: "EQUAL", objectIdValues: [Number(companyId)] }] }],
     limit: 50,
     chatInsights: { userIntent: "Clientes: listar deals asociados a una cuenta para ver/editar valor, stage, cierre y próximo paso", satisfaction: "NEUTRAL" }
@@ -7847,7 +7966,7 @@ function dailySort(key) {
   renderDaily(window.__dailyOpen || []);
 }
 
-const DAILY_DATA_COLS = ["cuenta", "owner", "stage", "pais", "fuente", "detalle", "producto", "amount", "meses", "plan", "cierre", "factact", "factsig", "next", "tarea"];
+const DAILY_DATA_COLS = ["cuenta", "owner", "stage", "pais", "fuente", "detalle", "producto", "amount", "prob", "meses", "plan", "cierre", "factact", "factsig", "next", "tarea"];
 function getColOrder() {
   let order;
   try { order = JSON.parse(localStorage.getItem("daily_col_order") || "null"); } catch (e) { order = null; }
@@ -7961,12 +8080,15 @@ function renderDaily(deals) {
     meses: { label: "Meses", align: "text-align:center;",
       filter: `<th style="padding:4px 6px;">${msfBtn("d-meses", [1,2,3,4,5,6,7,8,9,10,11,12].map(m => ({ v: String(m), l: String(m) })), "filterDailyRows", { live: true })}</th>`,
       cell: (p, id) => `<td style="text-align:center;"><select style="${inS} width:54px;" onchange="dailyUpdate('${id}','meses_de_facturacion__hasta_6_',this.value,'st-${id}')">${mesesOptions(p.meses_de_facturacion__hasta_6_ || 1)}</select></td>` },
+    prob: { label: "Prob. com.", align: "text-align:center;", nosort: true,
+      filter: `<th></th>`,
+      cell: (p, id) => `<td style="text-align:center;">${probComSelect(id, p, "dailyUpdate", "st")}</td>` },
     plan: { label: "Plan pagos", align: "text-align:center;", nosort: true,
       filter: `<th></th>`,
       cell: (p, id) => `<td style="text-align:center;">${ppgBtn(id, p)}</td>` },
     cierre: { label: "Cierre", align: "",
       filter: `<th style="padding:4px 6px;"><input id="flt-cierre" value="${escAttr(f.cierre)}" oninput="filterDailyRows()" placeholder="AAAA-MM" style="${fInS}"></th>`,
-      cell: (p, id) => `<td><input type="date" value="${p.closedate ? p.closedate.slice(0, 10) : ""}" style="${inS} width:140px;" onchange="dailyUpdate('${id}','closedate',this.value,'st-${id}')"></td>` },
+      cell: (p, id) => `<td><input type="date" value="${p.closedate ? p.closedate.slice(0, 10) : ""}" style="${inS} width:140px;" onchange="updateCierre('${id}',this.value,'st-${id}','dailyUpdate')">${fechaCambBadge(p, id)}</td>` },
     factact: { label: "Fact. " + dailyMesLabel(0), head: `<span style="position:absolute; top:2px; right:0; transform:translateX(50%); z-index:6;" ondragstart="return false">${factToggleHtml()}</span>Fact. ${dailyMesLabel(0)}`, align: "text-align:right; background:#e0e7ff; color:#3730a3; position:relative; padding-top:30px; vertical-align:bottom;",
       filter: `<th style="background:#eef2ff; text-align:right; padding:4px 8px;" title="Total de las filas visibles, según el modo Pleno/Ponderado"><span style="font-size:10px; color:#6366f1; font-weight:600; text-transform:uppercase; letter-spacing:.04em;">Total</span> <span id="tot-factact" style="font-weight:700; color:#3730a3; font-size:12px;">—</span></th>`,
       cell: (p, id) => { const v = dailyFactMes(p, 0); return `<td style="text-align:right; background:#eef2ff;" title="${factCellTitle()}">${v ? fmtMoneyK(v) : '<span style="color:#9ca3af;">—</span>'}</td>`; } },
@@ -8095,7 +8217,7 @@ function dailyFactMes(p, offset) {
   if (!p.closedate) return 0;
   const pond = (window.__factMode || "pleno") === "pond";
   let factor = 1;
-  if (pond) { const prob = getProbability(p.dealstage, p.hs_deal_stage_probability); if (!prob) return 0; factor = prob; }
+  if (pond) { const prob = dealProb(p); if (!prob) return 0; factor = prob; }
   const meses = Math.max(1, Math.min(12, parseInt(p.meses_de_facturacion__hasta_6_) || 1));
   const now = new Date();
   const startMonth = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -8327,7 +8449,7 @@ async function dailySearchHub() {
   try {
     const res = await withTimeout(mcpCall("mcp__aaaa9eed-76e4-4bc8-a1a2-fad976f54ccb__search_crm_objects", {
       objectType: "deals", query: q,
-      properties: ["dealname", "dealstage", "amount", "deal_currency_code", "closedate", "hs_lastmodifieddate", "hubspot_owner_id", "hs_deal_stage_probability", "meses_de_facturacion__hasta_6_", "pipeline", "producto", "hs_next_step"],
+      properties: ["dealname", "dealstage", "amount", "deal_currency_code", "closedate", "hs_lastmodifieddate", "hubspot_owner_id", "hs_deal_stage_probability", "probabilidad_comercial", "probabilidad_comercial_pct", "cambios_fecha_cierre", "meses_de_facturacion__hasta_6_", "pipeline", "producto", "hs_next_step"],
       limit: 20,
       chatInsights: { userIntent: "Daily Comercial: buscar deal en HubSpot para traerlo a la vista", satisfaction: "NEUTRAL" }
     }), 15000);
@@ -8374,7 +8496,7 @@ async function dailyToNurturing(id) {
   const hoy = new Date().toLocaleDateString("es-AR");
   try {
     await hsWrite({ createRequest: { objects: [{ objectType: "notes", properties: { hs_note_body: `Movido a Nurturing ${hoy}. Amount original USD ${amount}. Cuando se reactive, restaurar valor.`, hs_timestamp: new Date().toISOString() }, associations: [{ targetObjectId: Number(id), targetObjectType: "deals" }] }] } });
-    await hsWrite({ updateRequest: { objects: [{ objectType: "deals", objectId: Number(id), properties: { pipeline: NURTURING_PIPELINE_ID, dealstage: "1365871683", amount: "0", closedate } }] } });
+    await hsWrite({ updateRequest: { objects: [{ objectType: "deals", objectId: Number(id), properties: { pipeline: NURTURING_PIPELINE_ID, dealstage: "1365871683", amount: "0", closedate, probabilidad_comercial: "nula", probabilidad_comercial_pct: "0" } }] } });
     if (st) st.textContent = "✓ a Nurturing";
     const s = getHiddenDeals(); s.delete(String(id)); setHiddenDeals(s);
     await reloadDaily();
@@ -8470,7 +8592,7 @@ async function stuckNurturing(id) {
   const hoy = new Date().toLocaleDateString("es-AR");
   try {
     await hsWrite({ createRequest: { objects: [{ objectType: "notes", properties: { hs_note_body: `Movido a Nurturing ${hoy}. Amount original USD ${info.amount}. Cuando se reactive, restaurar valor.`, hs_timestamp: new Date().toISOString() }, associations: [{ targetObjectId: Number(id), targetObjectType: "deals" }] }] } });
-    await hsWrite({ updateRequest: { objects: [{ objectType: "deals", objectId: Number(id), properties: { pipeline: NURTURING_PIPELINE_ID, dealstage: "1365871683", amount: "0", closedate } }] } });
+    await hsWrite({ updateRequest: { objects: [{ objectType: "deals", objectId: Number(id), properties: { pipeline: NURTURING_PIPELINE_ID, dealstage: "1365871683", amount: "0", closedate, probabilidad_comercial: "nula", probabilidad_comercial_pct: "0" } }] } });
     if (st) st.textContent = "✓ a Nurturing";
     stuckRemoveRow(id);
   } catch (e) { if (st) { st.classList.add("err"); st.textContent = "error"; } }
@@ -9893,7 +10015,7 @@ function renderScorecard() {
   const rows = DAILY_OWNERS.map(o => {
     const mine = open.filter(d => String(d.properties.hubspot_owner_id) === o.id);
     const pipe = mine.reduce((s, d) => s + (parseFloat(d.properties.amount) || 0), 0);
-    const wPipe = mine.reduce((s, d) => s + (parseFloat(d.properties.amount) || 0) * getProbability(d.properties.dealstage, d.properties.hs_deal_stage_probability), 0);
+    const wPipe = mine.reduce((s, d) => s + (parseFloat(d.properties.amount) || 0) * dealProb(d), 0);
     // MRR nuevo cerrado este mes: amount/meses de closedwon con closedate en el mes
     const wonMes = closed.filter(d => d.properties.dealstage === "closedwon" && String(d.properties.hubspot_owner_id) === o.id && String(d.properties.closedate || "").slice(0, 7) === mKey);
     const mrrWon = wonMes.reduce((s, d) => { const amt = parseFloat(d.properties.amount) || 0; const m = parseInt(d.properties.meses_de_facturacion__hasta_6_) || 1; return s + amt / Math.max(1, m); }, 0);
