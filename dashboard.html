@@ -6058,7 +6058,7 @@ async function targetCreateDeal(id) {
 function targetToggleTask(cid) {
   const r = document.getElementById("ttask-" + cid); if (!r) return;
   const open = r.style.display !== "none";
-  r.style.display = open ? "none" : "table-row";
+  r.style.display = open ? "none" : "block";
   if (!open) {
     const f = targetFindC(cid); const c = f && f.c;
     const subj = document.getElementById("tt-subj-" + cid);
@@ -6198,6 +6198,10 @@ function renderTarget() {
   } else {
     const tfInp = (k, ph) => '<input value="' + escAttr(TF[k] || "") + '" placeholder="' + ph + '" onchange="targetFilterSet(\'' + k + '\', this.value)" style="width:95%; box-sizing:border-box; padding:3px 5px; border:1px solid #d1d5db; border-radius:5px; font-size:11px;">';
     const nCTotal = rowsAll.reduce((a, t) => a + (t.contactos || []).length, 0);
+    // Única fuente de verdad de las columnas de Target. Si agregás/sacás una columna,
+    // tocá SOLO este array: los colspan de abajo se derivan de acá (TCOLS.length).
+    const TCOLS = ['Empresa / Marca', 'Fuente', 'Detalle fuente', 'Contacto', 'HubSpot', 'Listado', 'Partner', 'Estado', 'Canal · Últ. toque', 'Ticket / siguiente paso', 'Acciones'];
+    const TFIX = 3; // Empresa + Fuente + Detalle fuente: las 3 celdas con rowspan
     const filaFiltros = '<tr style="background:#fafafa;">' +
       '<td style="padding:4px 6px;">' + tfInp("nombre", "filtrar…") + '</td>' +
       '<td style="padding:4px 6px;">' + msfBtn("t-fuente", [{ v: "", l: "— sin fuente" }].concat(LEAD_SOURCE_OPTS.map(o => ({ v: o.v, l: o.l }))), "renderTarget", { live: false }) + '</td>' +
@@ -6213,16 +6217,16 @@ function renderTarget() {
         (tfActive ? ' <span style="font-size:10.5px; color:#4030C8; font-weight:700;">' + nCShown + ' de ' + nCTotal + '</span>' : '') + '</td></tr>';
     h += '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:12.5px; background:#fff; min-width:1500px;">' +
       '<thead><tr style="background:#fafafa; text-align:left;">' +
-      ['Empresa / Marca', 'Fuente', 'Detalle fuente', 'Contacto', 'HubSpot', 'Listado', 'Partner', 'Estado', 'Canal · Últ. toque', 'Ticket / siguiente paso', 'Acciones'].map(c => '<th style="padding:8px; border-bottom:2px solid #e5e7eb; font-size:11px; text-transform:uppercase; color:#6b7280;">' + c + '</th>').join("") +
+      TCOLS.map(c => '<th style="padding:8px; border-bottom:2px solid #e5e7eb; font-size:11px; text-transform:uppercase; color:#6b7280;">' + c + '</th>').join("") +
       '</tr>' + filaFiltros + '</thead><tbody>';
-    if (!rows.length) h += '<tr><td colspan="11" style="padding:14px; font-size:12.5px; color:#9ca3af; font-style:italic;">Sin cuentas para este filtro.</td></tr>';
+    if (!rows.length) h += '<tr><td colspan="' + TCOLS.length + '" style="padding:14px; font-size:12.5px; color:#9ca3af; font-style:italic;">Sin cuentas para este filtro.</td></tr>';
     rows.forEach(r => {
       const t = r.t, shown = r.shown;
       const eiEmp = targetCEstadoInfo(targetEmpresaEstado(t));
       const accion = t.dealId
         ? '<a href="' + HUBSPOT_DEAL(t.dealId) + '" target="_blank" rel="noopener" style="display:inline-block; padding:3px 8px; border-radius:6px; background:#ecfdf5; border:1px solid #6EE7B7; color:#047857; font-size:11px; font-weight:700; text-decoration:none;">✓ Deal #' + escAttr(String(t.dealId)) + ' ↗</a>'
         : '<button onclick="targetDealModal(\'' + t.id + '\')" style="padding:3px 8px; border:1px solid #C7BDFF; border-radius:6px; background:#F1EFFF; color:#4030C8; cursor:pointer; font-size:11px; font-weight:700;">⚡ Crear Deal</button>';
-      const rsp = Math.max(1, shown.length * 2);
+      const rsp = Math.max(1, shown.length); // 1 fila por contacto: el panel del ticket ya NO es un <tr> oculto
       const empCell = '<td rowspan="' + rsp + '" style="padding:8px; vertical-align:top; border-bottom:2px solid #e5e7eb; min-width:190px; background:#fcfcff;">' +
         '<div style="font-weight:800; color:#111827;">' + escAttr(t.nombre) + '</div>' +
         (t.industria ? '<div style="font-size:11px; color:#6b7280;">' + escAttr(t.industria) + '</div>' : '') +
@@ -6239,7 +6243,7 @@ function renderTarget() {
           : '<select disabled title="Elegí una fuente PR para cargar el detalle" style="max-width:150px; padding:3px 5px; font-size:11px; border:1px solid #d1d5db; border-radius:5px; background:#f3f4f6; color:#9ca3af;"><option value="">— sin detalle</option></select>') + '</td>';
       if (!shown.length) {
         h += '<tr style="border-bottom:2px solid #e5e7eb;">' + empCell + fuenteCell + detalleCell +
-          '<td colspan="8" style="padding:10px; font-size:12px; color:#9ca3af; font-style:italic; border-bottom:2px solid #e5e7eb;">Sin contactos — usá ＋ contacto.</td></tr>';
+          '<td colspan="' + (TCOLS.length - TFIX) + '" style="padding:10px; font-size:12px; color:#9ca3af; font-style:italic; border-bottom:2px solid #e5e7eb;">Sin contactos — usá ＋ contacto.</td></tr>';
         return;
       }
       shown.forEach((c, ci) => {
@@ -6255,6 +6259,16 @@ function renderTarget() {
           : (c.email
             ? '<button onclick="targetSyncContact(\'' + cid + '\')" style="padding:2px 7px; border:1px solid #C7BDFF; border-radius:6px; background:#F1EFFF; color:#4030C8; cursor:pointer; font-size:10.5px; font-weight:700;">⟳ sync</button>'
             : '<span style="font-size:10.5px; color:#9ca3af;" title="Cargale un email para sincronizar">⏳ sin email</span>');
+        const ttaskPanel = '<div id="ttask-' + cid + '" style="display:none; margin-top:8px; padding:10px 12px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px;">' +
+          '<div style="max-width:520px; display:flex; flex-direction:column; gap:10px;">' +
+          '<div id="tth-' + cid + '" style="font-size:12px; font-weight:600;">Nuevo ticket de siguiente paso</div>' +
+          '<label style="font-size:11px; color:#6b7280; display:flex; flex-direction:column; gap:3px;">Asunto<input type="text" id="tt-subj-' + cid + '" placeholder="ej. Llamar a ' + escAttr(c.nombre || t.nombre) + '" style="padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px;"></label>' +
+          '<div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">' +
+          '<label style="font-size:11px; color:#6b7280; display:flex; flex-direction:column; gap:3px;">Owner del ticket<select id="tt-owner-' + cid + '" style="padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px;">' + ownerOptions(c.taskOwner || BUG_OWNER_ID) + '</select></label>' +
+          '<label style="font-size:11px; color:#6b7280; display:flex; flex-direction:column; gap:3px;">Vence<input type="date" id="tt-due-' + cid + '" value="' + escAttr(c.taskDue || dailyTomorrow()) + '" style="padding:5px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px;"></label>' +
+          '<button id="ttbtn-' + cid + '" class="fc-btn" onclick="targetCreateTask(\'' + cid + '\')">Crear ticket</button>' +
+          '<span id="ttst-' + cid + '" class="fc-status" style="font-size:11px;"></span>' +
+          '</div></div></div>';
         h += '<tr style="' + bb + ' vertical-align:top;">' + (ci === 0 ? empCell + fuenteCell + detalleCell : '') +
           '<td style="padding:8px; min-width:150px;"><b>' + (escAttr(c.nombre || "") || '<span style="color:#9ca3af;">—</span>') + '</b>' + frio +
             (c.rol ? '<br><span style="color:#6b7280; font-size:11px;">' + escAttr(c.rol) + '</span>' : '') + mailC + linkC + '</td>' +
@@ -6273,20 +6287,10 @@ function renderTarget() {
               '<button title="Editar ticket" onclick="targetToggleTask(\'' + cid + '\')" style="padding:2px 7px; font-size:11px; border:1px solid #d1d5db; background:#fff; border-radius:5px; cursor:pointer;">✎</button>' +
               ' <span id="ttrowst-' + cid + '" class="fc-status" style="font-size:11px;"></span>'
             : '<button onclick="targetToggleTask(\'' + cid + '\')" style="padding:3px 8px; border:1px solid #C7BDFF; border-radius:6px; background:#F1EFFF; color:#4030C8; cursor:pointer; font-size:11px; font-weight:700;">＋ Ticket</button>' +
-              (c.nextStep ? '<div class="small" style="color:#6b7280; margin-top:3px;">' + escAttr(c.nextStep) + '</div>' : '')) + '</td>' +
+              (c.nextStep ? '<div class="small" style="color:#6b7280; margin-top:3px;">' + escAttr(c.nextStep) + '</div>' : '')) + ttaskPanel + '</td>' +
           '<td style="padding:8px; white-space:nowrap;">' +
             '<button onclick="targetCEditRow(\'' + cid + '\')" title="Editar contacto" style="background:none; border:none; cursor:pointer; font-size:13px;">✏️</button>' +
             '<button onclick="targetCRemove(\'' + cid + '\')" title="Eliminar contacto" style="background:none; border:none; cursor:pointer; font-size:13px; color:#b91c1c;">🗑️</button></td></tr>';
-        h += '<tr id="ttask-' + cid + '" style="display:none; background:#f9fafb;"><td colspan="8" style="padding:12px 16px; white-space:normal;">' +
-          '<div style="max-width:560px; display:flex; flex-direction:column; gap:10px;">' +
-          '<div id="tth-' + cid + '" style="font-size:12px; font-weight:600;">Nuevo ticket de siguiente paso</div>' +
-          '<label style="font-size:11px; color:#6b7280; display:flex; flex-direction:column; gap:3px;">Asunto<input type="text" id="tt-subj-' + cid + '" placeholder="ej. Llamar a ' + escAttr(c.nombre || t.nombre) + '" style="padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px;"></label>' +
-          '<div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">' +
-          '<label style="font-size:11px; color:#6b7280; display:flex; flex-direction:column; gap:3px;">Owner del ticket<select id="tt-owner-' + cid + '" style="padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px;">' + ownerOptions(c.taskOwner || BUG_OWNER_ID) + '</select></label>' +
-          '<label style="font-size:11px; color:#6b7280; display:flex; flex-direction:column; gap:3px;">Vence<input type="date" id="tt-due-' + cid + '" value="' + escAttr(c.taskDue || dailyTomorrow()) + '" style="padding:5px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px;"></label>' +
-          '<button id="ttbtn-' + cid + '" class="fc-btn" onclick="targetCreateTask(\'' + cid + '\')">Crear ticket</button>' +
-          '<span id="ttst-' + cid + '" class="fc-status" style="font-size:11px;"></span>' +
-          '</div></div></td></tr>';
       });
     });
     h += '</tbody></table></div>';
