@@ -1044,7 +1044,10 @@ const STATE_KEYS = [
   "cuentas_estado_migrado",
   "agenda_meta", "agenda_trip", "agenda_plan", "agenda_history",
   "daily_hidden_deals", "daily_foco_deals", "daily_col_order", "daily_hidden_cols",
-  "tareas_hidden", "tarea_slack_sent"
+  "tareas_hidden", "tarea_slack_sent",
+  "dashComercial_cierreCamb",  // contador cambios de fecha de cierre (2026-08-08)
+  "dashComercial_genHidden",   // deals ocultos en Generación (2026-08-11)
+  "dashComercial_tareaCamb"    // contador cambios de fecha de tareas (2026-08-11)
 ];
 const STATE_BASE_LS  = "dashState_base";     // NO se espeja: versión del server con la que estamos sincronizados
 const STATE_RELOAD_SS = "dashState_reloads"; // guard anti-loop de reload
