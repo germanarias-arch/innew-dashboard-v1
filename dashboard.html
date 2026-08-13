@@ -3531,13 +3531,24 @@ function renderFuentes() {
     ${gfTh(`<button onclick="clearGenFilters()" title="Limpiar filtros" style="padding:2px 7px; font-size:11px; cursor:pointer; border:1px solid #d1d5db; border-radius:4px; background:white; color:#6b7280;">✕</button>`)}
   </tr>`;
   const genQ = (window.__genSearch || "").trim();
-  const trows = genQ ? rows.filter(d => dealSearchMatch(d, genQ)) : rows;
+  const genHid = getHiddenGenDeals();
+  const genMode = window.__genMode || "activas";
+  let trows = genQ ? rows.filter(d => dealSearchMatch(d, genQ)) : rows;
+  trows = (genMode === "ocultas") ? trows.filter(d => genHid.has(String(d.id))) : trows.filter(d => !genHid.has(String(d.id)));
   window.__genRendered = trows;
-  let t = `<table class="std" style="white-space:nowrap; min-width:1200px;"><thead><tr>${thStar}${thDeal}${th("Cuenta", "cuenta")}${thHi("Owner", "owner")}${th("Stage", "stage")}${th("País", "pais")}${thHi("Fuente", "fuente")}${th("Detalle fuente", "detalle")}${th("Producto", "producto")}${th("Amount", "amount")}${th("Prob. com.")}${th("Meses", "meses")}${th("Plan pagos")}${th("Cierre", "cierre")}${th("Siguiente paso", "next")}${th("")}</tr>${filterRow}</thead><tbody>`;
+  let t = "";
+  if (genMode === "ocultas") {
+    t += `<div style="background:#fffbeb; border:1px solid #fcd34d; border-radius:8px; padding:8px 12px; margin-bottom:8px; font-size:12px; color:#92400e; display:flex; align-items:center; gap:10px;"><span>🙈 Viendo <b>${trows.length}</b> deal(s) oculto(s) de Generación (siguen abiertos en HubSpot).</span><button onclick="toggleGenMode()" style="padding:3px 10px; font-size:12px; cursor:pointer; border:1px solid #d1d5db; border-radius:5px; background:white;">← Volver a activas</button></div>`;
+  } else if (genHid.size) {
+    t += `<div style="margin-bottom:6px; text-align:right;"><button onclick="toggleGenMode()" style="padding:3px 10px; font-size:12px; cursor:pointer; border:1px solid #d1d5db; border-radius:5px; background:white; color:#6b7280;">🙈 Ver ocultas (${genHid.size})</button></div>`;
+  }
+  t += `<table class="std" style="white-space:nowrap; min-width:1200px;"><thead><tr>${thStar}${thDeal}${th("Cuenta", "cuenta")}${thHi("Owner", "owner")}${th("Stage", "stage")}${th("País", "pais")}${thHi("Fuente", "fuente")}${th("Detalle fuente", "detalle")}${th("Producto", "producto")}${th("Amount", "amount")}${th("Prob. com.")}${th("Meses", "meses")}${th("Plan pagos")}${th("Cierre", "cierre")}${th("Siguiente paso", "next")}${th("")}</tr>${filterRow}</thead><tbody>`;
   if (!trows.length) {
-    t += genQ
-      ? `<tr><td colspan="16" class="empty">Sin deals que coincidan con "${escAttr(genQ)}".</td></tr>`
-      : `<tr><td colspan="16" class="empty">Sin deals de generación todavía. Sumá el primero con <b>＋ Nuevo deal</b>.</td></tr>`;
+    t += (genMode === "ocultas")
+      ? `<tr><td colspan="16" class="empty">Sin deals ocultos.</td></tr>`
+      : genQ
+        ? `<tr><td colspan="16" class="empty">Sin deals que coincidan con "${escAttr(genQ)}".</td></tr>`
+        : `<tr><td colspan="16" class="empty">Sin deals de generación todavía. Sumá el primero con <b>＋ Nuevo deal</b>.</td></tr>`;
   }
   trows.forEach(d => {
     const p = d.properties, id = d.id, cur = getDealFuente(id);
@@ -3558,7 +3569,7 @@ function renderFuentes() {
       <td style="text-align:center;">${ppgBtn(id, p)}</td>
       <td><input type="date" value="${p.closedate ? String(p.closedate).slice(0, 10) : ""}" style="${inS} width:140px;" onchange="updateCierre('${id}',this.value,'gst-${id}','genUpdate')">${fechaCambBadge(p, id)}</td>
       <td style="max-width:280px;"><div style="display:flex; align-items:center; gap:6px;"><span ${p.hs_next_step ? `title="${escAttr(p.hs_next_step)}"` : ""} style="flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; ${p.hs_next_step ? "cursor:help;" : "color:#9ca3af;"}">${p.hs_next_step ? escAttr(p.hs_next_step) : "— sin ticket"}</span>${p.hs_next_step ? `<span style="flex:0 0 auto; display:flex; gap:4px;"><button onclick="dailyDone('${id}')" title="Hecho: cerrar el ticket y vaciar el siguiente paso" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #a7f3d0; color:#047857; border-radius:5px; background:#ecfdf5;">✓</button><button onclick="dailyDefer('${id}')" title="Baja: cerrar el ticket y vaciar el siguiente paso" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #fecaca; color:#b91c1c; border-radius:5px; background:#fef2f2;">✗</button><button onclick="dailyEditTask('${id}')" title="Editar el ticket" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #d1d5db; color:#6b7280; border-radius:5px; background:white;">✎</button></span>` : ""}</div></td>
-      <td style="text-align:center; white-space:nowrap;"><button onclick="toggleDailyTask('${id}')" title="Crear ticket / siguiente paso" style="padding:3px 9px; font-size:13px; cursor:pointer; border:1px solid #d1d5db; border-radius:5px; background:white;">+</button> <span id="gst-${id}" class="fc-status" style="font-size:11px;"></span></td>
+      <td style="text-align:center; white-space:nowrap;"><button onclick="toggleDailyTask('${id}')" title="Crear ticket / siguiente paso" style="padding:3px 9px; font-size:13px; cursor:pointer; border:1px solid #d1d5db; border-radius:5px; background:white;">+</button> <button onclick="genToNurturing('${id}')" title="Mandar a Nurturing (recuperable, prob 0, no cuenta como perdido)" style="padding:3px 8px; font-size:11px; cursor:pointer; border:1px solid #c4b5fd; color:#5b21b6; border-radius:5px; background:#f5f3ff;">→ Nur</button> <button onclick="genLose('${id}')" title="Marcar Perdido (definitivo, cuenta en estadísticas)" style="padding:3px 8px; font-size:12px; cursor:pointer; border:1px solid #fecaca; color:#b91c1c; border-radius:5px; background:#fef2f2;">✗</button> ${genMode === "ocultas" ? `<button onclick="genUnhideDeal('${id}')" title="Restaurar a la vista" style="padding:3px 8px; font-size:12px; cursor:pointer; border:1px solid #d1d5db; border-radius:5px; background:white;">👁</button>` : `<button onclick="genHideDeal('${id}')" title="Ocultar del dashboard (sigue abierto en HubSpot)" style="padding:3px 8px; font-size:12px; cursor:pointer; border:1px solid #d1d5db; border-radius:5px; background:white;">🙈</button>`} <span id="gst-${id}" class="fc-status" style="font-size:11px;"></span></td>
     </tr>
     <tr id="dtask-${id}" style="display:none; background:#f9fafb;"><td colspan="16" style="padding:12px 16px; white-space:normal;">
       <div style="position:sticky; left:16px; max-width:560px; display:flex; flex-direction:column; gap:10px;">
@@ -8510,6 +8521,74 @@ async function dailyToNurturing(id) {
   } catch (e) { if (st) { st.classList.add("err"); st.textContent = "error"; } }
 }
 
+// ---- Generación: Nurturing / Perdido / Ocultar (2026-08-11) ----
+async function genToNurturing(id) {
+  const d = (window.__dailyOpen || []).find(x => String(x.id) === String(id));
+  const amount = d ? (d.properties.amount || "0") : "0";
+  const name = d ? (d.properties.dealname || "este deal") : "este deal";
+  if (!confirm(`Mandar "${name}" a Nurturing?\n\nEl amount se pone en 0 (queda anotado en una nota) y sale del pipeline comercial. Se puede reactivar después.`)) return;
+  const st = document.getElementById("gst-" + id);
+  if (st) { st.classList.remove("err"); st.textContent = "moviendo…"; }
+  const cd = new Date(); cd.setMonth(cd.getMonth() + 6);
+  const closedate = cd.toISOString().slice(0, 10);
+  const hoy = new Date().toLocaleDateString("es-AR");
+  try {
+    await hsWrite({ createRequest: { objects: [{ objectType: "notes", properties: { hs_note_body: `Movido a Nurturing ${hoy} (desde Generación). Amount original USD ${amount}. Cuando se reactive, restaurar valor.`, hs_timestamp: new Date().toISOString() }, associations: [{ targetObjectId: Number(id), targetObjectType: "deals" }] }] } });
+    await hsWrite({ updateRequest: { objects: [{ objectType: "deals", objectId: Number(id), properties: { pipeline: NURTURING_PIPELINE_ID, dealstage: "1365871683", amount: "0", closedate, probabilidad_comercial: "nula", probabilidad_comercial_pct: "0" } }] } });
+    if (st) st.textContent = "✓ a Nurturing";
+    const s = getHiddenGenDeals(); s.delete(String(id)); setHiddenGenDeals(s);
+    await reloadDaily();
+  } catch (e) { if (st) { st.classList.add("err"); st.textContent = "error"; } }
+}
+
+function genLose(id) {
+  // Perdido definitivo (cuenta en estadísticas). Modal opcional, igual que en Foco.
+  // Decisión German 2026-08-11: al marcar Perdido se crea AUTOMÁTICAMENTE un deal
+  // clon "NUR - {nombre}" en el pipeline Nurturing (el perdido queda closedlost intacto).
+  stageGateOpen(id, "closedlost", "gst-" + id, ["closed_lost_reason", "hs_next_step"], () => renderFuentes(), async () => { await genLoseNurClone(id); await reloadDaily(); }, true);
+}
+
+async function genLoseNurClone(origId) {
+  // Crea el clon "NUR - {dealname}" en Nurturing tras un Perdido (best-effort: si falla, avisa pero no bloquea).
+  try {
+    const d = (window.__dailyOpen || []).find(x => String(x.id) === String(origId));
+    const p = d ? d.properties : {};
+    const name = (p.dealname || "deal " + origId);
+    const amount = p.amount || "0";
+    const cd = new Date(); cd.setMonth(cd.getMonth() + 6);
+    const props = {
+      dealname: "NUR - " + name,
+      pipeline: NURTURING_PIPELINE_ID,
+      dealstage: "1365871683",
+      amount: "0",
+      closedate: cd.toISOString().slice(0, 10),
+      probabilidad_comercial: "nula",
+      probabilidad_comercial_pct: "0"
+    };
+    ["producto", "segmento", "hubspot_owner_id", "meses_de_facturacion__hasta_6_", "lead_source", "partner___empresa_referidora"].forEach(k => { if (p[k]) props[k] = p[k]; });
+    const co = (typeof getDealCompany === "function") ? getDealCompany(origId) : null;
+    const obj = { objectType: "deals", properties: props };
+    if (co && co.companyId) obj.associations = [{ targetObjectType: "companies", targetObjectId: Number(co.companyId) }];
+    const res = await hsWrite({ createRequest: { objects: [obj] } });
+    const newId = (typeof genExtractNewId === "function") ? genExtractNewId(res) : null;
+    if (newId) {
+      const hoy = new Date().toLocaleDateString("es-AR");
+      hsWrite({ createRequest: { objects: [{ objectType: "notes", properties: { hs_note_body: `Clon Nurturing creado ${hoy} al marcar Perdido el deal original "${name}" (#${origId}). Amount original USD ${amount}. Cuando se reactive, restaurar valor.`, hs_timestamp: new Date().toISOString() }, associations: [{ targetObjectId: Number(newId), targetObjectType: "deals" }] }] } }).catch(() => {});
+    }
+    const st = document.getElementById("gst-" + origId);
+    if (st) st.textContent = "✓ perdido + clon NUR";
+  } catch (e) {
+    alert("El deal quedó como Perdido, pero falló la creación del clon en Nurturing: " + (e && e.message ? e.message : e) + "\n\nCrealo a mano en HubSpot si hace falta: \"NUR - …\" en el pipeline Nurturing.");
+  }
+}
+
+const GEN_HIDDEN_LS = "dashComercial_genHidden";
+function getHiddenGenDeals() { try { return new Set(JSON.parse(localStorage.getItem(GEN_HIDDEN_LS) || "[]")); } catch (e) { return new Set(); } }
+function setHiddenGenDeals(s) { try { localStorage.setItem(GEN_HIDDEN_LS, JSON.stringify([...s])); } catch (e) {} }
+function genHideDeal(id) { const s = getHiddenGenDeals(); s.add(String(id)); setHiddenGenDeals(s); renderFuentes(); }
+function genUnhideDeal(id) { const s = getHiddenGenDeals(); s.delete(String(id)); setHiddenGenDeals(s); renderFuentes(); }
+function toggleGenMode() { window.__genMode = (window.__genMode === "ocultas") ? "activas" : "ocultas"; renderFuentes(); }
+
 // ====================================================
 // VISTA NURTURING (grilla editable, deals del pipeline Nurturing)
 // ====================================================
@@ -8525,22 +8604,55 @@ async function fetchNurturingDeals() {
   const parsed = typeof res === "string" ? JSON.parse(res) : res;
   return parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
 }
-async function renderNurturing() {
+function nurtF() { if (!window.__nurtF) window.__nurtF = { deal: "", owner: "", producto: "", amount: "", meses: "", cierre: "", next: "" }; return window.__nurtF; }
+function nurtFSet(k, v) { nurtF()[k] = v; renderNurturing(true); }
+function clearNurtFilters() { window.__nurtF = null; window.__nurtFilter = ""; renderNurturing(true); }
+async function renderNurturing(useCache) {
   const cont = document.getElementById("nurt-tabla");
-  cont.innerHTML = '<div class="loading">Cargando Nurturing…</div>';
-  let deals = [];
-  try { deals = await fetchNurturingDeals(); } catch (e) { cont.innerHTML = `<div class="cue-alert" style="background:#FEF2F2; border-color:#FECACA; color:#b91c1c;">No se pudo cargar Nurturing.</div>`; return; }
-  window.__nurtDeals = deals;
+  let deals;
+  if (useCache && window.__nurtDeals) {
+    deals = window.__nurtDeals;
+  } else {
+    cont.innerHTML = '<div class="loading">Cargando Nurturing…</div>';
+    try { deals = await fetchNurturingDeals(); } catch (e) { cont.innerHTML = `<div class="cue-alert" style="background:#FEF2F2; border-color:#FECACA; color:#b91c1c;">No se pudo cargar Nurturing.</div>`; return; }
+    window.__nurtDeals = deals;
+  }
   const f = (window.__nurtFilter || "").toLowerCase();
-  const rows = deals.filter(d => !f || (d.properties.dealname || "").toLowerCase().includes(f));
+  const NF = nurtF();
+  const rows = deals.filter(d => {
+    const p = d.properties;
+    if (f && !(p.dealname || "").toLowerCase().includes(f)) return false;
+    if (NF.deal && !(p.dealname || "").toLowerCase().includes(NF.deal.toLowerCase())) return false;
+    if (NF.owner && String(p.hubspot_owner_id || "") !== NF.owner) return false;
+    if (NF.producto && !(p.producto || "").toLowerCase().includes(NF.producto.toLowerCase())) return false;
+    if (NF.amount && !(parseFloat(p.amount || 0) >= parseFloat(NF.amount))) return false;
+    if (NF.meses && String(p.meses_de_facturacion__hasta_6_ || "") !== NF.meses) return false;
+    if (NF.cierre && !((p.closedate || "").slice(0, 10).includes(NF.cierre))) return false;
+    if (NF.next && !(p.hs_next_step || "").toLowerCase().includes(NF.next.toLowerCase())) return false;
+    return true;
+  });
+  const fActive = f || Object.values(NF).some(v => v);
   const inS = "padding:3px 5px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; background:white;";
+  const nfS = "padding:2px 4px; font-size:11px; border:1px solid #d1d5db; border-radius:4px; background:white;";
   let html = `<div style="margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-    <input type="text" value="${escAttr(window.__nurtFilter || "")}" oninput="window.__nurtFilter=this.value; renderNurturing()" placeholder="Filtrar por nombre…" style="padding:6px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:13px; min-width:220px;">
+    <input type="text" value="${escAttr(window.__nurtFilter || "")}" onchange="window.__nurtFilter=this.value; renderNurturing(true)" placeholder="Filtrar por nombre…" style="padding:6px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:13px; min-width:220px;">
     <button class="fc-btn secondary" onclick="renderNurturing()">↻ Refrescar</button>
-    <span class="small" style="font-style:italic;">${rows.length} en Nurturing</span></div>`;
+    <span class="small" style="font-style:italic;">${fActive ? `${rows.length} de ${deals.length}` : `${rows.length} en Nurturing`}</span></div>`;
+  const nfOwnerSel = `<select style="${nfS} width:130px;" onchange="nurtFSet('owner',this.value)"><option value="">Todos</option>${DAILY_OWNERS.map(o => `<option value="${o.id}"${NF.owner === String(o.id) ? " selected" : ""}>${o.name}</option>`).join("")}</select>`;
+  const nfMesesSel = `<select style="${nfS} width:54px;" onchange="nurtFSet('meses',this.value)"><option value="">—</option>${[1,2,3,4,5,6,7,8,9,10,11,12].map(m => `<option value="${m}"${NF.meses === String(m) ? " selected" : ""}>${m}</option>`).join("")}</select>`;
   html += `<div style="overflow-x:auto; border:1px solid #e5e5e5; border-radius:8px;"><table class="std" style="white-space:nowrap;"><thead><tr>
-    <th style="position:sticky; left:0; background:#fafafa; z-index:2;">Deal</th><th>Owner</th><th>Producto</th><th style="text-align:right;">Amount</th><th style="text-align:center;">Meses</th><th>Cierre</th><th>Siguiente paso</th><th style="text-align:center;">Acción</th></tr></thead><tbody>`;
-  if (!rows.length) html += `<tr><td colspan="8" class="empty">Sin deals en Nurturing.</td></tr>`;
+    <th style="position:sticky; left:0; background:#fafafa; z-index:2;">Deal</th><th>Owner</th><th>Producto</th><th style="text-align:right;">Amount</th><th style="text-align:center;">Meses</th><th>Cierre</th><th>Siguiente paso</th><th style="text-align:center;">Acción</th></tr>
+    <tr style="background:#fafafa;">
+      <th style="position:sticky; left:0; background:#fafafa; z-index:2;"><input type="text" value="${escAttr(NF.deal)}" placeholder="filtrar…" style="${nfS} width:150px;" onchange="nurtFSet('deal',this.value)"></th>
+      <th>${nfOwnerSel}</th>
+      <th><input type="text" value="${escAttr(NF.producto)}" placeholder="filtrar…" style="${nfS} width:110px;" onchange="nurtFSet('producto',this.value)"></th>
+      <th style="text-align:right;"><input type="number" value="${escAttr(NF.amount)}" placeholder="≥" style="${nfS} width:70px; text-align:right;" onchange="nurtFSet('amount',this.value)"></th>
+      <th style="text-align:center;">${nfMesesSel}</th>
+      <th><input type="text" value="${escAttr(NF.cierre)}" placeholder="AAAA-MM" style="${nfS} width:80px;" onchange="nurtFSet('cierre',this.value)"></th>
+      <th><input type="text" value="${escAttr(NF.next)}" placeholder="filtrar…" style="${nfS} width:130px;" onchange="nurtFSet('next',this.value)"></th>
+      <th style="text-align:center;"><button onclick="clearNurtFilters()" title="Limpiar filtros" style="padding:2px 8px; font-size:11px; cursor:pointer; border:1px solid #d1d5db; border-radius:4px; background:white;">✕</button></th>
+    </tr></thead><tbody>`;
+  if (!rows.length) html += `<tr><td colspan="8" class="empty">${fActive ? "Sin deals para este filtro." : "Sin deals en Nurturing."}</td></tr>`;
   rows.forEach(d => {
     const p = d.properties; const id = d.id;
     html += `<tr id="nrow-${id}">
@@ -8826,7 +8938,7 @@ async function loadTareas() {
         filterGroups: [{ filters: [
           { propertyName: "hs_pipeline_stage", operator: "NEQ", value: "4" }
         ] }],
-        properties: ["subject", "hs_pipeline_stage", "fecha_vencimiento", "hubspot_owner_id", "hs_lastmodifieddate", "hs_createdate"],
+        properties: ["subject", "hs_pipeline_stage", "fecha_vencimiento", "hubspot_owner_id", "hs_lastmodifieddate", "hs_createdate", "cambios_fecha_tarea"],
         sorts: [{ propertyName: "hs_createdate", direction: "DESCENDING" }],
         limit: 200, offset,
         chatInsights: { userIntent: "Vista Tareas: todos los tickets abiertos de HubSpot", satisfaction: "NEUTRAL" }
@@ -8959,6 +9071,63 @@ async function bugDone(id) {
     renderBugs();
     try { renderTareas(); if (typeof renderScorecard === "function") renderScorecard(); refreshFocoSug(); } catch (e) {}
   } catch (e) { if (st) { st.classList.add("err"); st.textContent = "error: " + String(e.message || e).slice(0, 60); } }
+}
+
+// ---- Tareas: edición inline de fecha/owner + alertas por cambio de fecha (2026-08-11) ----
+const TAREA_CAMB_LS = "dashComercial_tareaCamb";
+function tareaCambAll() { try { return JSON.parse(localStorage.getItem(TAREA_CAMB_LS) || "{}"); } catch (e) { return {}; } }
+function tareaCambSave(m) { try { localStorage.setItem(TAREA_CAMB_LS, JSON.stringify(m)); } catch (e) {} }
+function tareaCambN(t) {
+  const hs = Number(t.properties.cambios_fecha_tarea) || 0;
+  const loc = Number(tareaCambAll()[String(t.id)]) || 0;
+  return Math.max(hs, loc);
+}
+function tareaCambBump(id, t) {
+  const n = (t ? tareaCambN(t) : (Number(tareaCambAll()[String(id)]) || 0)) + 1;
+  const m = tareaCambAll(); m[String(id)] = n; tareaCambSave(m);
+  return n;
+}
+function tareaFechaBadge(n) {
+  if (!n) return "";
+  if (n === 1) return ` <span title="1 cambio de fecha de vencimiento" style="cursor:help;">⚠️</span>`;
+  if (n === 2) return ` <span title="2 cambios de fecha — ojo con patear esta tarea" style="cursor:help; background:#fef3c7; border:1px solid #f59e0b; color:#b45309; border-radius:5px; padding:0 5px; font-size:11px; font-weight:700;">⚠️⚠️ 2</span>`;
+  return ` <span title="${n} cambios de fecha — esta tarea se viene pateando demasiado" style="cursor:help; background:#fee2e2; border:1px solid #ef4444; color:#b91c1c; border-radius:5px; padding:0 5px; font-size:11px; font-weight:700;">🚨 ${n}</span>`;
+}
+async function tareaSetFecha(id, val) {
+  const t = (window.__tareasData || []).find(x => String(x.id) === String(id));
+  if (!t) return;
+  const p = t.properties;
+  const cur = tareaFVDate(p.fecha_vencimiento);
+  if (!val || val === cur) return;
+  const st = document.getElementById("tkact-" + id);
+  if (st) { st.classList.remove("err"); st.textContent = "guardando…"; }
+  const changed = !!cur; // si no tenía fecha, setearla no cuenta como "cambio"
+  const n = changed ? tareaCambBump(id, t) : tareaCambN(t);
+  try {
+    try {
+      await hsWrite({ updateRequest: { objects: [{ objectType: "tickets", objectId: Number(id), properties: { fecha_vencimiento: val, cambios_fecha_tarea: String(n) } }] } });
+      if (st) st.textContent = "✓";
+      p.cambios_fecha_tarea = String(n);
+    } catch (e1) {
+      await hsWrite({ updateRequest: { objects: [{ objectType: "tickets", objectId: Number(id), properties: { fecha_vencimiento: val } }] } });
+      if (st) st.textContent = "✓ (sólo fecha)";
+    }
+    p.fecha_vencimiento = val;
+    if (changed && n >= 3) alert(`🚨 Esta tarea ya cambió de fecha ${n} veces.\n\n"${p.subject || "(sin asunto)"}"\n\nSe viene pateando demasiado: o la hacés hoy, o la delegás, o la cerrás.`);
+    renderTareas();
+  } catch (e) { if (st) { st.classList.add("err"); st.textContent = "error: " + String(e.message || e).slice(0, 60); } console.warn("tareaSetFecha falló", id, e); }
+}
+async function tareaSetOwner(id, val) {
+  const t = (window.__tareasData || []).find(x => String(x.id) === String(id));
+  if (!t || !val) return;
+  const st = document.getElementById("tkact-" + id);
+  if (st) { st.classList.remove("err"); st.textContent = "guardando…"; }
+  try {
+    await hsWrite({ updateRequest: { objects: [{ objectType: "tickets", objectId: Number(id), properties: { hubspot_owner_id: val } }] } });
+    t.properties.hubspot_owner_id = val;
+    if (st) st.textContent = "✓";
+    renderTareas();
+  } catch (e) { if (st) { st.classList.add("err"); st.textContent = "error: " + String(e.message || e).slice(0, 60); } console.warn("tareaSetOwner falló", id, e); }
 }
 
 function renderTareas() {
@@ -9359,6 +9528,22 @@ function ppSetMode(m) { window.__ppMode = m; renderPartnerPerf(); }
 function ppSetSel(k) { window.__ppSel = k; renderPartnerPerf(); }
 // ---- 🫧 Embudo total + 🩸 Pérdidas total (vista Embudo) ----
 function embVizSetMode(m) { window.__embMode = m; renderEmbudoViz(); }
+function embVizToggle(k) { window.__embOpen = (window.__embOpen === k) ? null : k; renderEmbudoViz(); }
+function embDealList(deals, mode) {
+  if (!deals || !deals.length) return `<div style="font-size:12px;color:#9ca3af;padding:6px 10px;">Sin deals en esta etapa.</div>`;
+  const ownerName = oid => { const o = DAILY_OWNERS.find(x => x.id === String(oid)); return o ? o.name : "—"; };
+  const rows = deals.slice().sort((a, b) => parseFloat(b.properties.amount || 0) - parseFloat(a.properties.amount || 0)).map(d => {
+    const p = d.properties;
+    const amt = parseFloat(p.amount || 0);
+    return `<div style="display:grid;grid-template-columns:1fr 90px 110px 90px;gap:8px;align-items:center;padding:4px 10px;border-top:1px solid #f1f0f7;font-size:12.5px;">
+      <a href="${HUBSPOT_DEAL(d.id)}" target="_blank" style="color:#4030C8;text-decoration:none;font-weight:600;">${escAttr(p.dealname || d.id)} ↗</a>
+      <span style="text-align:right;font-variant-numeric:tabular-nums;">${amt > 0 ? fmtMoneyK(amt) : "—"}</span>
+      <span style="color:#6b7280;">${escAttr(ownerName(p.hubspot_owner_id))}</span>
+      <span style="color:#9ca3af;">${p.closedate ? String(p.closedate).slice(0, 10) : ""}</span></div>`;
+  }).join("");
+  return `<div style="background:#faf9fe;border:1px solid #e6e2f5;border-radius:8px;margin:2px 0 6px;overflow:hidden;">
+    <div style="display:grid;grid-template-columns:1fr 90px 110px 90px;gap:8px;padding:5px 10px;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;color:#9ca3af;"><span>Deal</span><span style="text-align:right;">Monto</span><span>Owner</span><span>Cierre</span></div>${rows}</div>`;
+}
 function renderEmbudoViz() {
   const host = document.getElementById("embudo-viz");
   if (!host) return;
@@ -9377,38 +9562,41 @@ function renderEmbudoViz() {
     <div style="display:inline-flex;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">${segBtn("cant", "＃ Cantidad")}${segBtn("valor", "$ Valor")}</div></div>`;
 
   // ---- Funnel (todo el embudo) ----
-  const wonV = all.filter(d => outcome(d) === "won").reduce((x, d) => x + val(d), 0);
-  const stageVals = DAILY_STAGES.map(s => ({ label: s.label, v: all.filter(d => outcome(d) === "open" && d.properties.dealstage === s.id).reduce((x, d) => x + val(d), 0), color: "#4030C8" }));
-  stageVals.push({ label: "Ganado/Firmado", v: wonV, color: "#059669" });
+  const wonDeals = all.filter(d => outcome(d) === "won");
+  const wonV = wonDeals.reduce((x, d) => x + val(d), 0);
+  const stageVals = DAILY_STAGES.map(s => { const ds = all.filter(d => outcome(d) === "open" && d.properties.dealstage === s.id); return { key: "f:" + s.id, label: s.label, deals: ds, v: ds.reduce((x, d) => x + val(d), 0), color: "#4030C8" }; });
+  stageVals.push({ key: "f:won", label: "Ganado/Firmado", deals: wonDeals, v: wonV, color: "#059669" });
   const fmax = Math.max(...stageVals.map(s => s.v), 1);
   let fprev = null;
   const funnelRows = stageVals.map(s => {
     const conv = fprev !== null && fprev > 0 ? Math.round(s.v / fprev * 100) + "%" : "";
     fprev = s.v;
-    return `<div style="display:grid;grid-template-columns:150px 1fr 120px;align-items:center;gap:12px;">
-      <div style="font-size:13px;text-align:right;color:#1f2937;">${s.label}</div>
+    const isOpen = window.__embOpen === s.key;
+    return `<div onclick="embVizToggle('${s.key}')" title="Clic para ver los deals" style="display:grid;grid-template-columns:150px 1fr 120px;align-items:center;gap:12px;cursor:pointer;${isOpen ? "background:#faf9fe;border-radius:8px;" : ""}">
+      <div style="font-size:13px;text-align:right;color:#1f2937;">${isOpen ? "▾ " : ""}${s.label}</div>
       <div style="background:#f0f0f6;border-radius:6px;overflow:hidden;height:30px;display:flex;align-items:center;">
         <div style="height:100%;display:flex;align-items:center;padding-left:10px;color:#fff;font-weight:600;font-size:13px;border-radius:6px 0 0 6px;min-width:34px;width:${Math.max(s.v / fmax * 100, 4)}%;background:${s.color};">${s.v > 0 ? fmtUnit(s.v) : ""}</div></div>
-      <div>${conv ? `<span style="font-size:11px;color:#9ca3af;">${conv} vs. previo</span>` : ""}</div></div>`;
+      <div>${conv ? `<span style="font-size:11px;color:#9ca3af;">${conv} vs. previo</span>` : ""}</div></div>${isOpen ? embDealList(s.deals, mode) : ""}`;
   }).join("");
   const funnel = `<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:18px 20px;margin-bottom:16px;">
     <div style="font-size:16px;font-weight:600;margin:0 0 3px;">🫧 Embudo de deals (todo el pipeline)</div>
-    <div style="font-style:italic;color:#888;font-size:12.5px;line-height:1.45;margin:2px 0 14px;">Dónde están hoy <b>todos</b> los deals comerciales (excl. Nurturing), por etapa. Ancho ∝ ${unitLabel}. El % es conversión respecto de la etapa anterior. Cerrados = últimos 60 días.</div>
+    <div style="font-style:italic;color:#888;font-size:12.5px;line-height:1.45;margin:2px 0 14px;">Dónde están hoy <b>todos</b> los deals comerciales (excl. Nurturing), por etapa. Ancho ∝ ${unitLabel}. El % es conversión respecto de la etapa anterior. Cerrados = últimos 60 días. <b>Clic en una barra para ver qué deals son.</b></div>
     <div style="display:flex;flex-direction:column;gap:7px;">${funnelRows}</div></div>`;
 
   // ---- Dónde se pierden (todo el embudo) ----
   const lostDeals = all.filter(d => outcome(d) === "lost");
-  const byStage = {}; DAILY_STAGES.forEach(s => byStage[s.id] = 0);
-  lostDeals.forEach(d => { const lf = ppLostFrom(d); if (lf != null) byStage[lf] += val(d); });
-  const lrows = DAILY_STAGES.map(s => ({ label: s.label, v: byStage[s.id] || 0 })).sort((x, y) => y.v - x.v);
+  const byStage = {}; DAILY_STAGES.forEach(s => byStage[s.id] = { v: 0, deals: [] });
+  lostDeals.forEach(d => { const lf = ppLostFrom(d); if (lf != null && byStage[lf]) { byStage[lf].v += val(d); byStage[lf].deals.push(d); } });
+  const lrows = DAILY_STAGES.map(s => ({ key: "l:" + s.id, label: s.label, v: byStage[s.id].v, deals: byStage[s.id].deals })).sort((x, y) => y.v - x.v);
   const lmax = Math.max(...lrows.map(r => r.v), 1);
   const ltop = lrows[0];
   const lostBars = lrows.map((r, i) => {
     const isTop = i === 0 && r.v > 0;
-    return `<div style="display:grid;grid-template-columns:120px 1fr 54px;align-items:center;gap:10px;">
-      <div style="font-size:12.5px;text-align:right;${isTop ? "font-weight:700;color:#dc2626;" : "color:#1f2937;"}">${r.label}</div>
+    const isOpen = window.__embOpen === r.key;
+    return `<div onclick="embVizToggle('${r.key}')" title="Clic para ver los deals" style="display:grid;grid-template-columns:120px 1fr 54px;align-items:center;gap:10px;cursor:pointer;${isOpen ? "background:#faf9fe;border-radius:8px;" : ""}">
+      <div style="font-size:12.5px;text-align:right;${isTop ? "font-weight:700;color:#dc2626;" : "color:#1f2937;"}">${isOpen ? "▾ " : ""}${r.label}</div>
       <div style="background:#fbecec;border-radius:5px;overflow:hidden;height:24px;"><div style="height:100%;border-radius:5px 0 0 5px;min-width:6px;width:${Math.max(r.v / lmax * 100, 3)}%;background:${isTop ? "#b91c1c" : "#dc2626"};"></div></div>
-      <div style="text-align:right;font-size:12px;color:#6b7280;font-variant-numeric:tabular-nums;">${fmtUnit(r.v)}</div></div>`;
+      <div style="text-align:right;font-size:12px;color:#6b7280;font-variant-numeric:tabular-nums;">${fmtUnit(r.v)}</div></div>${isOpen ? embDealList(r.deals, mode) : ""}`;
   }).join("");
   const totLost = lostDeals.reduce((x, d) => x + val(d), 0);
   const lpct = totLost > 0 && ltop.v > 0 ? Math.round(ltop.v / totLost * 100) : 0;
@@ -9417,7 +9605,7 @@ function renderEmbudoViz() {
     : `<div style="font-size:12px;color:#6b7280;">Sin deals perdidos con etapa previa registrada (últimos 60 días).</div>`;
   const lost = `<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:18px 20px;margin-bottom:16px;">
     <div style="font-size:16px;font-weight:600;margin:0 0 3px;">🩸 Dónde se pierden los deals (todo el pipeline)</div>
-    <div style="font-style:italic;color:#888;font-size:12.5px;line-height:1.45;margin:2px 0 14px;">De los deals <b>perdidos</b>, la última etapa en la que estuvieron antes de caer. Cerrados = últimos 60 días.</div>
+    <div style="font-style:italic;color:#888;font-size:12.5px;line-height:1.45;margin:2px 0 14px;">De los deals <b>perdidos</b>, la última etapa en la que estuvieron antes de caer. Cerrados = últimos 60 días. <b>Clic en una barra para ver qué deals son.</b></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start;">
       <div style="display:flex;flex-direction:column;gap:8px;">${lostBars}</div>
       <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:14px 16px;">${callout}</div></div></div>`;
