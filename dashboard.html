@@ -1185,8 +1185,30 @@ async function stateHydrate() {
   _lsSet(STATE_BASE_LS, String(srvAt));
   stateReloadOnce();
 }
+// Modales que se crean por JS y se remueven del DOM al cerrar: si alguno existe, el usuario está en el medio de algo.
+const STATE_BUSY_MODALS = ["stage-gate-modal", "ppg-modal", "target-deal-modal", "horas-modal", "gmv-modal", "msf-pop"];
+// ¿El usuario está haciendo algo que NO queremos interrumpir con un reload automático?
+function stateUserBusy() {
+  try {
+    const S = window.__stateSync;
+    if (S && S.dirty) return true;                         // hay ediciones pendientes de pushear
+    if (window.__stateApplying) return true;
+    const a = document.activeElement;
+    if (a) {
+      const tag = (a.tagName || "").toUpperCase();
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;  // está tipeando/eligiendo
+      if (a.isContentEditable) return true;
+    }
+    for (let i = 0; i < STATE_BUSY_MODALS.length; i++) {
+      if (document.getElementById(STATE_BUSY_MODALS[i])) return true;              // hay un modal/popup abierto
+    }
+  } catch (e) {}
+  return false;
+}
 // Estado COMPARTIDO por todo el equipo: chequeo cada 60s si alguien más guardó.
-// NO recarga solo (sería insoportable mientras editás): avisa con un badge clickeable.
+// Si el usuario está IDLE (sin ediciones pendientes, sin foco en un input, sin modal abierto) aplica solo
+// y recarga: así todos ven los cambios en ≤60s sin tocar nada. Si está ocupado, no interrumpe:
+// deja el badge clickeable para que recargue cuando quiera.
 function stateStartPoll() {
   const S = window.__stateSync;
   if (!S.enabled || S.pollTimer) return;
@@ -1199,11 +1221,17 @@ function stateStartPoll() {
       const srvAt = Number((j && j.updatedAt) || 0);
       if (!srvAt || srvAt === (S.updatedAt || 0)) return;
       const who = (j && (j.byName || j.by)) || "el equipo";
-      stateBadge("☁︎ " + who + " actualizó · recargar", "#b45309", function () {
+      const applyNow = function () {
         try { sessionStorage.removeItem(STATE_RELOAD_SS); } catch (e) {}
-        if (j && j.state) { stateApply(j.state); _lsSet(STATE_BASE_LS, String(srvAt)); }
+        if (j && j.state) { stateApply(j.state); _lsSet(STATE_BASE_LS, String(srvAt)); S.updatedAt = srvAt; }
         location.reload();
-      });
+      };
+      if (!stateUserBusy()) {                               // idle → se actualiza solo
+        stateBadge("☁︎ " + who + " actualizó · actualizando…", "#047857");
+        applyNow();
+        return;
+      }
+      stateBadge("☁︎ " + who + " actualizó · recargar", "#b45309", applyNow);   // ocupado → no interrumpir
     } catch (e) {}
   }, 60000);
 }
