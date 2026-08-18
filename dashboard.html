@@ -1328,6 +1328,16 @@ const META_MENSUAL = {
   "2026-05": 132391, "2026-06": 137027, "2026-07": 108865, "2026-08": 128834,
   "2026-09": 137150, "2026-10": 149436, "2026-11": 161917, "2026-12": 164016
 };
+// Meta de UN mes cualquiera ("YYYY-MM"). Único punto de verdad (2026-08-18).
+// META_MENSUAL sólo tiene 2026: para cualquier mes fuera de esa tabla (enero 2027 en adelante)
+// cae al piso mensual del Reforecast. Antes cada vista resolvía el faltante por su cuenta
+// —metasPeriodo devolvía 0 y goalStripPaint 120.000 para el MISMO mes— y el % de cumplimiento
+// dividía por cero (Infinity%). Todo lo que necesite "la meta del mes" debe pasar por acá.
+function metaMes(k) {
+  const v = Number(META_MENSUAL[k]);
+  if (v > 0) return v;
+  try { const p = Number(REFORE && REFORE.piso); return p > 0 ? p : 0; } catch (e) { return 0; }
+}
 // Meta mensual del semestre H2 (Jul→Dic) por índice 0-5 — usada por el Reforecast para la línea/KPIs "Meta".
 const REFORE_H2_KEYS = ["2026-07","2026-08","2026-09","2026-10","2026-11","2026-12"];
 function metaMesRefore(i){ return META_MENSUAL[REFORE_H2_KEYS[i]] || 0; }
@@ -1936,7 +1946,7 @@ function semaforoPlus(pct) {
 function calcPeriodo(forecastMonths, monthIndices) {
   const keys = monthIndices.map(i => forecastMonths[i].key);
   let metaTotal = 0, realTotal = 0;
-  keys.forEach(k => { metaTotal += (META_MENSUAL[k] || 0); realTotal += (REAL_FACTURABLE[k] || 0); });
+  keys.forEach(k => { metaTotal += metaMes(k); realTotal += (REAL_FACTURABLE[k] || 0); });
   // Meta única por mes = META_MENSUAL (German 2026-07-28). Se dejó de usar el piso flat 120K en la cadencia; metaRef = metaTotal.
   let pisoTotal = 0;
   let fcTotal = 0, fcSeguro = 0, fcRiesgo = 0, focoPond = 0, genPond = 0;
@@ -2108,7 +2118,7 @@ function renderMonthlyTable(forecastMonths) {
     let fc = 0;
     m.deals.forEach(d => fc += ((d.montoPorMesPond != null) ? d.montoPorMesPond : d.montoPorMesPorCategoria));
     const suma = real + fc;
-    const meta = META_MENSUAL[m.key] || 0;
+    const meta = metaMes(m.key);
     const pct = meta ? Math.round(100 * suma / meta) : 0;
     const pctRF = meta ? Math.round(100 * real / meta) : 0;
     const label = fmtMonthLabel(m.date);
@@ -3446,6 +3456,7 @@ function actMetas() {
   const u = actUniverso();
   return {
     gap: gap, ticket: ticket, wr: wr, dealsTotal: dealsTotal, bdRest: bdRest, perBD: perBD,
+    vivo: vivo,   // ventana de siembra abierta (hoy <= ACT_GEN_FIN). Fuera de ventana no hay objetivo.
     tHoy: (vivo && actIsBD(hoy)) ? perBD : 0,
     tSem: perBD * bdSem, tMes: perBD * bdMes,
     bdSem: bdSem, bdMes: bdMes,
@@ -3498,11 +3509,21 @@ function renderMetasActividad() {
     return;
   }
 
-  let h = `<div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
-    ${actCard("Deals a generar HOY", m.rHoy, m.tHoy, actIsBD(new Date()) ? "creados hoy (todos los owners)" : "fin de semana · sin objetivo", "#4030C8")}
-    ${actCard("Esta semana", m.rSem, m.tSem, `${actFmtD(m.wIni)} → ${actFmtD(m.wFin)} · ${m.bdSem} días hábiles`, "#4030C8")}
-    ${actCard("Este mes", m.rMes, m.tMes, `${m.bdMes} días hábiles dentro de la ventana`, "#4030C8")}
-  </div>`;
+  // Fuera de la ventana de siembra (después del 31-oct-2026) el objetivo diario es 0 por definición:
+  // renderizar "0 de 0 · 100%" daba una falsa sensación de meta cumplida (2026-08-18). Se avisa explícito.
+  let h = "";
+  if (!m.vivo) {
+    h += `<div style="background:#fff7ed; border:1px solid #fed7aa; border-left:4px solid #f59e0b; border-radius:8px; padding:12px 14px; margin-bottom:10px; font-size:12.5px; color:#7c2d12;">
+      <b>Ventana de siembra cerrada</b> — el ritmo de generación se calculaba hasta el <b>${actFmtD(ACT_GEN_FIN)}</b> (último mes con margen para que un deal generado llegue a facturar dentro del semestre). Ya pasó esa fecha: no hay objetivo diario/semanal/mensual de generación.
+      <div style="margin-top:5px; color:#9a3412;">Igual seguís generando: ${m.rHoy} deal(s) hoy · ${m.rSem} esta semana · ${m.rMes} este mes. Para volver a tener objetivo hay que mover la ventana al próximo semestre.</div>
+    </div>`;
+  } else {
+    h += `<div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
+      ${actCard("Deals a generar HOY", m.rHoy, m.tHoy, actIsBD(new Date()) ? "creados hoy (todos los owners)" : "fin de semana · sin objetivo", "#4030C8")}
+      ${actCard("Esta semana", m.rSem, m.tSem, `${actFmtD(m.wIni)} → ${actFmtD(m.wFin)} · ${m.bdSem} días hábiles`, "#4030C8")}
+      ${actCard("Este mes", m.rMes, m.tMes, `${m.bdMes} días hábiles dentro de la ventana`, "#4030C8")}
+    </div>`;
+  }
 
   h += `<div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
     ${actCard("1ª reuniones (semana)", m.rReu, m.tReu, "entrada a Primer reu · objetivos editables en Ritmo", "#0d9488")}
@@ -3518,7 +3539,9 @@ function renderMetasActividad() {
     </div>
   </div>`;
 
-  h += `<div class="small" style="color:#9ca3af; margin:0 0 16px;">Ritmo diario = <b>${m.dealsTotal} deals ÷ ${m.bdRest} días hábiles hasta el 31-oct = ${actNum(m.perBD)}/día hábil</b>. Los deals se cuentan por <b>fecha de creación</b> en HubSpot (sin Nurturing), las propuestas por <b>fecha_envio_propuesta</b> y las 1ª reuniones por la entrada a la etapa <b>Primer reu</b>.</div>`;
+  h += `<div class="small" style="color:#9ca3af; margin:0 0 16px;">${m.vivo
+    ? `Ritmo diario = <b>${m.dealsTotal} deals ÷ ${m.bdRest} días hábiles hasta el ${actFmtD(ACT_GEN_FIN)} = ${actNum(m.perBD)}/día hábil</b>.`
+    : `Ritmo diario sin calcular: la ventana de siembra cerró el <b>${actFmtD(ACT_GEN_FIN)}</b>.`} Los deals se cuentan por <b>fecha de creación</b> en HubSpot (sin Nurturing), las propuestas por <b>fecha_envio_propuesta</b> y las 1ª reuniones por la entrada a la etapa <b>Primer reu</b>.</div>`;
 
   // ── Histórico semanal ──
   const hist = actHist();
@@ -5663,6 +5686,10 @@ function metasMensual(d) {
 function metasCuotaEnMes(d, mKey) {
   const p = (d && d.properties) || {}; if (!p.closedate) return 0;
   const cd = new Date(p.closedate);
+  // Cierre vencido: no se re-imputa a meses futuros (misma regla que dailyFactMes, 2026-08-18).
+  // Sin esto la card inflaba el mes con deals cuya fecha de cierre ya pasó y la tabla no los contaba.
+  const _now = new Date();
+  if ((cd.getFullYear() - _now.getFullYear()) * 12 + (cd.getMonth() - _now.getMonth()) < 0) return 0;
   const parts = String(mKey).split("-");
   const off = (Number(parts[0]) - cd.getFullYear()) * 12 + (Number(parts[1]) - 1 - cd.getMonth());
   if (off < 0) return 0;
@@ -5681,17 +5708,21 @@ function metasPeriodo(monthKeys, opts) {
   opts = opts || {};
   const keys = (monthKeys || []).filter(Boolean);
   const gsPond = opts.pond !== false;          // capa Foco ponderada (default) o a valor pleno
-  const meta = keys.reduce((s, k) => s + (META_MENSUAL[k] || 0), 0);
+  const meta = keys.reduce((s, k) => s + metaMes(k), 0);
   const real = keys.reduce((s, k) => s + (REAL_FACTURABLE[k] || 0), 0);
   const openAll = (window.__dailyOpen || []);
-  let focoPond = 0, genPond = 0, commit = 0, upside = 0;
+  // Deals ocultos de Foco: la tabla no los suma, así que la card tampoco (2026-08-18).
+  // Se contabilizan aparte para poder mostrarlos en la leyenda.
+  const hidden = (typeof getHiddenDeals === "function") ? getHiddenDeals() : new Set();
+  let focoPond = 0, genPond = 0, commit = 0, upside = 0, ocultosPond = 0, ocultosN = 0;
   openAll.forEach(dd => {
     const p = dd.properties || {};
     let pond = 0, pleno = 0;
     keys.forEach(k => { pond += metasCuotaEnMesPond(dd, k); pleno += metasCuotaEnMes(dd, k); });
     if (pond <= 0 && pleno <= 0) return;
     const esGen = GEN_STAGE_IDS.includes(p.dealstage);
-    if (esGen) genPond += pond;
+    if (esGen) { genPond += pond; }
+    else if (hidden.has(String(dd.id))) { ocultosPond += (gsPond ? pond : pleno); ocultosN++; return; }
     else focoPond += (gsPond ? pond : pleno);
     // Commit vs. upside: mismo corte que el forecast probabilístico (prob >= 90%)
     if (dealProb(p) >= 0.9) commit += pond;
@@ -5701,6 +5732,7 @@ function metasPeriodo(monthKeys, opts) {
   const proy = real + focoPond + genPond;
   return {
     keys: keys, meta: meta, real: real, focoPond: focoPond, genPond: genPond, hueco: hueco,
+    ocultos: ocultosPond, ocultosN: ocultosN,
     commit: commit, upside: upside, proy: proy,
     pctProy: meta ? Math.round(100 * proy / meta) : 0,
     pctCommit: (commit + upside) > 0 ? Math.round(100 * commit / (commit + upside)) : 0,
@@ -5773,6 +5805,7 @@ function metasCadCard(titulo, rango, s, opts) {
       <span class="mc-leg"><span class="mc-sw foco"></span><span class="ll">Hay que cerrar</span> <span class="lv">${fmtMoneyK(focoPond)}</span></span>
       <span class="mc-leg"><span class="mc-sw gen"></span><span class="ll">En Generación (pond.)</span> <span class="lv">${fmtMoneyK(genPond)}</span></span>
       <span class="mc-leg"><span class="mc-sw hueco"></span><span class="ll">Sin cubrir — a generar</span> <span class="lv">${fmtMoneyK(hueco)}</span></span>
+      ${P.ocultosN > 0 ? `<span class="mc-leg" title="Deals ocultos en Foco: no suman acá ni en la tabla"><span class="mc-sw" style="background:#cbd5e1; opacity:.55;"></span><span class="ll">Ocultos (${P.ocultosN}) — excluidos</span> <span class="lv">${fmtMoneyK(P.ocultos)}</span></span>` : ""}
     </div>`;
 
   // Commit vs. upside (Tanda 2, ítem 5): del pipeline abierto que factura en el período,
@@ -8449,6 +8482,11 @@ function renderDaily(deals) {
     if (key === "producto") return (p.producto || "").toLowerCase();
     if (key === "amount") return parseFloat(p.amount || 0);
     if (key === "meses") return parseInt(p.meses_de_facturacion__hasta_6_ || 1);
+    // Prob. com.: sortable en Foco desde 2026-08-18 (pedido German). Mismo ranking que Generación.
+    // asc = Nula primero (los deals a purgar); sin dato → -1, queda antes que Nula.
+    if (key === "prob") { const r = { nula: 0, baja: 1, media: 2, alta: 3 }; const v = r[(p.probabilidad_comercial || "").toLowerCase()]; return v === undefined ? -1 : v; }
+    // Fuente era clickeable pero no tenía rama: caía al default (lastmod) y parecía rota.
+    if (key === "fuente") return (p.lead_source || "").toLowerCase();
     if (key === "cierre") return p.closedate ? new Date(p.closedate).getTime() : 0;
     if (key === "factact") return dailyFactMes(p, 0);
     if (key === "factsig") return dailyFactMes(p, 1);
@@ -8456,7 +8494,8 @@ function renderDaily(deals) {
     return new Date(p.hs_lastmodifieddate).getTime();
   };
   open.sort((a, b) => { const va = sortVal(a, ss.key), vb = sortVal(b, ss.key); const c = va < vb ? -1 : (va > vb ? 1 : 0); return ss.dir === "asc" ? c : -c; });
-  const arrow = k => ss.key === k ? (ss.dir === "asc" ? " ▲" : " ▼") : "";
+  // Igual que Generación: ↕ gris en las columnas ordenables inactivas (si no, nadie descubre que se puede ordenar).
+  const arrow = k => ss.key === k ? ` <span style="color:#4030C8;">${ss.dir === "asc" ? "▲" : "▼"}</span>` : ` <span style="color:#c7cbd6; font-weight:400;">↕</span>`;
   window.__dailyOpen = open;
   window.__dailyDeals = open;
 
@@ -8508,7 +8547,7 @@ function renderDaily(deals) {
     meses: { label: "Meses", align: "text-align:center;",
       filter: `<th style="padding:4px 6px;">${msfBtn("d-meses", [1,2,3,4,5,6,7,8,9,10,11,12].map(m => ({ v: String(m), l: String(m) })), "filterDailyRows", { live: true })}</th>`,
       cell: (p, id) => `<td style="text-align:center;"><select style="${inS} width:54px;" onchange="dailyUpdate('${id}','meses_de_facturacion__hasta_6_',this.value,'st-${id}')">${mesesOptions(p.meses_de_facturacion__hasta_6_ || 1)}</select></td>` },
-    prob: { label: "Prob. com.", align: "text-align:center;", nosort: true,
+    prob: { label: "Prob. com.", align: "text-align:center;",
       filter: `<th></th>`,
       cell: (p, id) => `<td style="text-align:center;">${probComSelect(id, p, "dailyUpdate", "st")}</td>` },
     plan: { label: "Plan pagos", align: "text-align:center;", nosort: true,
@@ -10781,6 +10820,7 @@ function goalStripBlock(offset, compact) {
       <span><span class="gsw" style="background:#f59e0b"></span>Hay que cerrar (${gsPond ? "pond." : "100%"}) <b>${fmtMoneyK(focoPond)}</b></span>
       <span><span class="gsw" style="background:#7c6ff0"></span>En Generación (pond.) <b>${fmtMoneyK(genPond)}</b></span>
       <span><span class="gsw" style="background:#cbd5e1"></span>Sin cubrir — a generar <b>${fmtMoneyK(hueco)}</b></span>
+      ${P.ocultosN > 0 ? `<span title="Deals ocultos en Foco: no suman acá ni en la tabla"><span class="gsw" style="background:#cbd5e1; opacity:.55;"></span>Ocultos (${P.ocultosN}) — excluidos <b>${fmtMoneyK(P.ocultos)}</b></span>` : ""}
     </div>`;
   const tramos = `<div class="gsb-tramos">
       <div class="gsb-tramo t-foco"><div class="gsb-th"><span class="gsb-dot" style="background:#f59e0b;"></span>Convertir ámbar → verde (cerrar)</div>${t1}</div>
@@ -10813,7 +10853,7 @@ function goalStripPaint() {
     const now = new Date();
     const mKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
     const real = REAL_FACTURABLE[mKey] || 0;
-    const meta = META_MENSUAL[mKey] || REFORE.piso || 0;
+    const meta = metaMes(mKey);
     const mesCorto = now.toLocaleDateString("es-AR", { month: "long" });
     el.innerHTML = btn + `<div class="gs-collapsed">🎯 <b>Metas ${mesCorto.charAt(0).toUpperCase() + mesCorto.slice(1)}</b> · Facturable ${fmtMoneyK(real)} / Meta ${fmtMoneyK(meta)} <span style="opacity:.7">— comprimido</span></div>`;
   } else {
@@ -11093,7 +11133,9 @@ function renderAccuracy() {
 
     // Previews adicionales
     const fcTotal = semSummary.fcTotal;
-    document.getElementById("preview-forecast").textContent = `(${fmtMoneyK(fcTotal)} en 6m · ${Math.round(100*fcTotal/semSummary.metaTotal)}% de la meta)`;
+    // Guarda contra meta 0 (p.ej. un semestre sin META_MENSUAL cargada): antes daba Infinity%.
+    const _mT = Number(semSummary.metaTotal) || 0;
+    document.getElementById("preview-forecast").textContent = `(${fmtMoneyK(fcTotal)} en 6m${_mT > 0 ? ` · ${Math.round(100*fcTotal/_mT)}% de la meta` : " · meta sin cargar"})`;
 
     // Preview Salud
     const open = deals.filter(d => d.properties.pipeline !== NURTURING_PIPELINE_ID && !CLOSED_STAGES.includes(d.properties.dealstage));
