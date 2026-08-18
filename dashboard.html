@@ -3504,6 +3504,9 @@ function renderFuentes() {
       if (gs.key === "producto") return (p.producto || "").toLowerCase();
       if (gs.key === "amount") return parseFloat(p.amount) || 0;
       if (gs.key === "meses") return parseInt(p.meses_de_facturacion__hasta_6_) || 1;
+      // Prob. com. y Plan pagos: sortables desde 2026-08-14 (pedido German). Orden asc = peor primero.
+      if (gs.key === "prob") { const r = { nula: 0, baja: 1, media: 2, alta: 3 }; const v = r[(p.probabilidad_comercial || "").toLowerCase()]; return v === undefined ? -1 : v; }
+      if (gs.key === "plan") { const dd = { properties: p }; try { return planPagosInvalid(dd) ? 0 : (planPagosFracs(dd) ? 2 : 1); } catch (e) { return 1; } }
       if (gs.key === "cierre") return p.closedate ? new Date(p.closedate).getTime() : 0;
       if (gs.key === "next") return (p.hs_next_step || "").toLowerCase();
       return 0;
@@ -3532,7 +3535,8 @@ function renderFuentes() {
     kpi("Cobertura del gap H2", cobertura + "%", `pipeline temprano ÷ lo necesario`, cobCol);
 
   const inS = "padding:3px 5px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; background:white;";
-  const gArrow = k => (gs.key === k ? (gs.dir === "asc" ? " ▲" : " ▼") : "");
+  // ↕ gris = columna ordenable pero inactiva (afordancia visual, German 2026-08-14). ▲/▼ = orden activo.
+  const gArrow = k => (gs.key === k ? ` <span style="color:#4030C8;">${gs.dir === "asc" ? "▲" : "▼"}</span>` : ` <span style="color:#c7cbd6; font-weight:400;">↕</span>`);
   const th = (t, k) => `<th ${k ? `onclick="genSort('${k}')" title="Clic para ordenar"` : ""} style="text-align:left; padding:8px 10px; font-size:11px; color:#666; text-transform:uppercase; letter-spacing:.3px; border-bottom:2px solid #e5e7eb; white-space:nowrap;${k ? " cursor:pointer;" : ""}">${t}${k ? gArrow(k) : ""}</th>`;
   const hiBg = "#f3edfc";
   const thHi = (t, k) => `<th ${k ? `onclick="genSort('${k}')" title="Clic para ordenar"` : ""} style="text-align:left; padding:8px 10px; font-size:11px; color:#5b21b6; text-transform:uppercase; letter-spacing:.3px; border-bottom:2px solid #ddd6fe; white-space:nowrap; background:${hiBg};${k ? " cursor:pointer;" : ""}">${t}${k ? gArrow(k) : ""}</th>`;
@@ -3573,7 +3577,7 @@ function renderFuentes() {
   } else if (genHid.size) {
     t += `<div style="margin-bottom:6px; text-align:right;"><button onclick="toggleGenMode()" style="padding:3px 10px; font-size:12px; cursor:pointer; border:1px solid #d1d5db; border-radius:5px; background:white; color:#6b7280;">🙈 Ver ocultas (${genHid.size})</button></div>`;
   }
-  t += `<table class="std" style="white-space:nowrap; min-width:1200px;"><thead><tr>${thStar}${thDeal}${th("Cuenta", "cuenta")}${thHi("Owner", "owner")}${th("Stage", "stage")}${th("País", "pais")}${thHi("Fuente", "fuente")}${th("Detalle fuente", "detalle")}${th("Producto", "producto")}${th("Amount", "amount")}${th("Prob. com.")}${th("Meses", "meses")}${th("Plan pagos")}${th("Cierre", "cierre")}${th("Siguiente paso", "next")}${th("")}</tr>${filterRow}</thead><tbody>`;
+  t += `<table class="std" style="white-space:nowrap; min-width:1200px;"><thead><tr>${thStar}${thDeal}${th("Cuenta", "cuenta")}${thHi("Owner", "owner")}${th("Stage", "stage")}${th("País", "pais")}${thHi("Fuente", "fuente")}${th("Detalle fuente", "detalle")}${th("Producto", "producto")}${th("Amount", "amount")}${th("Prob. com.", "prob")}${th("Meses", "meses")}${th("Plan pagos", "plan")}${th("Cierre", "cierre")}${th("Siguiente paso", "next")}${th("")}</tr>${filterRow}</thead><tbody>`;
   if (!trows.length) {
     t += (genMode === "ocultas")
       ? `<tr><td colspan="16" class="empty">Sin deals ocultos.</td></tr>`
@@ -3635,7 +3639,8 @@ const STAGE_REQUIRED = {
 };
 const STAGE_LABELS_GATE = { "qualifiedtobuy": "SQL – Discovery", "1246562354": "Primer reu", "presentationscheduled": "Propuesta Enviada", "bda4aa78-3d32-45c0-8f73-5acaedfbb854": "Negociación", "closedwon": "Ganado/Firmado", "closedlost": "Perdido" };
 const REQ_FIELD_DEFS = {
-  producto: { label: "Producto - Servicio", type: "select", opts: [["IDP", "IDP"], ["IDE", "IDE"], ["S&G", "S&G"], ["FullService (FS)", "FullService (FS)"], ["Middleware", "Middleware"], ["Servicios de Consultoría", "Consultoría"], ["SEO/CRO", "SEO/CRO"], ["Productos de 3ro", "Productos de 3ro"], ["Ampliación de Negocio", "Ampliación de Negocio"], ["App Propias", "App Propias"]] },
+  // type "producto" => se resuelve con productoOptions()/PRODUCTO_OPTS (única fuente de verdad del enum). NO duplicar la lista acá.
+  producto: { label: "Producto - Servicio", type: "producto" },
   segmento: { label: "Segmento", type: "select", opts: [["AR", "AR"], ["PY", "PY"], ["MX", "MX"], ["CL", "CL"], ["PE", "PE"], ["UY", "UY"], ["EC", "EC"], ["BO", "BO"], ["CO", "CO"], ["VZ", "VZ"], ["C-America", "C-America"], ["LATAM", "LATAM"], ["GLOBAL", "GLOBAL"], ["EUROPA", "EUROPA"]] },
   amount: { label: "Valor (U$S)", type: "number" },
   closedate: { label: "Fecha de cierre", type: "date" },
@@ -3662,6 +3667,7 @@ function stageGateInput(k) {
   const inS = "width:100%; margin-top:3px; padding:6px 8px; border:1px solid #d1d5db; border-radius:5px; font-size:13px;";
   if (def.type === "leadsource") return `<select id="sg-${k}" style="${inS}">${leadSourceOptions("")}</select>`;
   if (def.type === "owner") return `<select id="sg-${k}" style="${inS}">${ownerOptions("")}</select>`;
+  if (def.type === "producto") return `<select id="sg-${k}" style="${inS}">${productoOptions("")}</select>`;
   if (def.type === "number") return `<input type="number" id="sg-${k}" placeholder="0" style="${inS}">`;
   if (def.type === "date") return `<input type="date" id="sg-${k}" style="${inS}">`;
   if (def.type === "select") return `<select id="sg-${k}" style="${inS}"><option value="">— elegí —</option>${def.opts.map(o => `<option value="${escAttr(o[0])}">${escAttr(o[1])}</option>`).join("")}</select>`;
@@ -8466,7 +8472,8 @@ async function dailyWin(id) {
 
 async function dailyLose(id) {
   // Perdido: HubSpot muestra estos campos aunque NO son obligatorios. Modal opcional: completar o dejar en blanco.
-  stageGateOpen(id, "closedlost", "st-" + id, ["closed_lost_reason", "hs_next_step"], () => renderDaily(window.__allDeals || []), () => reloadDaily(), true);
+  // Igual que en Generación, al marcar Perdido se crea el clon "NUR - {nombre}" en Nurturing (German 2026-08-14).
+  stageGateOpen(id, "closedlost", "st-" + id, ["closed_lost_reason", "hs_next_step"], () => renderDaily(window.__allDeals || []), async () => { await genLoseNurClone(id, "st-" + id); await reloadDaily(); }, true);
 }
 
 async function reloadDaily() {
@@ -8579,10 +8586,12 @@ function genLose(id) {
   stageGateOpen(id, "closedlost", "gst-" + id, ["closed_lost_reason", "hs_next_step"], () => renderFuentes(), async () => { await genLoseNurClone(id); await reloadDaily(); }, true);
 }
 
-async function genLoseNurClone(origId) {
+async function genLoseNurClone(origId, stId) {
   // Crea el clon "NUR - {dealname}" en Nurturing tras un Perdido (best-effort: si falla, avisa pero no bloquea).
+  // Se usa desde Generación (genLose, span "gst-") y desde Foco (dailyLose, span "st-") — German 2026-08-14.
   try {
-    const d = (window.__dailyOpen || []).find(x => String(x.id) === String(origId));
+    const pool = [].concat(window.__dailyOpen || [], window.__allDeals || []);
+    const d = pool.find(x => String(x.id) === String(origId));
     const p = d ? d.properties : {};
     const name = (p.dealname || "deal " + origId);
     const amount = p.amount || "0";
@@ -8606,7 +8615,7 @@ async function genLoseNurClone(origId) {
       const hoy = new Date().toLocaleDateString("es-AR");
       hsWrite({ createRequest: { objects: [{ objectType: "notes", properties: { hs_note_body: `Clon Nurturing creado ${hoy} al marcar Perdido el deal original "${name}" (#${origId}). Amount original USD ${amount}. Cuando se reactive, restaurar valor.`, hs_timestamp: new Date().toISOString() }, associations: [{ targetObjectId: Number(newId), targetObjectType: "deals" }] }] } }).catch(() => {});
     }
-    const st = document.getElementById("gst-" + origId);
+    const st = document.getElementById(stId || ("gst-" + origId));
     if (st) st.textContent = "✓ perdido + clon NUR";
   } catch (e) {
     alert("El deal quedó como Perdido, pero falló la creación del clon en Nurturing: " + (e && e.message ? e.message : e) + "\n\nCrealo a mano en HubSpot si hace falta: \"NUR - …\" en el pipeline Nurturing.");
@@ -9819,7 +9828,10 @@ const PRODUCTO_OPTS = [
   { v: "FullService (FS)", l: "FullService (FS)" }, { v: "Middleware", l: "Middleware" },
   { v: "Servicios de Consultoría", l: "Consultoría" }, { v: "SEO/CRO", l: "SEO/CRO" },
   { v: "Productos de 3ro", l: "Productos de 3ro" }, { v: "Ampliación de Negocio", l: "Ampliación de Negocio" },
-  { v: "App Propias", l: "App Propias" }
+  { v: "App Propias", l: "App Propias" },
+  { v: "IACS", l: "Innew IA Commerce Suite" },
+  { v: "(NN) Nuevos Negocios", l: "(NN) Nuevos Negocios" },
+  { v: "Upsell - CA", l: "Upsell - CA" }
 ];
 function productoOptions(sel) {
   const cur = (sel || "").trim();
