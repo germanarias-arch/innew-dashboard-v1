@@ -457,6 +457,14 @@ table.std tr:hover td { background: #fafafa; }
 
     <div id="metas-foco" style="margin:14px 0 4px;"></div>
 
+    <div class="semestre" style="border-top:3px solid #6b7280;">
+      <h2 style="margin-bottom:2px;">🕰️ Cómo nos fue — cumplimiento mes a mes</h2>
+      <div class="small" style="font-style:italic; margin:2px 0 12px; color:#888; line-height:1.4;">
+        Mirada hacia atrás: <b>meta del mes</b> vs <b>facturable real</b> (input "Base contratada") vs <b>MRR ganado</b> en ese mes según HubSpot. Sirve para ver qué meses funcionaron y por qué.
+      </div>
+      <div id="metas-historico"></div>
+    </div>
+
     <div class="bucket" id="bucket-metas-refore">
       <div class="bucket-header" onclick="toggleBucket('bucket-metas-refore')">
         <span class="bucket-icon">▶</span>
@@ -586,6 +594,14 @@ table.std tr:hover td { background: #fafafa; }
         Cuánto negocio nuevo falta para la meta del semestre, cuántos deals implica generar, y hasta qué fecha conviene generar cada producto para que cierre dentro de H2 (mediana de tiempo de cierre real).
       </div>
       <div id="gen-indicadores"></div>
+    </div>
+
+    <div class="semestre" style="border-top:3px solid #0d9488;">
+      <h2 style="margin-bottom:2px;">🏃 Metas de actividad — hoy · esta semana · este mes</h2>
+      <div class="small" style="font-style:italic; margin:2px 0 14px; color:#888; line-height:1.4;">
+        El gap del semestre bajado a ritmo diario: los <b>deals a generar</b> se prorratean por los <b>días hábiles que quedan hasta el 31-oct</b> (nov y dic son meses de cierre, no de siembra). Si nos atrasamos una semana, la meta diaria sube sola. Alcance: <b>equipo completo</b> (todos los owners). Cada semana queda <b>archivada</b> abajo para ver cómo venimos.
+      </div>
+      <div id="gen-metas-actividad"></div>
     </div>
 
     <div class="semestre">
@@ -3343,6 +3359,279 @@ function renderGenIndicadores() {
     h += `<div class="small" style="color:#9ca3af; margin-top:6px;">La <b>última fecha para generar</b> = 31-dic − mediana de cierre del producto (si generás después, no llega a facturar en H2). La <b>prioridad</b> = ticket MRR × win rate ÷ días de cierre: qué producto rinde más por día invertido.</div>`;
   }
   box.innerHTML = h;
+  try { renderMetasActividad(); } catch (e) { console.warn("metas actividad:", e); }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// METAS DE ACTIVIDAD (Generación) — cuánto generar hoy / semana / mes
+// Base: gap H2 → deals a generar → prorrateado por DÍAS HÁBILES que
+// quedan hasta el 31-oct (cierre de la ventana de generación: nov y
+// dic son meses de cierre). Se auto-ajusta: si nos atrasamos, sube.
+// Alcance: EQUIPO COMPLETO (todos los owners) — decisión de German.
+// "Propuesta enviada" se cuenta por `fecha_envio_propuesta`.
+// Cada semana se archiva en dashComercial_v2 → actHist.
+// ══════════════════════════════════════════════════════════════════
+const ACT_GEN_FIN = new Date(2026, 9, 31); // 31-oct-2026
+const ACT_PROP_LS = "actPropTgt";
+const ACT_HIST_MAX = 16;
+
+function actDay0(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
+function actIsBD(d) { const w = d.getDay(); return w >= 1 && w <= 5; }
+function actBD(from, to) { // días hábiles inclusive
+  let a = actDay0(from); const b = actDay0(to); let n = 0, guard = 0;
+  while (a <= b && guard++ < 3000) { if (actIsBD(a)) n++; a = new Date(a.getFullYear(), a.getMonth(), a.getDate() + 1); }
+  return n;
+}
+function actMonday(d) {
+  const x = actDay0(d || new Date());
+  x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
+  return x;
+}
+function actWeekEnd(d) { const m = actMonday(d); return new Date(m.getFullYear(), m.getMonth(), m.getDate() + 6); }
+function actWeekKey(d) {
+  const m = actMonday(d);
+  return `${m.getFullYear()}-${String(m.getMonth() + 1).padStart(2, "0")}-${String(m.getDate()).padStart(2, "0")}`;
+}
+function actTs(v) { if (!v) return 0; if (/^\d+$/.test(String(v))) return Number(v); const t = new Date(v).getTime(); return isNaN(t) ? 0 : t; }
+function actNum(n) { const x = Math.round((Number(n) || 0) * 10) / 10; return (x % 1 === 0) ? String(x) : x.toFixed(1).replace(".", ","); }
+function actFmtD(d) { return d.toLocaleDateString("es-AR", { day: "2-digit", month: "short" }); }
+
+// Universo = abiertos + cerrados deduplicados, sin Nurturing. Todos los owners.
+function actUniverso() {
+  const seen = new Set(), out = [];
+  const src = [].concat(window.__allDeals || window.__dailyOpen || [], window.__closedDeals || []);
+  src.forEach(d => {
+    if (!d || !d.properties) return;
+    if (typeof NURTURING_PIPELINE_ID !== "undefined" && d.properties.pipeline === NURTURING_PIPELINE_ID) return;
+    const k = String(d.id); if (seen.has(k)) return; seen.add(k); out.push(d);
+  });
+  return out;
+}
+function actCount(deals, prop, from, to) {
+  const a = actDay0(from).getTime(), b = actDay0(to).getTime() + 86399999;
+  return deals.filter(d => { const t = actTs(d.properties[prop]); return t && t >= a && t <= b; }).length;
+}
+// Conversión histórica 1ª reunión → propuesta enviada (para derivar el objetivo de propuestas)
+function actConvReuProp() {
+  const u = actUniverso();
+  const reu = u.filter(d => actTs(d.properties["hs_v2_date_entered_" + RITMO_STAGE_1RA]));
+  if (reu.length < 5) return 0.6;
+  const con = reu.filter(d => actTs(d.properties.fecha_envio_propuesta)).length;
+  return con > 0 ? Math.min(1, con / reu.length) : 0.6;
+}
+function actTgtReu() {
+  const list = (typeof RITMO_OWNERS !== "undefined" ? RITMO_OWNERS : []);
+  return list.reduce((a, o) => { const v = Number(ritmoOwnerTgt(o)); return a + (isNaN(v) ? 0 : v); }, 0);
+}
+function actPropTgtAuto() { return Math.round(actTgtReu() * actConvReuProp() * 10) / 10; }
+function actPropTgtIsOverride() { const v = dashLoad()[ACT_PROP_LS]; return v !== undefined && v !== null && v !== "" && !isNaN(Number(v)); }
+function actPropTgt() { return actPropTgtIsOverride() ? Number(dashLoad()[ACT_PROP_LS]) : actPropTgtAuto(); }
+function actSetPropTgt(v) { const p = {}; p[ACT_PROP_LS] = (v === "" || isNaN(parseFloat(v))) ? "" : Number(v); dashSave(p); renderMetasActividad(); }
+function actResetPropTgt() { const p = {}; p[ACT_PROP_LS] = ""; dashSave(p); renderMetasActividad(); }
+
+function actMetas() {
+  const gap = typeof genGapSemestre === "function" ? genGapSemestre() : 0;
+  const ticket = typeof genTicketProm === "function" ? genTicketProm() : 0;
+  const wr = typeof genWinRate === "function" ? genWinRate() : 0.2;
+  const dealsTotal = (gap > 0 && ticket > 0 && wr > 0) ? Math.ceil(gap / (ticket * wr)) : 0;
+  const hoy = new Date();
+  const vivo = actDay0(hoy) <= ACT_GEN_FIN;
+  const bdRest = vivo ? Math.max(1, actBD(hoy, ACT_GEN_FIN)) : 0;
+  const perBD = bdRest > 0 ? dealsTotal / bdRest : 0;
+  const wIni = actMonday(hoy), wFin = actWeekEnd(hoy);
+  const mIni = new Date(hoy.getFullYear(), hoy.getMonth(), 1), mFin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0);
+  const cap = d => (actDay0(d) > ACT_GEN_FIN ? ACT_GEN_FIN : d);
+  const bdSem = actDay0(wIni) > ACT_GEN_FIN ? 0 : actBD(wIni, cap(wFin));
+  const bdMes = actDay0(mIni) > ACT_GEN_FIN ? 0 : actBD(mIni, cap(mFin));
+  const u = actUniverso();
+  return {
+    gap: gap, ticket: ticket, wr: wr, dealsTotal: dealsTotal, bdRest: bdRest, perBD: perBD,
+    tHoy: (vivo && actIsBD(hoy)) ? perBD : 0,
+    tSem: perBD * bdSem, tMes: perBD * bdMes,
+    bdSem: bdSem, bdMes: bdMes,
+    rHoy: actCount(u, "createdate", hoy, hoy),
+    rSem: actCount(u, "createdate", wIni, wFin),
+    rMes: actCount(u, "createdate", mIni, mFin),
+    rReu: actCount(u, "hs_v2_date_entered_" + RITMO_STAGE_1RA, wIni, wFin),
+    rProp: actCount(u, "fecha_envio_propuesta", wIni, wFin),
+    tReu: actTgtReu(), tProp: actPropTgt(),
+    wIni: wIni, wFin: wFin, mIni: mIni, mFin: mFin
+  };
+}
+
+// ── Archivado semanal ──
+function actHist() { const h = dashLoad().actHist; return (h && typeof h === "object") ? h : {}; }
+function actSaveWeek(m) {
+  const h = actHist();
+  h[actWeekKey(m.wIni)] = {
+    deals: m.rSem, reus: m.rReu, props: m.rProp,
+    tDeals: Math.round(m.tSem * 10) / 10, tReus: m.tReu, tProps: m.tProp, ts: Date.now()
+  };
+  const keys = Object.keys(h).sort();
+  while (keys.length > ACT_HIST_MAX) { delete h[keys.shift()]; }
+  dashSave({ actHist: h });
+}
+
+function actCard(label, real, tgt, sub, color) {
+  const t = Math.max(0, Number(tgt) || 0);
+  const pct = t > 0 ? Math.round(real / t * 100) : (real > 0 ? 100 : 0);
+  const c = t <= 0 ? "#6b7280" : pct >= 100 ? "#047857" : pct >= 60 ? "#b45309" : "#b91c1c";
+  return `<div style="flex:1; min-width:175px; background:#fff; border:1px solid #e5e7eb; border-left:4px solid ${color}; border-radius:8px; padding:12px 14px;">
+    <div class="small" style="color:#888; text-transform:uppercase; letter-spacing:.4px; font-size:10px;">${label}</div>
+    <div style="display:flex; align-items:baseline; gap:6px; margin-top:2px;">
+      <div style="font-size:24px; font-weight:800; color:${c}; line-height:1;">${real}</div>
+      <div style="font-size:13px; color:#6b7280;">de <b>${actNum(t)}</b> · <b style="color:${c};">${pct}%</b></div>
+    </div>
+    <div style="height:8px; background:#f3f4f6; border-radius:5px; overflow:hidden; margin:7px 0 4px;"><div style="width:${Math.min(100, pct)}%; height:100%; background:${c};"></div></div>
+    <div class="small" style="color:#9ca3af;">${sub}</div>
+  </div>`;
+}
+
+function renderMetasActividad() {
+  const box = document.getElementById("gen-metas-actividad");
+  if (!box) return;
+  const m = actMetas();
+  try { actSaveWeek(m); } catch (e) {}
+
+  if (!m.dealsTotal) {
+    box.innerHTML = `<div class="empty" style="padding:14px;">Sin gap ni ticket promedio todavía: no se puede derivar el ritmo. Cargá la meta del semestre y algún ganado con producto para que esto se pueble.</div>`;
+    return;
+  }
+
+  let h = `<div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
+    ${actCard("Deals a generar HOY", m.rHoy, m.tHoy, actIsBD(new Date()) ? "creados hoy (todos los owners)" : "fin de semana · sin objetivo", "#4030C8")}
+    ${actCard("Esta semana", m.rSem, m.tSem, `${actFmtD(m.wIni)} → ${actFmtD(m.wFin)} · ${m.bdSem} días hábiles`, "#4030C8")}
+    ${actCard("Este mes", m.rMes, m.tMes, `${m.bdMes} días hábiles dentro de la ventana`, "#4030C8")}
+  </div>`;
+
+  h += `<div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
+    ${actCard("1ª reuniones (semana)", m.rReu, m.tReu, "entrada a Primer reu · objetivos editables en Ritmo", "#0d9488")}
+    ${actCard("Propuestas enviadas (semana)", m.rProp, m.tProp, "campo <b>fecha_envio_propuesta</b>", "#b45309")}
+    <div style="flex:1; min-width:175px; background:#fff; border:1px solid #e5e7eb; border-left:4px solid #6b7280; border-radius:8px; padding:12px 14px;">
+      <div class="small" style="color:#888; text-transform:uppercase; letter-spacing:.4px; font-size:10px;">Objetivo propuestas/sem</div>
+      <div style="margin-top:4px; display:flex; align-items:center; gap:6px;">
+        <input type="number" min="0" step="0.5" value="${actNum(m.tProp)}" onchange="actSetPropTgt(this.value)" style="width:70px; padding:4px 6px; font-size:16px; font-weight:700; border:1px solid #d1d5db; border-radius:5px; text-align:right;">
+      </div>
+      <div class="small" style="color:#666; margin-top:3px;">${actPropTgtIsOverride()
+        ? `manual · sugerido ${actNum(actPropTgtAuto())} <a href="#" onclick="actResetPropTgt();return false;" style="color:#4030C8;">usar</a>`
+        : `auto = ${actNum(m.tReu)} reus × ${Math.round(actConvReuProp() * 100)}% de conversión reu→propuesta`}</div>
+    </div>
+  </div>`;
+
+  h += `<div class="small" style="color:#9ca3af; margin:0 0 16px;">Ritmo diario = <b>${m.dealsTotal} deals ÷ ${m.bdRest} días hábiles hasta el 31-oct = ${actNum(m.perBD)}/día hábil</b>. Los deals se cuentan por <b>fecha de creación</b> en HubSpot (sin Nurturing), las propuestas por <b>fecha_envio_propuesta</b> y las 1ª reuniones por la entrada a la etapa <b>Primer reu</b>.</div>`;
+
+  // ── Histórico semanal ──
+  const hist = actHist();
+  const keys = Object.keys(hist).sort().reverse();
+  const curKey = actWeekKey(new Date());
+  h += `<div style="font-weight:700; font-size:14px; margin-bottom:6px;">📆 Semana a semana</div>`;
+  if (!keys.length) {
+    h += `<div class="empty" style="padding:12px;">Todavía no hay semanas archivadas. Esta semana ya se está guardando: la comparación aparece a partir de la próxima.</div>`;
+  } else {
+    const th = t => `<th style="text-align:center; padding:7px 10px; font-size:11px; color:#666; text-transform:uppercase; letter-spacing:.3px; border-bottom:2px solid #e5e7eb; white-space:nowrap;">${t}</th>`;
+    const cell = (r, t) => {
+      const tt = Math.max(0, Number(t) || 0);
+      const pct = tt > 0 ? Math.round(r / tt * 100) : (r > 0 ? 100 : 0);
+      const c = tt <= 0 ? "#6b7280" : pct >= 100 ? "#047857" : pct >= 60 ? "#b45309" : "#b91c1c";
+      return `<td style="text-align:center; white-space:nowrap;"><b style="color:${c};">${r}</b> <span class="small" style="color:#9ca3af;">/ ${actNum(tt)}</span></td>`;
+    };
+    h += `<table class="std" style="min-width:620px;"><thead><tr>${th("Semana")}${th("Deals generados")}${th("1ª reuniones")}${th("Propuestas")}${th("Cumplimiento")}</tr></thead><tbody>`;
+    keys.forEach(k => {
+      const w = hist[k];
+      const lun = new Date(k + "T00:00:00");
+      const dom = new Date(lun.getFullYear(), lun.getMonth(), lun.getDate() + 6);
+      const tot = (Number(w.tDeals) || 0) + (Number(w.tReus) || 0) + (Number(w.tProps) || 0);
+      const rea = (w.deals || 0) + (w.reus || 0) + (w.props || 0);
+      const pct = tot > 0 ? Math.round(rea / tot * 100) : 0;
+      const c = pct >= 100 ? "#047857" : pct >= 60 ? "#b45309" : "#b91c1c";
+      h += `<tr${k === curKey ? ' style="background:#f5f3ff;"' : ""}>
+        <td style="white-space:nowrap;"><b>${actFmtD(lun)} → ${actFmtD(dom)}</b>${k === curKey ? ' <span class="small" style="color:#4030C8; font-weight:700;">· en curso</span>' : ""}</td>
+        ${cell(w.deals || 0, w.tDeals)}${cell(w.reus || 0, w.tReus)}${cell(w.props || 0, w.tProps)}
+        <td style="text-align:center;"><span style="display:inline-block; min-width:44px; padding:2px 8px; border-radius:10px; font-weight:700; font-size:12px; color:#fff; background:${c};">${pct}%</span></td>
+      </tr>`;
+    });
+    h += `</tbody></table>`;
+    h += `<div class="small" style="color:#9ca3af; margin-top:6px;">Se conservan las últimas ${ACT_HIST_MAX} semanas. La semana en curso se re-guarda en cada carga y queda congelada al pasar al lunes siguiente. El archivo vive en tu navegador (localStorage).</div>`;
+  }
+  box.innerHTML = h;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// METAS · mirada hacia atrás — cumplimiento mes a mes
+// ══════════════════════════════════════════════════════════════════
+function metasGanadoMes(key) {
+  const won = (window.__closedDeals || []).filter(d => d && d.properties && d.properties.dealstage === "closedwon");
+  let s = 0, n = 0;
+  won.forEach(d => {
+    const p = d.properties;
+    const raw = p.hs_v2_date_entered_closedwon || p.closedate;
+    if (!raw) return;
+    const x = new Date(actTs(raw));
+    if (isNaN(x.getTime())) return;
+    if (`${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}` !== key) return;
+    const a = parseFloat(p.amount) || 0, mm = Math.max(1, parseFloat(p.meses_de_facturacion__hasta_6_) || 1);
+    if (a > 0) { s += a / mm; n++; }
+  });
+  return { mrr: s, n: n };
+}
+function renderMetasHistorico() {
+  const box = document.getElementById("metas-historico");
+  if (!box) return;
+  const now = new Date();
+  const curKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const rows = Object.keys(META_MENSUAL).sort()
+    .filter(k => k <= curKey && (REAL_FACTURABLE[k] || 0) > 0)
+    .map(k => {
+      const meta = META_MENSUAL[k] || 0, real = REAL_FACTURABLE[k] || 0;
+      const g = metasGanadoMes(k);
+      return { k: k, meta: meta, real: real, pct: meta > 0 ? real / meta * 100 : 0, gan: g.mrr, ganN: g.n, cur: k === curKey };
+    });
+  if (!rows.length) { box.innerHTML = `<div class="empty" style="padding:14px;">Todavía no hay meses cerrados con facturable cargado.</div>`; return; }
+
+  const cerrados = rows.filter(r => !r.cur);
+  const promPct = cerrados.length ? cerrados.reduce((a, r) => a + r.pct, 0) / cerrados.length : 0;
+  const sumMeta = cerrados.reduce((a, r) => a + r.meta, 0);
+  const sumReal = cerrados.reduce((a, r) => a + r.real, 0);
+  const mejor = cerrados.slice().sort((a, b) => b.pct - a.pct)[0];
+  const peor = cerrados.slice().sort((a, b) => a.pct - b.pct)[0];
+  const lblMes = k => { const p = k.split("-"); return `${MESES_ES[Number(p[1]) - 1]} ${p[0]}`; };
+  const colP = p => p >= 100 ? "#047857" : p >= 85 ? "#b45309" : "#b91c1c";
+
+  const kpi = (label, val, sub, color) => `<div style="flex:1; min-width:165px; background:#fff; border:1px solid #e5e7eb; border-left:4px solid ${color}; border-radius:8px; padding:12px 14px;">
+    <div class="small" style="color:#888; text-transform:uppercase; letter-spacing:.4px; font-size:10px;">${label}</div>
+    <div style="font-size:20px; font-weight:700; color:#111; margin-top:2px;">${val}</div>
+    <div class="small" style="color:#666; margin-top:1px;">${sub}</div>
+  </div>`;
+
+  let h = `<div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:14px;">
+    ${kpi("Cumplimiento promedio", Math.round(promPct) + "%", `${cerrados.length} mes(es) cerrado(s)`, colP(promPct))}
+    ${kpi("Acumulado real", fmtMoneyK(sumReal) + "/mes", `sobre ${fmtMoneyK(sumMeta)} de meta`, "#4030C8")}
+    ${kpi("Mejor mes", mejor ? lblMes(mejor.k) : "—", mejor ? Math.round(mejor.pct) + "% de la meta" : "", "#047857")}
+    ${kpi("Peor mes", peor ? lblMes(peor.k) : "—", peor ? Math.round(peor.pct) + "% de la meta" : "", "#b91c1c")}
+  </div>`;
+
+  const th = t => `<th style="text-align:center; padding:7px 10px; font-size:11px; color:#666; text-transform:uppercase; letter-spacing:.3px; border-bottom:2px solid #e5e7eb; white-space:nowrap;">${t}</th>`;
+  h += `<table class="std" style="min-width:700px;"><thead><tr>${th("Mes")}${th("Meta")}${th("Facturable real")}${th("Δ vs meta")}${th("Cumplimiento")}${th("Ganado en el mes")}</tr></thead><tbody>`;
+  rows.slice().reverse().forEach(r => {
+    const d = r.real - r.meta;
+    const c = colP(r.pct);
+    h += `<tr${r.cur ? ' style="background:#f5f3ff;"' : ""}>
+      <td style="white-space:nowrap;"><b>${lblMes(r.k)}</b>${r.cur ? ' <span class="small" style="color:#4030C8; font-weight:700;">· en curso</span>' : ""}</td>
+      <td style="text-align:center;">${fmtMoneyK(r.meta)}</td>
+      <td style="text-align:center; font-weight:700;">${fmtMoneyK(r.real)}</td>
+      <td style="text-align:center; color:${d >= 0 ? "#047857" : "#b91c1c"}; font-weight:600;">${d >= 0 ? "+" : "−"}${fmtMoneyK(Math.abs(d))}</td>
+      <td style="text-align:center;">
+        <div style="display:flex; align-items:center; gap:8px; justify-content:center;">
+          <span style="min-width:40px; font-weight:700; color:${c};">${Math.round(r.pct)}%</span>
+          <div style="flex:1; min-width:70px; max-width:120px; background:#f3f4f6; border-radius:4px; height:10px; overflow:hidden;"><div style="width:${Math.min(100, Math.round(r.pct))}%; height:100%; background:${c};"></div></div>
+        </div>
+      </td>
+      <td style="text-align:center;">${r.ganN ? `${fmtMoneyK(r.gan)}/mes <span class="small" style="color:#9ca3af;">(${r.ganN})</span>` : `<span class="small" style="color:#9ca3af;">—</span>`}</td>
+    </tr>`;
+  });
+  h += `</tbody></table>`;
+  h += `<div class="small" style="color:#9ca3af; margin-top:6px;">El <b>facturable real</b> sale del input "Base contratada" (única fuente de verdad). El <b>ganado en el mes</b> es MRR de deals <i>Closed Won</i> con fecha de cierre en ese mes, según la ventana de cerrados que trae HubSpot — es referencia, no reemplaza al facturable.</div>`;
+  box.innerHTML = h;
 }
 
 // Búsqueda por deal o cuenta (usa el cache de empresa asociada si está resuelto)
@@ -5610,6 +5899,7 @@ function renderMetas() {
   if (pr) pr.textContent = `(Meta semestre ${fmtMoneyK(sSem.metaTotal)} · Total esp. ${fmtMoneyK(sSem.totalEsp)})`;
   const pf = document.getElementById("preview-metas-fc");
   if (pf) pf.textContent = `(Forecast HS 6m ${fmtMoneyK(sSem.fcTotal)})`;
+  try { renderMetasHistorico(); } catch (e) { console.warn("metas histórico:", e); }
   if (typeof renderReforecast === "function") renderReforecast();
 }
 
@@ -5678,8 +5968,16 @@ const TARGET_SECTIONS = [
   { key: "crecimiento", label: "📈 Industrias en crecimiento" },
   { key: "lideres", label: "🏆 eCommerce Líderes" },
   { key: "grandes", label: "🏢 Grandes marcas + Industrias" },
-  { key: "partner", label: "🤝 Listado de partner/reseller" }
+  { key: "partner", label: "🤝 Listado de partner/reseller" },
+  // 4 listados nuevos (German 2026-08-18)
+  { key: "nuevosneg", label: "🚀 Nuevos Negocios" },
+  { key: "vtex200", label: "🟣 Tiendas VTEX +200K sesiones" },
+  { key: "notne30", label: "🟠 No-TNE +30K y −200K sesiones" },
+  { key: "tne30", label: "🔵 Tiendas TNE +30K" },
+  // Bandeja: acá caen las empresas que quedaron sin ningún listado (German 2026-08-18)
+  { key: "sinasig", label: "📥 Sin asignación" }
 ];
+const TARGET_SEC_NONE = "sinasig";
 // Estados POR CONTACTO (v2 — 1 fila = 1 contacto)
 const TARGET_C_ESTADOS = [
   { v: "por_contactar", l: "Por contactar", c: "#6b7280", bg: "#f3f4f6" },
@@ -5701,6 +5999,9 @@ function targetMigrate(list) {
   const OLD2NEW = { por_contactar: "por_contactar", en_contacto: "followup", reunion: "reunion", opp_detectada: "reunion", descartado: "descartado" };
   let changed = false;
   list.forEach(t => {
+    // Multi-listado (German 2026-08-18): `section` (string) → `sections` (array).
+    // `section` queda como listado PRIMARIO (compat con CSV import y targetAdd); `sections` manda para filtrar.
+    if (!Array.isArray(t.sections) || !t.sections.length) { t.sections = [t.section || "crecimiento"]; changed = true; }
     if (Array.isArray(t.contactos)) return;
     changed = true;
     t.contactos = [];
@@ -5729,6 +6030,69 @@ function targetSave(list) { dashSave({ target_accounts: list }); }
 window.__targetTab = window.__targetTab || "crecimiento";
 function targetSetTab(k) { window.__targetTab = k; renderTarget(); }
 function targetCEstadoInfo(v) { return TARGET_C_ESTADOS.find(e => e.v === v) || TARGET_C_ESTADOS[0]; }
+// ── Multi-listado: una empresa puede vivir en VARIOS listados a la vez (German 2026-08-18) ──
+// Fuente de verdad = t.sections (array). t.section = primario, se mantiene sincronizado con sections[0].
+function targetSecs(t) {
+  const s = (Array.isArray(t.sections) && t.sections.length) ? t.sections : [t.section || TARGET_SEC_NONE];
+  return targetSecsNorm(s);
+}
+// Normaliza: saca keys inválidas y duplicados; "Sin asignación" sólo sobrevive si NO hay ningún listado real.
+function targetSecsNorm(arr) {
+  const ok = (arr || []).filter((k, i, s) => k && s.indexOf(k) === i && TARGET_SECTIONS.some(x => x.key === k));
+  const real = ok.filter(k => k !== TARGET_SEC_NONE);
+  return real.length ? real : [TARGET_SEC_NONE];
+}
+function targetInSec(t, k) { return targetSecs(t).indexOf(k) > -1; }
+function targetSecLabel(k) { const s = TARGET_SECTIONS.find(x => x.key === k); return s ? s.label : k; }
+function targetSecsSet(id, arr) {
+  const list = targetLoad(); const t = list.find(x => x.id === id); if (!t) return null;
+  const fin = targetSecsNorm(arr);
+  t.sections = fin; t.section = fin[0];
+  targetSave(list); return t;
+}
+// Destildar todo YA NO se bloquea: la empresa cae en 📥 Sin asignación (no se pierde).
+function targetSecToggle(id, k) {
+  const t = targetLoad().find(x => x.id === id); if (!t) return;
+  const cur = targetSecs(t).slice(); const i = cur.indexOf(k);
+  if (i > -1) cur.splice(i, 1); else cur.push(k);
+  targetSecsSet(id, cur); renderTarget(); targetListasModal(id);
+}
+// Mover = sale del listado que estás viendo y entra al destino (el resto de sus listados queda igual).
+function targetSecMove(id, to) {
+  if (!to) { alert("Elegí un listado destino."); return; }
+  const t = targetLoad().find(x => x.id === id); if (!t) return;
+  const from = window.__targetTab || "crecimiento";
+  const cur = targetSecs(t).filter(k => k !== from);
+  if (cur.indexOf(to) === -1) cur.push(to);
+  targetSecsSet(id, cur); closeTargetListas(); renderTarget();
+}
+function targetSecMoveSel(id) { const el = document.getElementById("tgl-move"); targetSecMove(id, el ? el.value : ""); }
+function closeTargetListas() { const m = document.getElementById("target-listas-modal"); if (m) m.remove(); }
+function targetListasModal(id) {
+  const t = targetLoad().find(x => x.id === id); if (!t) return;
+  closeTargetListas();
+  const secs = targetSecs(t), tab = window.__targetTab || "crecimiento";
+  const wrap = document.createElement("div");
+  wrap.id = "target-listas-modal";
+  wrap.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:9999; display:flex; align-items:center; justify-content:center; padding:20px;";
+  wrap.addEventListener("click", e => { if (e.target === wrap) closeTargetListas(); });
+  wrap.innerHTML =
+    '<div style="background:#fff; border-radius:12px; max-width:440px; width:100%; padding:20px; box-shadow:0 10px 40px rgba(0,0,0,0.2); max-height:90vh; overflow:auto;">' +
+    '<div style="font-size:15px; font-weight:800; color:#430C89; margin-bottom:2px;">📋 Listados de ' + escAttr(t.nombre) + '</div>' +
+    '<div style="font-size:12px; color:#6b7280; margin-bottom:10px;">Tildá todos los listados donde querés que aparezca. Puede estar en varios a la vez; en cada uno se muestra un chip 🔗 con los otros. Si destildás todos, cae en <b>📥 Sin asignación</b> (no se borra).</div>' +
+    TARGET_SECTIONS.filter(s => s.key !== TARGET_SEC_NONE).map(s => {
+      const on = secs.indexOf(s.key) > -1;
+      return '<label style="display:flex; align-items:center; gap:8px; padding:7px 9px; margin-bottom:4px; border-radius:8px; cursor:pointer; border:1px solid ' + (on ? '#C7BDFF' : '#e5e7eb') + '; background:' + (on ? '#F1EFFF' : '#fff') + '; font-size:12.5px; font-weight:' + (on ? '800' : '500') + '; color:' + (on ? '#4030C8' : '#374151') + ';">' +
+        '<input type="checkbox"' + (on ? ' checked' : '') + ' onchange="targetSecToggle(\'' + t.id + '\', \'' + s.key + '\')">' + s.label + '</label>';
+    }).join("") +
+    '<div style="margin-top:12px; padding-top:12px; border-top:1px solid #e5e7eb;">' +
+    '<div style="font-size:11px; font-weight:700; color:#6b7280; margin-bottom:4px;">Mover a otro listado (lo saca de "' + escAttr(targetSecLabel(tab)) + '")</div>' +
+    '<select id="tgl-move" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px;"><option value="">— elegir destino —</option>' +
+    TARGET_SECTIONS.filter(s => s.key !== tab).map(s => '<option value="' + s.key + '">' + s.label + '</option>').join("") + '</select>' +
+    '<button onclick="targetSecMoveSel(\'' + t.id + '\')" style="margin-top:6px; width:100%; padding:7px 14px; border:none; border-radius:8px; background:#430C89; color:#fff; cursor:pointer; font-size:12.5px; font-weight:700;">→ Mover</button></div>' +
+    '<div style="display:flex; justify-content:flex-end; margin-top:14px;"><button onclick="closeTargetListas()" style="padding:7px 14px; border:1px solid #d1d5db; border-radius:8px; background:#fff; cursor:pointer; font-size:13px;">Cerrar</button></div></div>';
+  document.body.appendChild(wrap);
+}
 function targetFindC(cid) {
   const list = targetLoad();
   for (const t of list) {
@@ -5899,7 +6263,7 @@ function targetAdd() {
     });
   }
   list.push({
-    id: String(Date.now()), section: window.__targetTab || "crecimiento",
+    id: String(Date.now()), section: window.__targetTab || "crecimiento", sections: [window.__targetTab || "crecimiento"],
     nombre: nombre, industria: val("tg-industria"), fuente: "", detallePartner: "", dealId: null,
     contactos: contactos
   });
@@ -5965,7 +6329,7 @@ function targetImportFile(input) {
       Object.keys(ALIASES).forEach(k => { idx[k] = head.findIndex(h => ALIASES[k].indexOf(h) > -1); });
       if (idx.empresa === -1) { alert('No encontré la columna "empresa" en el encabezado. Bajá la plantilla CSV para ver el formato.'); return; }
       const ESTC = { por_contactar: "por_contactar", touch1: "touch1", primer_touch: "touch1", "1er_touch": "touch1", followup: "followup", follow_up: "followup", en_contacto: "followup", contacto: "followup", respondio: "respondio", reunion: "reunion", reunion_agendada: "reunion", opp_detectada: "reunion", oportunidad: "reunion", descartado: "descartado", descartada: "descartado" };
-      const SEC = { crecimiento: "crecimiento", industrias_en_crecimiento: "crecimiento", lideres: "lideres", ecommerce_lideres: "lideres", grandes: "grandes", grandes_marcas: "grandes", grandes_marcas_industrias: "grandes", partner: "partner", listado_de_partner: "partner", partner_reseller: "partner", reseller: "partner" };
+      const SEC = { crecimiento: "crecimiento", industrias_en_crecimiento: "crecimiento", lideres: "lideres", ecommerce_lideres: "lideres", grandes: "grandes", grandes_marcas: "grandes", grandes_marcas_industrias: "grandes", partner: "partner", listado_de_partner: "partner", partner_reseller: "partner", reseller: "partner", nuevosneg: "nuevosneg", nuevos_negocios: "nuevosneg", nn: "nuevosneg", vtex200: "vtex200", vtex_200k: "vtex200", tiendas_vtex_200k_sesiones: "vtex200", notne30: "notne30", no_tne: "notne30", no_tne_30k_200k: "notne30", tne30: "tne30", tne_30k: "tne30", tiendas_tne_30k: "tne30", sinasig: "sinasig", sin_asignacion: "sinasig", sin_asignar: "sinasig" };
       const tab = window.__targetTab || "crecimiento";
       const list = targetLoad();
       const byName = {};
@@ -5981,6 +6345,7 @@ function targetImportFile(input) {
         if (!emp) {
           emp = {
             id: String(Date.now()) + "_" + i, section: SEC[norm(g(r, "frente"))] || tab,
+            sections: [SEC[norm(g(r, "frente"))] || tab],
             nombre: nombre, industria: g(r, "vertical"),
             fuente: lsMatch ? lsMatch.v : "", detallePartner: g(r, "detalle_partner"),
             dealId: null, contactos: []
@@ -6200,11 +6565,11 @@ function renderTarget() {
     targetKpiCard("Deals convertidos", list.filter(x => x.dealId).length, "#059669") + '</div>';
   if (tEl) tEl.innerHTML = '<div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px;">' +
     TARGET_SECTIONS.map(s => {
-      const n = list.filter(x => x.section === s.key).length;
+      const n = list.filter(x => targetInSec(x, s.key)).length;
       const on = s.key === tab;
       return '<button onclick="targetSetTab(\'' + s.key + '\')" style="padding:7px 12px; border-radius:8px; font-size:12.5px; cursor:pointer; font-weight:' + (on ? '800' : '600') + '; border:1px solid ' + (on ? '#430C89' : '#d1d5db') + '; background:' + (on ? '#430C89' : '#fff') + '; color:' + (on ? '#fff' : '#374151') + ';">' + s.label + ' <span style="opacity:0.7;">(' + n + ')</span></button>';
     }).join("") + '</div>';
-  const rowsAll = list.filter(x => x.section === tab);
+  const rowsAll = list.filter(x => targetInSec(x, tab)); // multi-listado: una empresa puede caer en varios tabs
   const TF = targetFilters();
   const tfl = s => String(s || "").toLowerCase();
   const cMatch = c => {
@@ -6275,12 +6640,20 @@ function renderTarget() {
         ? '<a href="' + HUBSPOT_DEAL(t.dealId) + '" target="_blank" rel="noopener" style="display:inline-block; padding:3px 8px; border-radius:6px; background:#ecfdf5; border:1px solid #6EE7B7; color:#047857; font-size:11px; font-weight:700; text-decoration:none;">✓ Deal #' + escAttr(String(t.dealId)) + ' ↗</a>'
         : '<button onclick="targetDealModal(\'' + t.id + '\')" style="padding:3px 8px; border:1px solid #C7BDFF; border-radius:6px; background:#F1EFFF; color:#4030C8; cursor:pointer; font-size:11px; font-weight:700;">⚡ Crear Deal</button>';
       const rsp = Math.max(1, shown.length); // 1 fila por contacto: el panel del ticket ya NO es un <tr> oculto
+      // Chips 🔗: los OTROS listados donde también vive esta empresa (multi-listado, German 2026-08-18)
+      const otrasSecs = targetSecs(t).filter(k => k !== tab);
+      const otrasHtml = otrasSecs.length
+        ? '<div style="margin-top:4px; display:flex; flex-wrap:wrap; gap:3px;">' + otrasSecs.map(k =>
+            '<span title="También está en este listado" style="display:inline-block; padding:1px 6px; border-radius:5px; font-size:9.5px; font-weight:700; background:#F1EFFF; border:1px solid #C7BDFF; color:#4030C8;">🔗 ' + escAttr(targetSecLabel(k)) + '</span>').join("") + '</div>'
+        : '';
       const empCell = '<td rowspan="' + rsp + '" style="padding:8px; vertical-align:top; border-bottom:2px solid #e5e7eb; min-width:190px; background:#fcfcff;">' +
         '<div style="font-weight:800; color:#111827;">' + escAttr(t.nombre) + '</div>' +
         (t.industria ? '<div style="font-size:11px; color:#6b7280;">' + escAttr(t.industria) + '</div>' : '') +
         '<div style="margin-top:4px;"><span style="display:inline-block; padding:2px 7px; border-radius:6px; font-size:10.5px; font-weight:700; border:1px solid ' + eiEmp.c + '; background:' + eiEmp.bg + '; color:' + eiEmp.c + ';">' + eiEmp.l + '</span></div>' +
+        otrasHtml +
         '<div style="margin-top:6px;">' + accion + '</div>' +
         '<div style="margin-top:6px; white-space:nowrap;">' +
+        '<button onclick="targetListasModal(\'' + t.id + '\')" title="Listados: mover o compartir entre listas" style="padding:2px 8px; border:1px solid #C7BDFF; border-radius:6px; background:#fff; color:#4030C8; cursor:pointer; font-size:11px; font-weight:700;">📋 listas' + (otrasSecs.length ? ' (' + (otrasSecs.length + 1) + ')' : '') + '</button> ' +
         '<button onclick="targetAddContact(\'' + t.id + '\')" title="Agregar contacto" style="padding:2px 8px; border:1px solid #C7BDFF; border-radius:6px; background:#F1EFFF; color:#4030C8; cursor:pointer; font-size:11px; font-weight:700;">＋ contacto</button>' +
         ' <button onclick="targetEditRow(\'' + t.id + '\')" title="Editar empresa" style="background:none; border:none; cursor:pointer; font-size:13px;">✏️</button>' +
         '<button onclick="targetRemove(\'' + t.id + '\')" title="Eliminar empresa" style="background:none; border:none; cursor:pointer; font-size:13px; color:#b91c1c;">🗑️</button></div></td>';
