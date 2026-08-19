@@ -5781,6 +5781,9 @@ function metasCadCard(titulo, rango, s, opts) {
   // Barra: anchos relativos a la meta con clamp si el total la supera
   const w = n => meta ? (100 * n / meta) : 0;
   let wF = w(real), wFo = w(focoPond), wGe = w(genPond), wH = w(hueco);
+  // % de cumplimiento facturado/meta (2026-08-19, pedido German). Se calcula ANTES del clamp:
+  // si el stack supera la meta, wF se escala y ya no representa el % real.
+  const pctFact = meta ? Math.round(100 * real / meta) : 0;
   const totW = wF + wFo + wGe + wH;
   if (totW > 100) { const k = 100 / totW; wF *= k; wFo *= k; wGe *= k; wH *= k; }
   const seg = (width, cls, l, v) => width > 6
@@ -5799,14 +5802,14 @@ function metasCadCard(titulo, rango, s, opts) {
       <span class="mc-estado" style="color:${estadoCol}">Meta ${fmtMoneyK(meta)} → proy. ${fmtMoneyK(proy)} (${pctProy}%)</span>
     </div>`;
   const bridge = `<div class="mc-bridge">
-      ${seg(wF, "fact", "■ Facturable", fmtMoneyK(real))}
+      ${seg(wF, "fact", "■ Facturable", `${fmtMoneyK(real)} · ${pctFact}% de la meta`)}
       ${seg(wFo, "foco", "■ Foco — cerrar", fmtMoneyK(focoPond))}
       ${seg(wGe, "gen", "■ Generación", fmtMoneyK(genPond))}
       ${seg(wH, "hueco", "■ Sin pipeline", fmtMoneyK(hueco))}
     </div>
     <div class="mc-metaline"><span>0</span><span>${metaLabel}: ${fmtMoneyK(meta)}</span></div>`;
   const legend = `<div class="mc-legend">
-      <span class="mc-leg"><span class="mc-sw fact"></span><span class="ll">Ya facturado</span> <span class="lv">${fmtMoneyK(real)}</span></span>
+      <span class="mc-leg" title="Facturado / Meta = ${pctFact}%"><span class="mc-sw fact"></span><span class="ll">Ya facturado</span> <span class="lv">${fmtMoneyK(real)} <span style="color:#047857; font-weight:700;">(${pctFact}%)</span></span></span>
       <span class="mc-leg"><span class="mc-sw foco"></span><span class="ll">Hay que cerrar</span> <span class="lv">${fmtMoneyK(focoPond)}</span></span>
       <span class="mc-leg"><span class="mc-sw gen"></span><span class="ll">En Generación (pond.)</span> <span class="lv">${fmtMoneyK(genPond)}</span></span>
       <span class="mc-leg"><span class="mc-sw hueco"></span><span class="ll">Sin cubrir — a generar</span> <span class="lv">${fmtMoneyK(hueco)}</span></span>
@@ -10794,6 +10797,9 @@ function goalStripBlock(offset, compact) {
   // Barra: anchos relativos a la meta, con clamp si el total la supera
   const w = n => meta ? (100 * n / meta) : 0;
   let wF = w(real), wFo = w(focoPond), wGe = w(genPond), wH = w(hueco);
+  // % de cumplimiento facturado/meta (2026-08-19, pedido German). ANTES del clamp: si el stack
+  // supera la meta, wF se escala por k y dejaría de representar el % real.
+  const pctFact = meta ? Math.round(100 * real / meta) : 0;
   const totW = wF + wFo + wGe + wH;
   if (totW > 100) { const k = 100 / totW; wF *= k; wFo *= k; wGe *= k; wH *= k; }
   const seg = (width, cls, l, v) => width > 6
@@ -10839,14 +10845,14 @@ function goalStripBlock(offset, compact) {
       <button onclick="gsPondToggle()" title="Alternar 'Hay que cerrar' entre valor ponderado por probabilidad y valor completo (100%)" style="margin-left:auto; font-size:10px; padding:2px 8px; border-radius:999px; border:1px solid ${gsPond ? "#f59e0b" : "#b45309"}; background:${gsPond ? "#fffbeb" : "#b45309"}; color:${gsPond ? "#b45309" : "#fff"}; cursor:pointer; font-weight:600;">${gsPond ? "pond." : "100%"}</button>
     </div>`;
   const bridge = `<div class="gsb-bridge">
-      ${seg(wF, "fact", "■ Facturable", fmtMoneyK(real))}
+      ${seg(wF, "fact", "■ Facturable", `${fmtMoneyK(real)} · ${pctFact}% de la meta`)}
       ${seg(wFo, "foco", `■ Foco — cerrar (${gsPond ? "pond." : "100%"})`, fmtMoneyK(focoPond))}
       ${seg(wGe, "gen", "■ Generación", fmtMoneyK(genPond))}
       ${seg(wH, "hueco", "■ Sin pipeline", fmtMoneyK(hueco))}
     </div>
     <div class="gsb-metaline"><span>0</span><span>Meta de ${mesCorto}: ${fmtMoneyK(meta)}</span></div>`;
   const legend = `<div class="gsb-legend">
-      <span><span class="gsw" style="background:#047857"></span>Ya facturado <b>${fmtMoneyK(real)}</b></span>
+      <span title="Facturado / Meta = ${pctFact}%"><span class="gsw" style="background:#047857"></span>Ya facturado <b>${fmtMoneyK(real)}</b> <b style="color:#047857">(${pctFact}%)</b></span>
       <span><span class="gsw" style="background:#f59e0b"></span>Hay que cerrar (${gsPond ? "pond." : "100%"}) <b>${fmtMoneyK(focoPond)}</b></span>
       <span><span class="gsw" style="background:#7c6ff0"></span>En Generación (pond.) <b>${fmtMoneyK(genPond)}</b></span>
       <span><span class="gsw" style="background:#cbd5e1"></span>Sin cubrir — a generar <b>${fmtMoneyK(hueco)}</b></span>
@@ -10885,7 +10891,8 @@ function goalStripPaint() {
     const real = REAL_FACTURABLE[mKey] || 0;
     const meta = metaMes(mKey);
     const mesCorto = now.toLocaleDateString("es-AR", { month: "long" });
-    el.innerHTML = btn + `<div class="gs-collapsed">🎯 <b>Metas ${mesCorto.charAt(0).toUpperCase() + mesCorto.slice(1)}</b> · Facturable ${fmtMoneyK(real)} / Meta ${fmtMoneyK(meta)} <span style="opacity:.7">— comprimido</span></div>`;
+    const pctFact = meta ? Math.round(100 * real / meta) : 0;
+    el.innerHTML = btn + `<div class="gs-collapsed">🎯 <b>Metas ${mesCorto.charAt(0).toUpperCase() + mesCorto.slice(1)}</b> · Facturable ${fmtMoneyK(real)} / Meta ${fmtMoneyK(meta)} <b style="color:#047857">(${pctFact}%)</b> <span style="opacity:.7">— comprimido</span></div>`;
   } else {
     el.innerHTML = btn + goalStripBlock(0) + goalStripBlock(1);
   }
