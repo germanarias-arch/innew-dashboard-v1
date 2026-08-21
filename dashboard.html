@@ -1284,10 +1284,18 @@ function stateUserBusy() {
   } catch (e) {}
   return false;
 }
-// Estado COMPARTIDO por todo el equipo: chequeo cada 60s si alguien más guardó.
-// Si el usuario está IDLE (sin ediciones pendientes, sin foco en un input, sin modal abierto) aplica solo
-// y recarga: así todos ven los cambios en ≤60s sin tocar nada. Si está ocupado, no interrumpe:
-// deja el badge clickeable para que recargue cuando quiera.
+// Estado COMPARTIDO por todo el equipo: cada tanto chequeo si alguien más guardó.
+//
+// CADENCIA (cambiada 2026-08-21, pedido de German). Antes esto corría cada 60s y recargaba
+// la página entera sola: con el equipo trabajando en paralelo el dashboard se recargaba
+// constantemente y era imposible leer nada. Ahora la recarga automática pasa a ser el
+// último recurso, no el mecanismo principal. El dashboard se actualiza:
+//   1) bajo demanda -> botón "Refrescar" del header (refreshGlobal, sin recargar la página)
+//   2) al editar algo en el dash -> re-render inmediato, no hace falta reload
+//   3) sola cada 2 horas -> este poll, y sólo si German está idle
+// Si está ocupado (tipeando, modal abierto, cambios sin pushear) NO interrumpe: deja el
+// badge clickeable arriba para que recargue cuando le quede cómodo.
+const STATE_POLL_MS = 2 * 60 * 60 * 1000;   // 2 horas
 function stateStartPoll() {
   const S = window.__stateSync;
   if (!S.enabled || S.pollTimer) return;
@@ -1312,7 +1320,7 @@ function stateStartPoll() {
       }
       stateBadge("☁︎ " + who + " actualizó · recargar", "#b45309", applyNow);   // ocupado → no interrumpir
     } catch (e) {}
-  }, 60000);
+  }, STATE_POLL_MS);
 }
 // Espejo automático: cualquier escritura a una clave trackeada agenda un push.
 try {
