@@ -470,6 +470,16 @@ table.std tr:hover td { background: #fafafa; }
       <div id="metas-historico"></div>
     </div>
 
+    <div class="semestre" style="border-top:3px solid #0f766e;">
+      <h2 style="margin-bottom:2px;">📸 Histórico del pipeline — foto semanal</h2>
+      <div class="small" style="font-style:italic; margin:2px 0 12px; color:#888; line-height:1.4;">
+        Cada semana se guarda una <b>foto congelada</b> del pipeline (deal por deal: monto, etapa, probabilidad, owner, producto, país, fuente).
+        Es lo que permite responder <b>"lo que proyectaba en agosto para septiembre, ¿se cumplió?"</b>. Las fotos son <b>inmutables</b>: no se pisan.
+        Se toma sola una vez por semana al abrir el dashboard; el botón fuerza una foto extra.
+      </div>
+      <div id="metas-snapshots"></div>
+    </div>
+
     <div class="bucket" id="bucket-metas-refore">
       <div class="bucket-header" onclick="toggleBucket('bucket-metas-refore')">
         <span class="bucket-icon">▶</span>
@@ -1029,8 +1039,39 @@ const NURTURING_PIPELINE_ID = "903136055";
 // CAPA PORTÁTIL: Cowork (window.cowork) o Web (backend Netlify)
 // ====================================================
 const WEB_MODE = !(typeof window !== "undefined" && window.cowork && window.cowork.callMcpTool);
-async function mcpCall(tool, args) {
-  if (!WEB_MODE) return window.cowork.callMcpTool(tool, args);
+
+// ----------------------------------------------------
+// THROTTLE de llamadas a HubSpot (2026-08-21)
+// ----------------------------------------------------
+// HubSpot limita /search por SEGUNDO (policy SECONDLY). El boot y los refresh disparan
+// muchas búsquedas en paralelo (Promise.all + workers de concurrencia) y se pasaban del
+// límite -> 429 -> el panel entero moría con "Error del backend (500)".
+// Cada request va a una instancia distinta del worker de Cloudflare, así que el límite
+// NO se puede respetar del lado del back: hay que regularlo acá, en el único punto por
+// donde pasan todas las llamadas. Cola con concurrencia máxima + piso de tiempo entre
+// requests. El reintento del back (functions/api/hubspot.js) es la segunda red.
+const HS_MAX_CONC = 3;    // requests simultáneas
+const HS_MIN_GAP  = 130;  // ms mínimos entre el arranque de una y la siguiente
+let hsRunning = 0, hsLastAt = 0, hsTimer = null;
+const hsQueue = [];
+
+function hsPump() {
+  if (hsTimer || !hsQueue.length || hsRunning >= HS_MAX_CONC) return;
+  const wait = HS_MIN_GAP - (Date.now() - hsLastAt);
+  if (wait > 0) { hsTimer = setTimeout(() => { hsTimer = null; hsPump(); }, wait); return; }
+  const job = hsQueue.shift();
+  hsRunning++; hsLastAt = Date.now();
+  job.run().then(job.resolve, job.reject).then(() => { hsRunning--; hsPump(); });
+  hsPump(); // intenta llenar los slots libres (se auto-espacia con el gap)
+}
+
+function hsThrottle(run) {
+  return new Promise((resolve, reject) => { hsQueue.push({ run, resolve, reject }); hsPump(); });
+}
+
+const sleepMs = ms => new Promise(res => setTimeout(res, ms));
+
+async function mcpFetchOnce(tool, args) {
   const r = await fetch("/api/hubspot", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1041,9 +1082,26 @@ async function mcpCall(tool, args) {
   if (!r.ok) {
     let msg = "";
     try { const ej = await r.json(); msg = ej && ej.error ? String(ej.error) : ""; } catch (e) {}
-    throw new Error("Error del backend (" + r.status + ")" + (msg ? ": " + msg.slice(0, 400) : ""));
+    const err = new Error("Error del backend (" + r.status + ")" + (msg ? ": " + msg.slice(0, 400) : ""));
+    err.status = r.status;
+    throw err;
   }
   return await r.json();
+}
+
+async function mcpCall(tool, args) {
+  if (!WEB_MODE) return window.cowork.callMcpTool(tool, args);
+  return hsThrottle(async () => {
+    // Último recurso: si aun con throttle + reintento del back sigue viniendo 429,
+    // frenamos fuerte y probamos de nuevo antes de romperle la vista a German.
+    for (let i = 0; i < 3; i++) {
+      try { return await mcpFetchOnce(tool, args); }
+      catch (e) {
+        if (e.status !== 429 || i === 2) throw e;
+        await sleepMs(1200 * (i + 1) + Math.floor(Math.random() * 400));
+      }
+    }
+  });
 }
 
 // ====================================================
@@ -3184,7 +3242,7 @@ async function genAsociarBuscar(id) {
       filterGroups: [{ filters: [{ propertyName: "name", operator: "CONTAINS_TOKEN", value: q }] }],
       limit: 10,
       chatInsights: { userIntent: "Daily Comercial: buscar empresa para asociar a un deal", satisfaction: "NEUTRAL" }
-    }), 15000);
+    }), 30000);
     const parsed = typeof res === "string" ? JSON.parse(res) : res;
     const results = parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
     window.__genAsoResults = results;
@@ -3212,7 +3270,7 @@ async function genFetchDealName(id) {
       filterGroups: [{ filters: [{ propertyName: "hs_object_id", operator: "EQ", value: String(id) }] }],
       limit: 1,
       chatInsights: { userIntent: "Daily Comercial: leer nombre del deal para asociar empresa", satisfaction: "NEUTRAL" }
-    }), 15000);
+    }), 30000);
     const parsed = typeof res === "string" ? JSON.parse(res) : res;
     const rs = parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
     return (rs[0] && rs[0].properties && rs[0].properties.dealname) || "";
@@ -5941,6 +5999,7 @@ function renderMetas() {
   const pf = document.getElementById("preview-metas-fc");
   if (pf) pf.textContent = `(Forecast HS 6m ${fmtMoneyK(sSem.fcTotal)})`;
   try { renderMetasHistorico(); } catch (e) { console.warn("metas histórico:", e); }
+  try { if (typeof renderHistPanel === "function") renderHistPanel(); } catch (e) { console.warn("hist panel:", e); }
   if (typeof renderReforecast === "function") renderReforecast();
 }
 
@@ -6223,7 +6282,7 @@ async function targetHsFindContactByEmail(email) {
       objectType: "contacts", properties: ["email", "firstname", "lastname"],
       filterGroups: [{ filters: [{ propertyName: "email", operator: "EQ", value: email }] }],
       limit: 2, chatInsights: false
-    }), 15000);
+    }), 30000);
     const parsed = typeof res === "string" ? JSON.parse(res) : res;
     const results = parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
     return results.length ? results[0] : null;
@@ -6235,7 +6294,7 @@ async function targetHsFindCompanyByName(name) {
       objectType: "companies", properties: ["name", "lifecyclestage"],
       filterGroups: [{ filters: [{ propertyName: "name", operator: "CONTAINS_TOKEN", value: name }] }],
       limit: 5, chatInsights: false
-    }), 15000);
+    }), 30000);
     const parsed = typeof res === "string" ? JSON.parse(res) : res;
     const results = parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
     const nrm = s => String(s || "").trim().toLowerCase();
@@ -7753,7 +7812,7 @@ async function fetchCuentaDeals(companyId) {
     filterGroups: [{ associatedWith: [{ objectType: "companies", operator: "EQUAL", objectIdValues: [Number(companyId)] }] }],
     limit: 50,
     chatInsights: { userIntent: "Clientes: listar deals asociados a una cuenta para ver/editar valor, stage, cierre y próximo paso", satisfaction: "NEUTRAL" }
-  }), 15000);
+  }), 30000);
   const parsed = typeof res === "string" ? JSON.parse(res) : res;
   const results = parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
   return results;
@@ -8846,7 +8905,7 @@ async function dailyFindCompany(dealId) {
       filterGroups: [{ associatedWith: [{ objectType: "deals", operator: "EQUAL", objectIdValues: [Number(dealId)] }] }],
       limit: 1,
       chatInsights: { userIntent: "Daily Comercial: buscar empresa asociada a un deal para activarla como cuenta", satisfaction: "NEUTRAL" }
-    }), 15000);
+    }), 30000);
     const parsed = typeof res === "string" ? JSON.parse(res) : res;
     const results = parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
     return results[0] || null;
@@ -8916,6 +8975,194 @@ async function reloadDaily() {
   } catch (e) { if (st) { st.classList.add("err"); st.textContent = "Error al cargar"; } }
 }
 
+// ====================================================
+// HISTÓRICO SEMANAL DEL PIPELINE (/api/history, 2026-08-19)
+// ====================================================
+// El dashboard vive del "ahora": cada refresh pisa la foto anterior y no queda rastro de
+// lo que proyectábamos hace un mes. Esto guarda una foto INMUTABLE por semana ISO en KV,
+// deal por deal, para poder medir accuracy de forecast (proyectado vs facturado real) y
+// cortarla por owner / producto / país / fuente / probabilidad.
+// El snapshot se arma acá (el front ya tiene los deals cargados y la lógica de cuotas);
+// el worker sólo lo guarda. Ver functions/api/history.js.
+const HIST_LAST_LS = "dashComercial_histLastWeek";
+
+// Semana ISO-8601 ("2026-W34"). MISMO algoritmo que isoWeek() en el back: si divergen,
+// el front postearía una semana y el back validaría otra.
+function histWeekKey(date) {
+  const src = date || new Date();
+  const d = new Date(Date.UTC(src.getFullYear(), src.getMonth(), src.getDate()));
+  const day = d.getUTCDay() || 7;                    // domingo = 7, no 0
+  d.setUTCDate(d.getUTCDate() + 4 - day);            // el jueves define el año ISO
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const week = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  return d.getUTCFullYear() + "-W" + String(week).padStart(2, "0");
+}
+
+// Foto del pipeline: una fila por deal abierto + el resumen de los 6 meses del semestre.
+function histBuildSnapshot() {
+  const deals = (window.__allDeals || window.__dailyOpen || []).filter(d => d && d.properties);
+  const now = new Date();
+  const mKey = metasMonthKey(0);
+  const hidden = (typeof getHiddenDeals === "function") ? getHiddenDeals() : new Set();
+  const rows = deals.map(d => {
+    const p = d.properties || {};
+    const o = DAILY_OWNERS.find(x => x.id === String(p.hubspot_owner_id));
+    return {
+      dealId: String(d.id),
+      dealname: p.dealname || "",
+      owner: o ? o.name : (p.hubspot_owner_id || ""),
+      producto: p.producto || "",
+      pais: (typeof getPais === "function") ? getPais(p.segmento) : "",
+      lead_source: p.lead_source || "",
+      fuente: (typeof getDealFuente === "function") ? (getDealFuente(d.id) || "") : "",
+      partner: p.partner___empresa_referidora || "",
+      probabilidad: Math.round(dealProb(p) * 1000) / 1000,
+      etapa: stageLabel(p.dealstage),
+      etapaId: p.dealstage || "",
+      monto: Math.round(parseFloat(p.amount) || 0),
+      cuotaMes: Math.round(metasCuotaEnMes(d, mKey)),
+      closedate: p.closedate || "",
+      createdate: p.createdate || "",
+      oculto: hidden.has(String(d.id)) ? 1 : 0
+    };
+  });
+  // Resumen por mes: lo que proyectábamos ESTA semana para cada uno de los 6 meses.
+  // Es el número contra el que después se mide el facturado real.
+  const meses = [];
+  for (let i = 0; i < 6; i++) {
+    const k = metasMonthKey(i);
+    let r = null;
+    try { r = metasPeriodo([k]); } catch (e) { r = null; }
+    if (!r) continue;
+    meses.push({
+      mes: k,
+      meta: Math.round(r.meta || 0),
+      real: Math.round(r.real || 0),
+      focoPond: Math.round(r.focoPond || 0),
+      genPond: Math.round(r.genPond || 0),
+      proy: Math.round(r.proy || 0),
+      hueco: Math.round(r.hueco || 0)
+    });
+  }
+  return { tomadoEl: now.toISOString(), mesEnCurso: mKey, deals: rows, meses: meses };
+}
+
+// POST de la foto. force=true pisa la semana ya guardada (queda registrado quién y cuándo).
+async function histSnapshot(force) {
+  if (!WEB_MODE || !/^https?:/.test(location.protocol)) return { skipped: true };
+  const week = histWeekKey();
+  let snapshot;
+  try { snapshot = histBuildSnapshot(); } catch (e) { return { error: e.message }; }
+  if (!snapshot.deals.length) return { error: "No hay deals cargados todavía" };
+  try {
+    const r = await fetch("/api/history", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ week: week, snapshot: snapshot, force: !!force })
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.status === 409) return { exists: true, week: j.week || week, by: j.by || "", createdAt: j.createdAt || 0 };
+    if (!r.ok) return { error: j.error || ("HTTP " + r.status) };
+    try { localStorage.setItem(HIST_LAST_LS, week); } catch (e) {}
+    return { ok: true, week: j.week || week, deals: snapshot.deals.length };
+  } catch (e) { return { error: e.message }; }
+}
+
+// Foto automática: una por semana ISO, silenciosa, al abrir el dashboard.
+// Así el histórico se llena solo desde el día 1 sin que German tenga que acordarse.
+// El 409 del back es la red de seguridad real (append-only); el localStorage sólo evita el request.
+async function histAuto() {
+  if (!WEB_MODE || !/^https?:/.test(location.protocol)) return;
+  const week = histWeekKey();
+  let last = "";
+  try { last = localStorage.getItem(HIST_LAST_LS) || ""; } catch (e) {}
+  if (last === week) return;
+  const res = await histSnapshot(false);
+  if (res && (res.ok || res.exists)) { try { localStorage.setItem(HIST_LAST_LS, week); } catch (e) {} }
+}
+
+// Índice liviano de semanas guardadas (no trae los snapshots enteros).
+async function histIndex() {
+  if (!WEB_MODE || !/^https?:/.test(location.protocol)) return [];
+  try {
+    const r = await fetch("/api/history", { credentials: "include" });
+    if (!r.ok) return [];
+    const j = await r.json();
+    return (j && j.weeks) || [];
+  } catch (e) { return []; }
+}
+
+function histFmtFecha(ts) {
+  if (!ts) return "—";
+  try { return new Date(ts).toLocaleString("es-AR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); }
+  catch (e) { return "—"; }
+}
+
+// Panel en la vista Metas. Se pinta async: primero el esqueleto, después el índice.
+function renderHistPanel() {
+  const el = document.getElementById("metas-snapshots");
+  if (!el) return;
+  const week = histWeekKey();
+  if (!WEB_MODE || !/^https?:/.test(location.protocol)) {
+    el.innerHTML = '<div class="small" style="color:#888;">El histórico sólo corre en la web app (necesita el backend). Semana actual: <b>' + week + '</b>.</div>';
+    return;
+  }
+  el.innerHTML = `
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+      <button class="fc-btn secondary" onclick="histSnapshotClick(false)" style="font-size:12.5px;">📸 Tomar foto de esta semana (${week})</button>
+      <a class="fc-btn secondary" href="/api/history?format=csv" style="font-size:12.5px; text-decoration:none;">⬇︎ Descargar histórico completo (CSV)</a>
+      <span id="hist-status" class="small" style="color:#6b7280;"></span>
+    </div>
+    <div id="hist-list" class="small" style="color:#888;">Cargando semanas guardadas…</div>`;
+  histIndex().then(weeks => {
+    const box = document.getElementById("hist-list");
+    if (!box) return;
+    if (!weeks.length) {
+      box.innerHTML = '<div class="small" style="color:#888;">Todavía no hay ninguna foto guardada. La primera se toma sola al abrir el dashboard (o tocá el botón).</div>';
+      return;
+    }
+    let html = `<table style="width:100%; border-collapse:collapse; font-size:12.5px;">
+      <thead><tr style="text-align:left; color:#6b7280; border-bottom:1px solid #e5e7eb;">
+        <th style="padding:6px 8px;">Semana</th><th style="padding:6px 8px;">Tomada</th>
+        <th style="padding:6px 8px;">Por</th><th style="padding:6px 8px; text-align:right;">Deals</th>
+        <th style="padding:6px 8px; text-align:right;">CSV</th></tr></thead><tbody>`;
+    weeks.slice().reverse().forEach(w => {
+      const esta = w.week === week;
+      html += `<tr style="border-bottom:1px solid #f3f4f6; ${esta ? "background:#f0fdf4;" : ""}">
+        <td style="padding:6px 8px;"><b>${w.week}</b>${esta ? ' <span style="color:#047857; font-size:11px;">· esta semana</span>' : ""}</td>
+        <td style="padding:6px 8px; color:#6b7280;">${histFmtFecha(w.createdAt)}</td>
+        <td style="padding:6px 8px; color:#6b7280;">${escAttr(w.by || "")}</td>
+        <td style="padding:6px 8px; text-align:right;">${w.deals || 0}</td>
+        <td style="padding:6px 8px; text-align:right;"><a href="/api/history?week=${encodeURIComponent(w.week)}&format=csv">⬇︎</a></td>
+      </tr>`;
+    });
+    html += "</tbody></table>";
+    box.innerHTML = html;
+  });
+}
+
+async function histSnapshotClick(force) {
+  const st = document.getElementById("hist-status");
+  if (st) { st.style.color = "#6b7280"; st.textContent = "Guardando…"; }
+  const res = await histSnapshot(force);
+  if (res && res.ok) {
+    if (st) { st.style.color = "#047857"; st.textContent = `✓ ${res.week} guardada (${res.deals} deals)`; }
+    renderHistPanel();
+    return;
+  }
+  if (res && res.exists) {
+    if (st) { st.style.color = "#b45309"; st.textContent = ""; }
+    const quien = res.by ? ` por ${res.by}` : "";
+    if (confirm(`La semana ${res.week} ya tiene una foto guardada${quien} (${histFmtFecha(res.createdAt)}).\n\nEl histórico es append-only: pisarla borra la foto original.\n\n¿Pisarla igual?`)) {
+      return histSnapshotClick(true);
+    }
+    if (st) { st.textContent = "Sin cambios."; setTimeout(() => { st.textContent = ""; }, 2500); }
+    return;
+  }
+  if (st) { st.style.color = "#b91c1c"; st.textContent = "Error: " + ((res && res.error) || "desconocido"); }
+}
+
 // Refrescar GLOBAL (2026-08-19). El botón vive en el header, fuera de #content, así que
 // persiste al cambiar de vista. Recarga deals de HubSpot y re-renderiza la vista activa
 // (window.__view lo setea setView). El status va a #global-status, también en el header:
@@ -8940,7 +9187,7 @@ async function refreshGlobal() {
   if (bt) bt.disabled = false;
 }
 
-function withTimeout(p, ms) { return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), ms || 15000))]); }
+function withTimeout(p, ms) { return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), ms || 30000))]); }
 async function dailySearchHub() {
   const q = (document.getElementById("daily-search").value || "").trim();
   const box = document.getElementById("daily-search-results");
@@ -8953,7 +9200,7 @@ async function dailySearchHub() {
       properties: ["dealname", "dealstage", "amount", "deal_currency_code", "closedate", "hs_lastmodifieddate", "hubspot_owner_id", "hs_deal_stage_probability", "probabilidad_comercial", "probabilidad_comercial_pct", "cambios_fecha_cierre", "meses_de_facturacion__hasta_6_", "pipeline", "producto", "hs_next_step"],
       limit: 20,
       chatInsights: { userIntent: "Daily Comercial: buscar deal en HubSpot para traerlo a la vista", satisfaction: "NEUTRAL" }
-    }), 15000);
+    }), 30000);
     const parsed = typeof res === "string" ? JSON.parse(res) : res;
     const results = parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
     if (!results.length) { box.innerHTML = '<div class="small" style="padding:10px;">Sin resultados para “' + escAttr(q) + '”.</div>'; return; }
@@ -11194,6 +11441,11 @@ function renderAccuracy() {
         if (meRes.ok) applyRoleLockdown(await meRes.json());
       } catch (e) {}
     }
+
+    // Foto semanal del pipeline (append-only, /api/history). Silenciosa y una sola vez por
+    // semana ISO: si ya existe, el back devuelve 409 y no se pisa nada. Va al final del boot
+    // para no demorar el render y con los deals ya cargados en window.__allDeals.
+    try { if (typeof histAuto === "function") histAuto(); } catch (e) {}
 
   } catch (e) {
     document.getElementById("loading").innerHTML = `<div style="color:#dc2626">Error: ${e.message}</div>`;
