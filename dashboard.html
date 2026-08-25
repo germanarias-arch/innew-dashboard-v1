@@ -1792,6 +1792,27 @@ async function fetchClosedForCycle() {
   return parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
 }
 
+async function fetchLostForHistory() {
+  // Perdidos últimos ~9 meses → alimenta la explicación del histórico de metas.
+  // `fetchRecentClosedDeals` sólo mira 60 días: alcanza para las tarjetas del mes en curso,
+  // pero deja mayo y junio sin perdidos, y sin perdidos la explicación de un mes flojo
+  // queda coja (no se puede decir "se cayeron X deals por Y"). Misma ventana que
+  // `fetchClosedForCycle` para que ganados y perdidos cubran el mismo rango.
+  const since = Date.now() - 270 * 86400000;
+  const res = await mcpCall("mcp__aaaa9eed-76e4-4bc8-a1a2-fad976f54ccb__search_crm_objects", {
+    objectType: "deals",
+    filterGroups: [{ filters: [
+      { propertyName: "dealstage", operator: "EQ", value: "closedlost" },
+      { propertyName: "hs_v2_date_entered_closedlost", operator: "GT", value: String(since) }
+    ]}],
+    properties: ["dealname", "producto", "segmento", "amount", "closedate", "hs_v2_date_entered_closedlost", "closed_lost_reason", "meses_de_facturacion__hasta_6_", "lead_source"],
+    limit: 200,
+    chatInsights: { userIntent: "Dashboard Comercial: perdidos 9m para explicar el histórico de metas", satisfaction: "NEUTRAL" }
+  });
+  const parsed = typeof res === "string" ? JSON.parse(res) : res;
+  return parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
+}
+
 // ====================================================
 // PULSO DEL EMBUDO (8 indicadores)
 // ====================================================
@@ -3653,20 +3674,152 @@ function renderMetasActividad() {
 // ══════════════════════════════════════════════════════════════════
 // METAS · mirada hacia atrás — cumplimiento mes a mes
 // ══════════════════════════════════════════════════════════════════
-function metasGanadoMes(key) {
-  const won = (window.__closedDeals || []).filter(d => d && d.properties && d.properties.dealstage === "closedwon");
-  let s = 0, n = 0;
-  won.forEach(d => {
+// Mes (YYYY-MM) en el que cayó un deal cerrado. `raw` puede venir como epoch o ISO.
+function metasKeyDe(raw) {
+  if (!raw) return null;
+  const x = new Date(actTs(raw));
+  if (isNaN(x.getTime())) return null;
+  return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}`;
+}
+// MRR de un deal: el monto se prorratea por los meses de facturación (un IDP de 40K a 4 meses
+// no son 40K/mes). Mismo criterio que usa el resto del dashboard.
+function metasMrrDe(p) {
+  const a = parseFloat(p.amount) || 0;
+  const mm = Math.max(1, parseFloat(p.meses_de_facturacion__hasta_6_) || 1);
+  return a > 0 ? a / mm : 0;
+}
+
+// Ganados de un mes. Une DOS fuentes y deduplica por id:
+//   · __cycleClosed  → ganados de 9 meses (cubre mayo en adelante)
+//   · __closedDeals  → cerrados de 60 días (más fresco, trae el mes en curso al toque)
+// Antes esto miraba SOLO los 60 días, así que mayo y junio mostraban "0 ganado" cuando en
+// realidad el dato existía: no estaba cargado. Por eso la unión.
+function metasWonDeals(key) {
+  const vistos = {}, out = [];
+  const push = arr => (arr || []).forEach(d => {
+    if (!d || !d.properties || vistos[d.id]) return;
     const p = d.properties;
-    const raw = p.hs_v2_date_entered_closedwon || p.closedate;
-    if (!raw) return;
-    const x = new Date(actTs(raw));
-    if (isNaN(x.getTime())) return;
-    if (`${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}` !== key) return;
-    const a = parseFloat(p.amount) || 0, mm = Math.max(1, parseFloat(p.meses_de_facturacion__hasta_6_) || 1);
-    if (a > 0) { s += a / mm; n++; }
+    if (p.dealstage && p.dealstage !== "closedwon") return;
+    if (metasKeyDe(p.hs_v2_date_entered_closedwon || p.closedate) !== key) return;
+    vistos[d.id] = 1; out.push(d);
   });
+  push(window.__cycleClosed);
+  push(window.__closedDeals);
+  return out;
+}
+function metasGanadoMes(key) {
+  let s = 0, n = 0;
+  metasWonDeals(key).forEach(d => { const m = metasMrrDe(d.properties); if (m > 0) { s += m; n++; } });
   return { mrr: s, n: n };
+}
+
+// Perdidos de un mes. Mismo patrón: __lostHist (9 meses) + __closedDeals (60 días).
+function metasLostDeals(key) {
+  const vistos = {}, out = [];
+  const push = arr => (arr || []).forEach(d => {
+    if (!d || !d.properties || vistos[d.id]) return;
+    const p = d.properties;
+    if (p.dealstage && p.dealstage !== "closedlost") return;
+    if (metasKeyDe(p.hs_v2_date_entered_closedlost || p.closedate) !== key) return;
+    vistos[d.id] = 1; out.push(d);
+  });
+  push(window.__lostHist);
+  push((window.__closedDeals || []).filter(d => d && d.properties && d.properties.dealstage === "closedlost"));
+  return out;
+}
+
+// Cuenta ocurrencias y devuelve el top N como [{k, n}], de mayor a menor.
+function metasTop(arr, fn, max) {
+  const c = {};
+  arr.forEach(x => { const k = fn(x); if (k) c[k] = (c[k] || 0) + 1; });
+  return Object.keys(c).sort((a, b) => c[b] - c[a]).slice(0, max || 2).map(k => ({ k: k, n: c[k] }));
+}
+function metasKeyPrev(key) {
+  const p = key.split("-"), y = Number(p[0]), m = Number(p[1]);
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
+}
+
+// ── Explicación del mes, armada por REGLAS (no por IA) ──────────────────
+// Devuelve HTML: por qué ese mes dio ese %, con los números que ya tiene el dashboard.
+// Es determinística a propósito: ante los mismos datos dice siempre lo mismo, que es lo que
+// se necesita cuando el panel se muestra en una reunión. No inventa causas — expone factores
+// y deja la lectura explícita como lectura, no como hecho.
+function metasExplicaMes(r) {
+  const brecha = r.meta - r.real;
+  const prevKey = metasKeyPrev(r.k);
+  const prevReal = REAL_FACTURABLE[prevKey] || 0;
+  const dBase = prevReal > 0 ? r.real - prevReal : null;
+  const lblMes = k => { const p = k.split("-"); return `${MESES_ES[Number(p[1]) - 1]} ${p[0]}`; };
+
+  // ¿Este mes queda fuera de la ventana de cerrados que trae HubSpot (~9 meses)?
+  // Si sí, "0 ganados" significa "no tenemos el dato", NO "no se vendió". Confundirlos
+  // sería mentir: silencio de datos ≠ cero.
+  const iniVentana = new Date(Date.now() - 270 * 86400000);
+  const keyVentana = `${iniVentana.getFullYear()}-${String(iniVentana.getMonth() + 1).padStart(2, "0")}`;
+  const fueraVentana = r.k < keyVentana;
+
+  const won = metasWonDeals(r.k);
+  const wonMrr = won.reduce((a, d) => a + metasMrrDe(d.properties), 0);
+  const lost = metasLostDeals(r.k);
+  const lostMrr = lost.reduce((a, d) => a + metasMrrDe(d.properties), 0);
+
+  const prodTop = metasTop(won, d => d.properties.producto, 3);
+  const motivoTop = metasTop(lost, d => (d.properties.closed_lost_reason || "").trim(), 1)[0];
+  const winRate = (won.length + lost.length) > 0 ? Math.round(won.length / (won.length + lost.length) * 100) : null;
+
+  const li = (t, txt) => `<div style="margin:0 0 7px 0;"><b style="color:#374151;">${t}:</b> <span style="color:#4b5563;">${txt}</span></div>`;
+  let h = "";
+
+  // 1) La brecha, en plata y en dirección.
+  h += brecha > 0
+    ? li("La brecha", `faltaron <b>${fmtMoneyK(brecha)}</b> para llegar a la meta de ${fmtMoneyK(r.meta)}.`)
+    : li("La brecha", `se superó la meta por <b>${fmtMoneyK(Math.abs(brecha))}</b>.`);
+
+  // 2) De dónde viene el número del mes: el facturable es la base contratada, no lo vendido este mes.
+  if (dBase === null) h += li("La base", `es el primer mes con facturable cargado, así que no hay contra qué compararlo.`);
+  else if (Math.abs(dBase) < 500) h += li("La base", `quedó prácticamente igual que en ${lblMes(prevKey)} (${fmtMoneyK(prevReal)}). El mes se movió por lo que ya estaba contratado, no por altas ni bajas.`);
+  else if (dBase > 0) h += li("La base", `creció <b>${fmtMoneyK(dBase)}</b> contra ${lblMes(prevKey)} (venía de ${fmtMoneyK(prevReal)}).`);
+  else h += li("La base", `<b>cayó ${fmtMoneyK(Math.abs(dBase))}</b> contra ${lblMes(prevKey)} (venía de ${fmtMoneyK(prevReal)}).${brecha > 0 ? " Ahí está el hueco." : ""}`);
+
+  // 3) Lo vendido en el mes alimenta los meses SIGUIENTES, no éste. Importante no confundirlo.
+  //    Si el mes cae fuera de la ventana que trae HubSpot (~9 meses), NO decimos "no hubo ventas":
+  //    decimos que no tenemos el dato. Silencio de datos ≠ cero. Confundirlos sería mentirle a German.
+  if (won.length) {
+    const det = prodTop.length ? ` — ${prodTop.map(x => `${x.n} ${x.k}`).join(", ")}` : "";
+    h += li("Lo que se firmó", `<b>${won.length} deal(s)</b> por <b>${fmtMoneyK(wonMrr)}/mes</b>${det}. Eso empuja los meses que siguen, no la facturación de este mes.`);
+  } else if (fueraVentana) {
+    h += li("Lo que se firmó", `sin dato — este mes queda fuera de la ventana de cerrados que trae HubSpot (últimos 9 meses). No es que no se vendió: no lo tenemos cargado.`);
+  } else {
+    h += li("Lo que se firmó", `<b>nada</b>. Un mes sin altas no se siente en el mes: se siente dos o tres meses después.`);
+  }
+
+  // 4) Lo que se escapó.
+  if (lost.length) {
+    const mot = motivoTop && motivoTop.k ? ` Motivo más repetido: <b>${escAttr(motivoTop.k)}</b>.` : ` Sin motivo cargado en HubSpot (dato que conviene exigir al cerrar).`;
+    h += li("Lo que se cayó", `<b>${lost.length} deal(s) perdidos</b> por <b>${fmtMoneyK(lostMrr)}/mes</b>.${mot}${winRate !== null ? ` Win rate del mes: <b>${winRate}%</b>.` : ""}`);
+  } else if (won.length) {
+    h += li("Lo que se cayó", `ningún deal perdido en el mes. Win rate <b>100%</b>.`);
+  }
+
+  // 5) La lectura. Explícitamente marcada como lectura, no como hecho.
+  let lectura;
+  if (r.cur) lectura = `Mes en curso: el número todavía se mueve. Faltan ${fmtMoneyK(Math.max(0, brecha))} y quedan días para firmar.`;
+  else if (brecha <= 0) lectura = `Mes cumplido. Lo que hay que mirar acá es si se sostiene: ${wonMrr > 0 ? `entraron ${fmtMoneyK(wonMrr)}/mes nuevos` : "no entró nada nuevo"}.`;
+  else if (dBase !== null && dBase < -500) lectura = `El problema de este mes fue de <b>retención</b>, no de venta: la base se achicó. Vender más no lo tapa si se sigue yendo por abajo.`;
+  else if (lostMrr > wonMrr && lost.length) lectura = `Se perdió más de lo que se ganó (${fmtMoneyK(lostMrr)} vs ${fmtMoneyK(wonMrr)}/mes). El embudo trajo oportunidades, la conversión no acompañó.`;
+  else if (!won.length && fueraVentana) lectura = `No alcanza el dato de HubSpot para explicar este mes. Lo único firme: la base contratada quedó ${fmtMoneyK(brecha)} por debajo de la meta.`;
+  else if (!won.length) lectura = `El mes no falló por conversión: <b>falló por falta de altas</b>. No hubo qué cerrar.`;
+  else lectura = `La base contratada no alcanzó para la meta y lo firmado en el mes (${fmtMoneyK(wonMrr)}/mes) no llega a cubrir ${fmtMoneyK(brecha)}.`;
+  h += `<div style="margin-top:9px; padding-top:8px; border-top:1px dashed #e5e7eb; color:#111;"><b>Lectura:</b> ${lectura}</div>`;
+
+  return h;
+}
+function metasToggleExp(k) {
+  const el = document.getElementById("mh-exp-" + k), ic = document.getElementById("mh-ic-" + k);
+  if (!el) return;
+  const abierto = el.style.display !== "none";
+  el.style.display = abierto ? "none" : "";
+  if (ic) ic.textContent = abierto ? "▸" : "▾";
 }
 function renderMetasHistorico() {
   const box = document.getElementById("metas-historico");
@@ -3689,7 +3842,10 @@ function renderMetasHistorico() {
   const mejor = cerrados.slice().sort((a, b) => b.pct - a.pct)[0];
   const peor = cerrados.slice().sort((a, b) => a.pct - b.pct)[0];
   const lblMes = k => { const p = k.split("-"); return `${MESES_ES[Number(p[1]) - 1]} ${p[0]}`; };
-  const colP = p => p >= 100 ? "#047857" : p >= 85 ? "#b45309" : "#b91c1c";
+  // Semáforo por % de cumplimiento de la meta (umbrales fijados por German 2026-08-21):
+  //   >=100% verde · 90-99% amarillo · 70-89% naranja · <70% rojo
+  // Ojo con el amarillo: #ca8a04 (no #eab308) para que el texto siga siendo legible sobre blanco.
+  const colP = p => p >= 100 ? "#047857" : p >= 90 ? "#ca8a04" : p >= 70 ? "#ea580c" : "#b91c1c";
 
   const kpi = (label, val, sub, color) => `<div style="flex:1; min-width:165px; background:#fff; border:1px solid #e5e7eb; border-left:4px solid ${color}; border-radius:8px; padding:12px 14px;">
     <div class="small" style="color:#888; text-transform:uppercase; letter-spacing:.4px; font-size:10px;">${label}</div>
@@ -3700,8 +3856,8 @@ function renderMetasHistorico() {
   let h = `<div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:14px;">
     ${kpi("Cumplimiento promedio", Math.round(promPct) + "%", `${cerrados.length} mes(es) cerrado(s)`, colP(promPct))}
     ${kpi("Acumulado real", fmtMoneyK(sumReal) + "/mes", `sobre ${fmtMoneyK(sumMeta)} de meta`, "#4030C8")}
-    ${kpi("Mejor mes", mejor ? lblMes(mejor.k) : "—", mejor ? Math.round(mejor.pct) + "% de la meta" : "", "#047857")}
-    ${kpi("Peor mes", peor ? lblMes(peor.k) : "—", peor ? Math.round(peor.pct) + "% de la meta" : "", "#b91c1c")}
+    ${kpi("Mejor mes", mejor ? lblMes(mejor.k) : "—", mejor ? Math.round(mejor.pct) + "% de la meta" : "", mejor ? colP(mejor.pct) : "#047857")}
+    ${kpi("Peor mes", peor ? lblMes(peor.k) : "—", peor ? Math.round(peor.pct) + "% de la meta" : "", peor ? colP(peor.pct) : "#b91c1c")}
   </div>`;
 
   const th = t => `<th style="text-align:center; padding:7px 10px; font-size:11px; color:#666; text-transform:uppercase; letter-spacing:.3px; border-bottom:2px solid #e5e7eb; white-space:nowrap;">${t}</th>`;
@@ -3709,8 +3865,8 @@ function renderMetasHistorico() {
   rows.slice().reverse().forEach(r => {
     const d = r.real - r.meta;
     const c = colP(r.pct);
-    h += `<tr${r.cur ? ' style="background:#f5f3ff;"' : ""}>
-      <td style="white-space:nowrap;"><b>${lblMes(r.k)}</b>${r.cur ? ' <span class="small" style="color:#4030C8; font-weight:700;">· en curso</span>' : ""}</td>
+    h += `<tr onclick="metasToggleExp('${r.k}')" style="cursor:pointer;${r.cur ? " background:#f5f3ff;" : ""}" title="Clic para ver por qué dio este número">
+      <td style="white-space:nowrap;"><span id="mh-ic-${r.k}" style="color:#9ca3af; font-size:11px; margin-right:4px;">▸</span><b>${lblMes(r.k)}</b>${r.cur ? ' <span class="small" style="color:#4030C8; font-weight:700;">· en curso</span>' : ""}</td>
       <td style="text-align:center;">${fmtMoneyK(r.meta)}</td>
       <td style="text-align:center; font-weight:700;">${fmtMoneyK(r.real)}</td>
       <td style="text-align:center; color:${d >= 0 ? "#047857" : "#b91c1c"}; font-weight:600;">${d >= 0 ? "+" : "−"}${fmtMoneyK(Math.abs(d))}</td>
@@ -3721,10 +3877,13 @@ function renderMetasHistorico() {
         </div>
       </td>
       <td style="text-align:center;">${r.ganN ? `${fmtMoneyK(r.gan)}/mes <span class="small" style="color:#9ca3af;">(${r.ganN})</span>` : `<span class="small" style="color:#9ca3af;">—</span>`}</td>
+    </tr>
+    <tr id="mh-exp-${r.k}" style="display:none;">
+      <td colspan="6" style="background:#fafafa; border-left:3px solid ${c}; padding:12px 16px; font-size:13px; line-height:1.5;">${metasExplicaMes(r)}</td>
     </tr>`;
   });
   h += `</tbody></table>`;
-  h += `<div class="small" style="color:#9ca3af; margin-top:6px;">El <b>facturable real</b> sale del input "Base contratada" (única fuente de verdad). El <b>ganado en el mes</b> es MRR de deals <i>Closed Won</i> con fecha de cierre en ese mes, según la ventana de cerrados que trae HubSpot — es referencia, no reemplaza al facturable.</div>`;
+  h += `<div class="small" style="color:#9ca3af; margin-top:6px;"><b>Clic en cualquier mes</b> para ver por qué dio ese número. El <b>facturable real</b> sale del input "Base contratada" (única fuente de verdad). El <b>ganado en el mes</b> es MRR de deals <i>Closed Won</i> con fecha de cierre en ese mes, según la ventana de cerrados que trae HubSpot — es referencia, no reemplaza al facturable.</div>`;
   box.innerHTML = h;
 }
 
@@ -11378,13 +11537,14 @@ function renderAccuracy() {
   try {
     await stateHydrate();   // trae el estado guardado en el server (KV) antes de renderizar
 
-    const [deals, closedDeals, cycleClosed] = await Promise.all([
+    const [deals, closedDeals, cycleClosed, lostHist] = await Promise.all([
       fetchAllOpenDeals(),
       fetchRecentClosedDeals(),
-      fetchClosedForCycle().catch(() => [])
+      fetchClosedForCycle().catch(() => []),
+      fetchLostForHistory().catch(() => [])
     ]);
 
-    window.__allDeals = deals; window.__closedDeals = closedDeals; window.__cycleClosed = cycleClosed;
+    window.__allDeals = deals; window.__closedDeals = closedDeals; window.__cycleClosed = cycleClosed; window.__lostHist = lostHist;
     const { buckets, myDeals } = categorize(deals);
     const forecastMonths = buildForecast(deals);
     const pulso = buildPulso(deals, closedDeals);
