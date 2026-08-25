@@ -443,7 +443,7 @@ table.std tr:hover td { background: #fafafa; }
     <div class="semestre" style="border-top:3px solid #4030C8;">
       <h2 style="margin-bottom:2px;">🎯 ¿Cómo venimos contra las metas?</h2>
       <div class="small" style="font-style:italic; margin:2px 0 10px; line-height:1.5; color:#888;">
-        El número grande es <b>solo lo facturable</b> — sale del input <b>"Base contratada"</b> (única fuente de verdad, editable acá arriba y persistente). El resto NO está facturado: hay que trabajarlo.
+        El número grande es <b>solo lo facturable</b> — sale del input <b>"Facturado a la fecha"</b> (única fuente de verdad, editable acá arriba y persistente). El resto NO está facturado: hay que trabajarlo.
         La barra descompone el camino al <b>Piso Joa</b> / meta mensual en 4 capas —
         <span style="color:#047857; font-weight:600;">■ Facturable</span> ·
         <span style="color:#b45309; font-weight:600;">■ 🎯 Foco</span> (embudo Propuesta+ ponderado en HubSpot, hay que <b>cerrar</b>) ·
@@ -465,7 +465,7 @@ table.std tr:hover td { background: #fafafa; }
     <div class="semestre" style="border-top:3px solid #6b7280;">
       <h2 style="margin-bottom:2px;">🕰️ Cómo nos fue — cumplimiento mes a mes</h2>
       <div class="small" style="font-style:italic; margin:2px 0 12px; color:#888; line-height:1.4;">
-        Mirada hacia atrás: <b>meta del mes</b> vs <b>facturable real</b> (input "Base contratada") vs <b>MRR ganado</b> en ese mes según HubSpot. Sirve para ver qué meses funcionaron y por qué.
+        Mirada hacia atrás: <b>meta del mes</b> vs <b>facturable real</b> (input "Facturado a la fecha") vs <b>MRR ganado</b> en ese mes según HubSpot. Sirve para ver qué meses funcionaron y por qué.
       </div>
       <div id="metas-historico"></div>
     </div>
@@ -848,7 +848,7 @@ table.std tr:hover td { background: #fafafa; }
         <b>Para qué:</b> ver en un vistazo el avance del mes, el próximo, el trimestre y el semestre contra la meta.<br>
         • Los bloques <b>"Puente a la meta"</b> descomponen el camino: <span style="color:#047857;">■ Facturable</span> (ya facturado) + <span style="color:#b45309;">■ Foco</span> (pipeline de cierre ponderado) + <span style="color:#4030C8;">■ Generación</span> (embudo temprano ponderado) + <span style="color:#64748b;">■ A construir</span> (gap sin deals).<br>
         • Los bloques <b>FOCO</b> dicen qué hacer: gap del mes, cobertura y el top 5 de deals con una sugerencia por deal (empujar firma, recalendarizar, definir próximo paso).<br>
-        • <b>Base contratada</b> (dentro de la analítica plegada): acá se carga el facturado real de cada mes. Es la única fuente de lo facturable en todo el dashboard. <i>(local)</i><br>
+        • <b>Facturado a la fecha</b> (dentro de la analítica plegada): acá se carga el facturado real de cada mes. Es la única fuente de lo facturable en todo el dashboard. <i>(local)</i><br>
         • La analítica plegada también tiene el <b>Reforecast</b> (escenarios por país × 9 líneas de servicio), el forecast HubSpot por país y el <b>accuracy</b> (proyección congelada vs real).
       </div>
     </details>
@@ -1106,7 +1106,7 @@ async function mcpCall(tool, args) {
 
 // ====================================================
 // SYNC DE ESTADO (Cloudflare KV vía /api/state)
-// Lo que antes vivía SOLO en localStorage (Base contratada, snapshots, matriz de
+// Lo que antes vivía SOLO en localStorage (Facturado a la fecha, snapshots, matriz de
 // producto, fuentes/partners, Cuentas Target, agenda, marcadores, cuotas, notas…)
 // ahora se espeja al servidor, keyed por el email de la sesión Google.
 // Sobrevive cambio de dominio, de navegador y de máquina.
@@ -1114,7 +1114,7 @@ async function mcpCall(tool, args) {
 // SOLO para el estado propio del dashboard, que HubSpot no puede almacenar.
 // ====================================================
 const STATE_KEYS = [
-  "dashComercial_v2",        // blob principal: base contratada, metas, PxQ, fuentes, matriz, target, marcadores, cuotas…
+  "dashComercial_v2",        // blob principal: facturado a la fecha, metas, PxQ, fuentes, matriz, target, marcadores, cuotas…
   "dashComercial_dealCo",    // cache deal↔company
   "dashComercial_genWR",     // override win rate
   "dashSnapshots_v1",        // snapshots semanales (WoW + accuracy) — IRRECUPERABLE si se pierde
@@ -1417,7 +1417,7 @@ function metaMesRefore(i){ return META_MENSUAL[REFORE_H2_KEYS[i]] || 0; }
 const PISO_JOA = 120000, STRETCH_JOA = 150000, TARGETS_JOA_DESDE = "2026-08";
 
 // REAL/FACTURABLE — May/Jun = histórico (accuracy). Jul–Dic se SINCRONIZAN desde
-// REFORE.base (input "Base contratada") vía syncFacturableFromBase(): esa es la ÚNICA
+// REFORE.base (input "Facturado a la fecha") vía syncFacturableFromBase(): esa es la ÚNICA
 // fuente de verdad de lo facturable. Los valores Jul–Dic de acá son solo default inicial.
 const REAL_FACTURABLE = {
   "2026-05": 109000, "2026-06": 70000, "2026-07": 80000,
@@ -2139,7 +2139,7 @@ function renderPeriodo(containerId, summary, opts) {
     </div>` : ""}
     ${showNote ? `
     <div class="s-note">
-      * Real/Facturable sale del input <strong>Base contratada</strong> (arriba, en Metas) — única fuente de verdad.
+      * Real/Facturable sale del input <strong>Facturado a la fecha</strong> (arriba, en Metas) — única fuente de verdad.
       Nota: el Forecast HS <strong>distribuye la facturación</strong> de cada deal a lo largo de sus meses de facturación (ponderado);
       los bloques de arriba miran el <strong>mes de cierre</strong> (primer tramo del plan de pagos) — por eso los números no son idénticos.
     </div>` : ""}`;
@@ -2840,14 +2840,14 @@ function toggleBucket(id) { document.getElementById(id).classList.toggle("open")
 
 // ====================================================
 // REFORECAST H2 2026 (vista híbrida — default)
-// Base contratada + Pipeline ponderado live (HubSpot) + Generación PxQ
+// Facturado a la fecha + Pipeline ponderado live (HubSpot) + Generación PxQ
 // ====================================================
 const REFORE = {
   horizon: 6,           // 6 o 12 meses rodantes desde el mes actual (toggle en Supuestos)
   keys: [],             // claves "YYYY-MM" del horizonte (se arman en reforeRebuildHorizon)
   labels: ["Jul", "Ago", "Sep", "Oct", "Nov", "Dic"],   // derivados de keys en cada rebuild
   base:    [80000, 79000, 77000, 73000, 69500, 66000],  // derivado de baseM en cada rebuild
-  // Base contratada keyed por mes calendario (sobrevive al rodado del horizonte)
+  // Facturado a la fecha keyed por mes calendario (sobrevive al rodado del horizonte)
   baseM: { "2026-07": 80000, "2026-08": 79000, "2026-09": 77000, "2026-10": 73000, "2026-11": 69500, "2026-12": 66000 },
   planV3:  [146679, 167196, 194013, 208367, 218884, 236734], // plan v3 de referencia (legacy H2)
   piso: 120000,
@@ -3045,7 +3045,7 @@ const FUENTES = {
 const DASH_LS = "dashComercial_v2";
 function dashLoad() { try { return JSON.parse(localStorage.getItem(DASH_LS) || "{}"); } catch (e) { return {}; } }
 function dashSave(patch) { const c = dashLoad(); Object.assign(c, patch); try { localStorage.setItem(DASH_LS, JSON.stringify(c)); } catch (e) {} }
-// Base contratada (facturable) = ÚNICA fuente de verdad. El input escribe REFORE.base;
+// Facturado a la fecha (facturable) = ÚNICA fuente de verdad. El input escribe REFORE.base;
 // esto lo baja a REAL_FACTURABLE (Jul–Dic) para que TODAS las vistas de dirección
 // (cadence cards, goal-strip, forecast por país, accuracy) lean de lo mismo.
 const FACTURABLE_H2_KEYS = ["2026-07", "2026-08", "2026-09", "2026-10", "2026-11", "2026-12"];
@@ -3775,22 +3775,26 @@ function metasExplicaMes(r) {
     ? li("La brecha", `faltaron <b>${fmtMoneyK(brecha)}</b> para llegar a la meta de ${fmtMoneyK(r.meta)}.`)
     : li("La brecha", `se superó la meta por <b>${fmtMoneyK(Math.abs(brecha))}</b>.`);
 
-  // 2) De dónde viene el número del mes: el facturable es la base contratada, no lo vendido este mes.
-  if (dBase === null) h += li("La base", `es el primer mes con facturable cargado, así que no hay contra qué compararlo.`);
-  else if (Math.abs(dBase) < 500) h += li("La base", `quedó prácticamente igual que en ${lblMes(prevKey)} (${fmtMoneyK(prevReal)}). El mes se movió por lo que ya estaba contratado, no por altas ni bajas.`);
-  else if (dBase > 0) h += li("La base", `creció <b>${fmtMoneyK(dBase)}</b> contra ${lblMes(prevKey)} (venía de ${fmtMoneyK(prevReal)}).`);
-  else h += li("La base", `<b>cayó ${fmtMoneyK(Math.abs(dBase))}</b> contra ${lblMes(prevKey)} (venía de ${fmtMoneyK(prevReal)}).${brecha > 0 ? " Ahí está el hueco." : ""}`);
+  // 2) Cómo se movió el facturado contra el mes anterior.
+  //    OJO (corregido 2026-08-25 por German): este número NO es una "base contratada" congelada.
+  //    Es el FACTURADO A LA FECHA: cada vez que German pasa un deal a cerrado, Celeste (Adm)
+  //    factura y el número del mes se mueve. O sea: lo que se cierra en el mes SÍ impacta el mes.
+  if (dBase === null) h += li("El facturado", `es el primer mes cargado, así que no hay contra qué compararlo.`);
+  else if (Math.abs(dBase) < 500) h += li("El facturado", `quedó prácticamente igual que en ${lblMes(prevKey)} (${fmtMoneyK(prevReal)}). Ni altas ni bajas movieron la aguja: se facturó lo mismo que venía.`);
+  else if (dBase > 0) h += li("El facturado", `creció <b>${fmtMoneyK(dBase)}</b> contra ${lblMes(prevKey)} (venía de ${fmtMoneyK(prevReal)}).`);
+  else h += li("El facturado", `<b>cayó ${fmtMoneyK(Math.abs(dBase))}</b> contra ${lblMes(prevKey)} (venía de ${fmtMoneyK(prevReal)}).${brecha > 0 ? " Ahí está el hueco." : ""}`);
 
-  // 3) Lo vendido en el mes alimenta los meses SIGUIENTES, no éste. Importante no confundirlo.
+  // 3) Lo cerrado en el mes. Celeste factura al pasar el deal a cerrado, así que ya está
+  //    (total o parcialmente, según cuotas) adentro del facturado de este mes.
   //    Si el mes cae fuera de la ventana que trae HubSpot (~9 meses), NO decimos "no hubo ventas":
   //    decimos que no tenemos el dato. Silencio de datos ≠ cero. Confundirlos sería mentirle a German.
   if (won.length) {
     const det = prodTop.length ? ` — ${prodTop.map(x => `${x.n} ${x.k}`).join(", ")}` : "";
-    h += li("Lo que se firmó", `<b>${won.length} deal(s)</b> por <b>${fmtMoneyK(wonMrr)}/mes</b>${det}. Eso empuja los meses que siguen, no la facturación de este mes.`);
+    h += li("Lo que se cerró", `<b>${won.length} deal(s)</b> por <b>${fmtMoneyK(wonMrr)}/mes</b>${det}. Al pasarlos a cerrado Adm factura, así que esto ya empuja el número del mes (y el de los que siguen, por las cuotas).`);
   } else if (fueraVentana) {
-    h += li("Lo que se firmó", `sin dato — este mes queda fuera de la ventana de cerrados que trae HubSpot (últimos 9 meses). No es que no se vendió: no lo tenemos cargado.`);
+    h += li("Lo que se cerró", `sin dato — este mes queda fuera de la ventana de cerrados que trae HubSpot (últimos 9 meses). No es que no se vendió: no lo tenemos cargado.`);
   } else {
-    h += li("Lo que se firmó", `<b>nada</b>. Un mes sin altas no se siente en el mes: se siente dos o tres meses después.`);
+    h += li("Lo que se cerró", `<b>nada</b>. Sin deals cerrados no entró factura nueva: el mes quedó atado a lo que ya se venía facturando.`);
   }
 
   // 4) Lo que se escapó.
@@ -3805,11 +3809,11 @@ function metasExplicaMes(r) {
   let lectura;
   if (r.cur) lectura = `Mes en curso: el número todavía se mueve. Faltan ${fmtMoneyK(Math.max(0, brecha))} y quedan días para firmar.`;
   else if (brecha <= 0) lectura = `Mes cumplido. Lo que hay que mirar acá es si se sostiene: ${wonMrr > 0 ? `entraron ${fmtMoneyK(wonMrr)}/mes nuevos` : "no entró nada nuevo"}.`;
-  else if (dBase !== null && dBase < -500) lectura = `El problema de este mes fue de <b>retención</b>, no de venta: la base se achicó. Vender más no lo tapa si se sigue yendo por abajo.`;
+  else if (dBase !== null && dBase < -500) lectura = `El problema de este mes fue de <b>retención</b>, no de venta: se facturó menos que el mes anterior. Vender más no lo tapa si se sigue yendo por abajo.`;
   else if (lostMrr > wonMrr && lost.length) lectura = `Se perdió más de lo que se ganó (${fmtMoneyK(lostMrr)} vs ${fmtMoneyK(wonMrr)}/mes). El embudo trajo oportunidades, la conversión no acompañó.`;
-  else if (!won.length && fueraVentana) lectura = `No alcanza el dato de HubSpot para explicar este mes. Lo único firme: la base contratada quedó ${fmtMoneyK(brecha)} por debajo de la meta.`;
-  else if (!won.length) lectura = `El mes no falló por conversión: <b>falló por falta de altas</b>. No hubo qué cerrar.`;
-  else lectura = `La base contratada no alcanzó para la meta y lo firmado en el mes (${fmtMoneyK(wonMrr)}/mes) no llega a cubrir ${fmtMoneyK(brecha)}.`;
+  else if (!won.length && fueraVentana) lectura = `No alcanza el dato de HubSpot para explicar este mes. Lo único firme: el facturado quedó ${fmtMoneyK(brecha)} por debajo de la meta.`;
+  else if (!won.length) lectura = `El mes no falló por conversión: <b>falló por falta de cierres</b>. No se pasó nada a cerrado, así que no hubo factura nueva.`;
+  else lectura = `Lo que se venía facturando no alcanzó para la meta, y lo que se cerró en el mes (${fmtMoneyK(wonMrr)}/mes) no llega a cubrir ${fmtMoneyK(brecha)}.`;
   h += `<div style="margin-top:9px; padding-top:8px; border-top:1px dashed #e5e7eb; color:#111;"><b>Lectura:</b> ${lectura}</div>`;
 
   return h;
@@ -3883,7 +3887,7 @@ function renderMetasHistorico() {
     </tr>`;
   });
   h += `</tbody></table>`;
-  h += `<div class="small" style="color:#9ca3af; margin-top:6px;"><b>Clic en cualquier mes</b> para ver por qué dio ese número. El <b>facturable real</b> sale del input "Base contratada" (única fuente de verdad). El <b>ganado en el mes</b> es MRR de deals <i>Closed Won</i> con fecha de cierre en ese mes, según la ventana de cerrados que trae HubSpot — es referencia, no reemplaza al facturable.</div>`;
+  h += `<div class="small" style="color:#9ca3af; margin-top:6px;"><b>Clic en cualquier mes</b> para ver por qué dio ese número. El <b>facturable real</b> sale del input "Facturado a la fecha" (única fuente de verdad). El <b>ganado en el mes</b> es MRR de deals <i>Closed Won</i> con fecha de cierre en ese mes, según la ventana de cerrados que trae HubSpot — es referencia, no reemplaza al facturable.</div>`;
   box.innerHTML = h;
 }
 
@@ -4738,7 +4742,7 @@ function renderReforecast() {
       <div class="small" style="color:#666; margin-top:1px;">${sub}</div>
     </div>`;
   { const _rk = document.getElementById("refore-kpis"); if (_rk) _rk.innerHTML =
-    kpi("Base contratada", fmtMoneyK(sum(REFORE.base)), `recurrente firmado · ${rangoTxt}`, "#6b7280") +
+    kpi("Facturado a la fecha", fmtMoneyK(sum(REFORE.base)), `facturado real · ${rangoTxt}`, "#6b7280") +
     kpi("Pipeline ponderado", fmtMoneyK(sum(pipe.weighted)), "en vivo desde HubSpot", "#4030C8") +
     kpi(`Generación PxQ · ${scenA.name}`, fmtMoneyK(sum(genActive)), "MRR nuevo acumulado", scenA.color) +
     kpi(`TOTAL · ${scenA.name}`, fmtMoneyK(totalH2), `prom. ${fmtMoneyK(totalH2 / N)}/mes`, "#059669") +
@@ -4809,7 +4813,7 @@ function renderReforecast() {
   svg += `</svg>`;
   // legend (misma paleta que la barra puente de Metas)
   svg += `<div class="small" style="display:flex; gap:16px; flex-wrap:wrap; margin-top:6px; color:#555;">
-    <span><span style="display:inline-block;width:10px;height:10px;background:#047857;border-radius:2px;vertical-align:-1px;"></span> Base contratada</span>
+    <span><span style="display:inline-block;width:10px;height:10px;background:#047857;border-radius:2px;vertical-align:-1px;"></span> Facturado a la fecha</span>
     <span><span style="display:inline-block;width:10px;height:10px;background:#f59e0b;border-radius:2px;vertical-align:-1px;"></span> Hay que cerrar (Foco pond.)</span>
     <span><span style="display:inline-block;width:10px;height:10px;background:#7c6ff0;border-radius:2px;vertical-align:-1px;"></span> Total en Generación (pond.)</span>
     <span style="border-left:1px solid #ddd; padding-left:12px;"><span style="display:inline-block;width:14px;height:0;border-top:3px dashed #dc2626;vertical-align:2px;"></span> Meta mensual</span>
@@ -4835,7 +4839,7 @@ function renderReforecast() {
     <th style="text-align:left; padding:6px 10px;">Capa (U$S)</th>`;
   REFORE.labels.forEach(l => mtx += `<th style="text-align:right; padding:6px 10px;">${l}</th>`);
   mtx += `<th style="text-align:right; padding:6px 10px;">Total</th></tr></thead><tbody>`;
-  mtx += mkRow("Base contratada", REFORE.base, { labelStyle: "color:#6b7280" });
+  mtx += mkRow("Facturado a la fecha", REFORE.base, { labelStyle: "color:#6b7280" });
   mtx += mkRow("Pipeline ponderado (live)", pipe.weighted, { labelStyle: "color:#4030C8; font-weight:600" });
   mtx += mkRow(`Generación PxQ · ${scenA.name}`, genActive, { labelStyle: `color:${scenA.color}` });
   const incAll = REFORE.countries.reduce((acc, c) => { const g = incGen(c.key); return acc.map((v, i) => v + (g[i] || 0)); }, new Array(N).fill(0));
@@ -4932,8 +4936,8 @@ function renderReforeSupuestos() {
   metasB += `</tr></table></div></div>`;
   h += metasB;
 
-  // ---- Base contratada (compartida) ----
-  let baseB = `<div><div style="font-weight:600; margin-bottom:6px;">🏗️ Base contratada</div><div style="overflow-x:auto;"><table style="border-collapse:collapse;"><tr>`;
+  // ---- Facturado a la fecha (compartida) ----
+  let baseB = `<div><div style="font-weight:600; margin-bottom:6px;">💵 Facturado a la fecha</div><div style="overflow-x:auto;"><table style="border-collapse:collapse;"><tr>`;
   REFORE.labels.forEach(l => baseB += `<td style="padding:2px 4px; font-size:10px; color:#888; text-align:center;">${l}</td>`);
   baseB += `</tr><tr>`;
   REFORE.base.forEach((v, i) => baseB += `<td style="padding:2px 3px;">${numIn('base', i, v, 64)}</td>`);
@@ -5068,7 +5072,7 @@ function reforeExportCsv() {
   rows.push(["Mes"].concat(REFORE.labels).join(sep));
   rows.push(["Piso"].concat(REFORE.keys.map((k, i) => reforePisoMes(i))).join(sep));
   rows.push(["Stretch"].concat(REFORE.keys.map((k, i) => reforeStretchMes(i))).join(sep));
-  rows.push(["Base contratada"].concat(REFORE.base).join(sep));
+  rows.push(["Facturado a la fecha"].concat(REFORE.base).join(sep));
   rows.push(["Pipeline ponderado"].concat(pipe.weighted.map(v => Math.round(v))).join(sep));
   rows.push(["Generacion PxQ (" + scen.name + ")"].concat(scenGenAcum(sc).map(v => Math.round(v))).join(sep));
   ["opt", "prob", "pes"].forEach(k => rows.push(["TOTAL " + REFORE.scen[k].name].concat(scenTotal(k, pipe.weighted).map(v => Math.round(v))).join(sep)));
@@ -5993,7 +5997,7 @@ function metasCadCard(titulo, rango, s, opts) {
   const monthKeys = opts.monthKeys || (esMes ? [metasMonthKey(opts.offset)] : []);
   const P = metasPeriodo(monthKeys);
   const meta = P.meta;
-  const real = P.real;                    // facturado real / base contratada
+  const real = P.real;                    // facturado real / facturado a la fecha
   const focoPond = P.focoPond;            // embudo Propuesta+ ponderado (CERRAR)
   const genPond = P.genPond;              // embudo temprano ponderado (GENERAR)
   const proy = P.proy;                    // facturable + pipeline ponderado (sin PxQ teórico)
@@ -6139,12 +6143,12 @@ function renderMetas() {
   const keyOf = i => { const dt = fm[i].date; return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`; };
   const triKeys = triIdx.map(keyOf);
   const semKeys = allIdx.map(keyOf);
-  // ---- Base contratada arriba (German la actualiza a diario; misma edición que la analítica: reforeEdit('base',...)) ----
+  // ---- Facturado a la fecha arriba (German la actualiza a diario; misma edición que la analítica: reforeEdit('base',...)) ----
   const baseEl = document.getElementById("metas-base");
   if (baseEl) {
     const curIdx = 0; // horizonte rodante: el mes actual siempre es el primer índice
     let bh = `<div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap; padding:10px 14px; border:1.5px solid #047857; border-radius:10px; background:#ecfdf5;">`;
-    bh += `<div><div style="font-weight:700; color:#047857;">🏗️ Base contratada (facturable)</div><div class="small" style="color:#059669;">actualizar a diario · única fuente de verdad</div></div>`;
+    bh += `<div><div style="font-weight:700; color:#047857;">💵 Facturado a la fecha</div><div class="small" style="color:#059669;">Adm factura al pasar el deal a cerrado · actualizar a diario · única fuente de verdad</div></div>`;
     bh += `<table style="border-collapse:collapse;"><tr>` +
       REFORE.labels.map((l, i) => `<td style="padding:2px 4px; font-size:10px; color:${i === curIdx ? '#047857' : '#888'}; text-align:center; font-weight:${i === curIdx ? '700' : '400'};">${l}</td>`).join("") +
       `</tr><tr>` +
@@ -11549,7 +11553,7 @@ function renderAccuracy() {
     const forecastMonths = buildForecast(deals);
     const pulso = buildPulso(deals, closedDeals);
 
-    // Facturable = única fuente de verdad: el input "Base contratada" (REFORE.base → REAL_FACTURABLE).
+    // Facturable = única fuente de verdad: el input "Facturado a la fecha" (REFORE.base → REAL_FACTURABLE).
     // Ya NO se pisa el mes en curso desde el Sheet VENTAS.
 
     document.getElementById("loading").style.display = "none";
