@@ -4151,11 +4151,20 @@ function msfClear(uid) {
 document.addEventListener("click", () => msfCloseAll());
 
 window.__genFilters = window.__genFilters || { cuenta: "", owner: "", stage: "", dias: "", bloqueo: "", bloqueoia: "", pais: "", fuente: "", detalle: "", producto: "", amount: "", meses: "", cierre: "", next: "" };
+// La columna Días se filtra por TIPO DE ALERTA, no por cantidad de días: el umbral es por etapa
+// (GEN_SLA_DIAS), así que "≥ 14 d" mezclaba peras con manzanas. Valores: 2=🔴 · 1=⚠️ · 0=✅ · x=sin fecha.
+function genAlertaVal(d) { const s = genSlaNivel(d); return s.dias === null ? "x" : String(s.nivel); }
+const GEN_ALERTA_OPTS = [
+  { v: "2", l: "🔴 Trabado grave" },
+  { v: "1", l: "⚠️ Fuera de plazo" },
+  { v: "0", l: "✅ En plazo" },
+  { v: "x", l: "— Sin fecha de etapa" }
+];
 // ── Columnas de Generación: orden y visibilidad (drag & drop, mismo patrón que Foco) ──
 // ★ y Deal son sticky y la columna de acciones va al final: las tres quedan FUERA del registro, no se mueven.
 const GEN_DATA_COLS = ["cuenta", "owner", "stage", "dias", "bloqueo", "bloqueoia", "pais", "fuente", "detalle", "producto", "amount", "prob", "meses", "plan", "cierre", "next"];
 // Filtros a limpiar cuando se oculta una columna (si no, el filtro sigue aplicando sin que se vea el input).
-const GEN_COL_FILTER = { cuenta: "gfl", owner: "msf", stage: "msf", dias: "gfl", bloqueo: "gfl", bloqueoia: "gfl", pais: "msf", fuente: "msf", detalle: "gfl", producto: "gfl", amount: "gfl", meses: "msf", cierre: "gfl", next: "gfl" };
+const GEN_COL_FILTER = { cuenta: "gfl", owner: "msf", stage: "msf", dias: "msf", bloqueo: "gfl", bloqueoia: "gfl", pais: "msf", fuente: "msf", detalle: "gfl", producto: "gfl", amount: "gfl", meses: "msf", cierre: "gfl", next: "gfl" };
 function getGenColOrder() {
   let order;
   try { order = JSON.parse(localStorage.getItem("gen_col_order") || "null"); } catch (e) { order = null; }
@@ -4216,7 +4225,7 @@ function genSort(key) {
 function filterGenRows() {
   const g = id => document.getElementById(id);
   const f = window.__genFilters;
-  ["cuenta", "detalle", "producto", "amount", "cierre", "next", "dias", "bloqueo", "bloqueoia"].forEach(k => { const el = g("gfl-" + k); if (el) f[k] = el.value; });
+  ["cuenta", "detalle", "producto", "amount", "cierre", "next", "bloqueo", "bloqueoia"].forEach(k => { const el = g("gfl-" + k); if (el) f[k] = el.value; });
   let vis = 0, tot = 0;
   (window.__genRendered || []).forEach(d => {
     const p = d.properties;
@@ -4225,7 +4234,7 @@ function filterGenRows() {
       (!f.cuenta || co.includes(f.cuenta.toLowerCase())) &&
       msfMatch("g-owner", p.hubspot_owner_id || "") &&
       msfMatch("g-stage", p.dealstage || "") &&
-      (!f.dias || (genDiasEnEtapa(d) || 0) >= parseFloat(f.dias)) &&
+      msfMatch("g-dias", genAlertaVal(d)) &&
       (!f.bloqueo || getDealBloqueo(d).toLowerCase().includes(f.bloqueo.toLowerCase())) &&
       (!f.bloqueoia || getDealBloqueoIA(d).toLowerCase().includes(f.bloqueoia.toLowerCase())) &&
       msfMatch("g-pais", p.segmento || "") &&
@@ -4243,13 +4252,13 @@ function filterGenRows() {
   });
   const c = g("gen-filter-count");
   if (c) {
-    const activo = Object.keys(f).some(k => f[k]) || ["g-owner", "g-stage", "g-pais", "g-fuente", "g-meses"].some(u => msfSel(u).length);
+    const activo = Object.keys(f).some(k => f[k]) || ["g-owner", "g-stage", "g-dias", "g-pais", "g-fuente", "g-meses"].some(u => msfSel(u).length);
     c.textContent = activo ? `${vis} visible(s) · ${fmtMoneyK(tot)}` : "";
   }
 }
 function clearGenFilters() {
   window.__genFilters = { cuenta: "", owner: "", stage: "", dias: "", bloqueo: "", bloqueoia: "", pais: "", fuente: "", detalle: "", producto: "", amount: "", meses: "", cierre: "", next: "" };
-  msfClearUids(["g-owner", "g-stage", "g-pais", "g-fuente", "g-meses"]);
+  msfClearUids(["g-owner", "g-stage", "g-dias", "g-pais", "g-fuente", "g-meses"]);
   renderFuentes();
 }
 function renderFuentes() {
@@ -4338,7 +4347,7 @@ function renderFuentes() {
       filter: gfTh(msfBtn("g-stage", GEN_STAGES.map(s => ({ v: s.id, l: s.label })), "filterGenRows", { live: true })),
       cell: (d, p, id) => `<td><select style="${inS} width:170px;" onchange="genStageChange('${id}',this.value,'gst-${id}')">${genRowStageOptions(p.dealstage)}</select></td>` },
     dias: { label: "Días", hi: true,
-      filter: gfTh(`<input type="number" id="gfl-dias" value="${escAttr(gf.dias)}" placeholder="≥ d" oninput="filterGenRows()" style="${gfS} text-align:right;">`),
+      filter: gfTh(msfBtn("g-dias", GEN_ALERTA_OPTS, "filterGenRows", { live: true })),
       cell: (d, p, id, x) => `<td title="${escAttr(x.slTit)}" style="text-align:center; white-space:nowrap; background:${x.slBg}; cursor:help;"><span style="color:${x.slCol}; font-weight:${x.sl.nivel ? 700 : 500}; font-size:12px;">${x.sl.dias === null ? "—" : x.sl.dias + "d"}</span>${x.slIco}</td>` },
     bloqueo: { label: "Bloqueo", hi: true,
       filter: gfTh(gfTxt("gfl-bloqueo", gf.bloqueo)),
