@@ -1612,6 +1612,15 @@ function fechaCambBadge(p, id) {
   if (n === 2) return `<span title="Se cambió 2 veces la fecha de cierre. Ojo: el deal está patinando." style="margin-left:4px; font-size:12px; cursor:help; background:#fffbeb; border:1px solid #fcd34d; color:#b45309; border-radius:4px; padding:1px 4px; font-weight:700;">⚠️⚠️ 2</span>`;
   return `<span title="Se cambió ${n} veces la fecha de cierre. Recomendación: llevarlo a Nurturing." style="margin-left:4px; font-size:12px; cursor:help; background:#fef2f2; border:1px solid #fecaca; color:#b91c1c; border-radius:4px; padding:1px 4px; font-weight:700;">🚨 ${n} → Nurturing</span>`;
 }
+// Versión compacta del badge de cambios de fecha, para repetirlo al lado del nombre del deal
+// en la columna sticky de Foco (la de Cierre queda lejos con scroll horizontal).
+function fechaCambBadgeMini(p, id) {
+  const n = cierreCambN(p, id);
+  if (!n) return "";
+  if (n === 1) return `<span title="Se cambió 1 vez la fecha de cierre. Probabilidad comercial bajada a Media." style="margin-left:5px; font-size:11px; cursor:help;">⚠️</span>`;
+  if (n === 2) return `<span title="Se cambió 2 veces la fecha de cierre. Ojo: el deal está patinando." style="margin-left:5px; font-size:10px; cursor:help; background:#fffbeb; border:1px solid #fcd34d; color:#b45309; border-radius:4px; padding:0 3px; font-weight:700; white-space:nowrap;">⚠️ 2</span>`;
+  return `<span title="Se cambió ${n} veces la fecha de cierre. Recomendación: llevarlo a Nurturing." style="margin-left:5px; font-size:10px; cursor:help; background:#fef2f2; border:1px solid #fecaca; color:#b91c1c; border-radius:4px; padding:0 3px; font-weight:700; white-space:nowrap;">🚨 ${n}</span>`;
+}
 function probComSelect(id, p, updFn, stPrefix) {
   const enNur = p && p.pipeline === NURTURING_PIPELINE_ID;
   const cur = enNur ? "nula" : probComKey(p);
@@ -4142,7 +4151,62 @@ function msfClear(uid) {
 document.addEventListener("click", () => msfCloseAll());
 
 window.__genFilters = window.__genFilters || { cuenta: "", owner: "", stage: "", dias: "", bloqueo: "", bloqueoia: "", pais: "", fuente: "", detalle: "", producto: "", amount: "", meses: "", cierre: "", next: "" };
+// ── Columnas de Generación: orden y visibilidad (drag & drop, mismo patrón que Foco) ──
+// ★ y Deal son sticky y la columna de acciones va al final: las tres quedan FUERA del registro, no se mueven.
+const GEN_DATA_COLS = ["cuenta", "owner", "stage", "dias", "bloqueo", "bloqueoia", "pais", "fuente", "detalle", "producto", "amount", "prob", "meses", "plan", "cierre", "next"];
+// Filtros a limpiar cuando se oculta una columna (si no, el filtro sigue aplicando sin que se vea el input).
+const GEN_COL_FILTER = { cuenta: "gfl", owner: "msf", stage: "msf", dias: "gfl", bloqueo: "gfl", bloqueoia: "gfl", pais: "msf", fuente: "msf", detalle: "gfl", producto: "gfl", amount: "gfl", meses: "msf", cierre: "gfl", next: "gfl" };
+function getGenColOrder() {
+  let order;
+  try { order = JSON.parse(localStorage.getItem("gen_col_order") || "null"); } catch (e) { order = null; }
+  if (!Array.isArray(order)) order = GEN_DATA_COLS.slice();
+  order = order.filter(k => GEN_DATA_COLS.includes(k));
+  // Auto-reparación: una columna nueva se inserta al lado de su vecina, sin resetear el orden guardado.
+  GEN_DATA_COLS.forEach((k, i) => {
+    if (order.includes(k)) return;
+    let insertAt = order.length;
+    for (let j = i - 1; j >= 0; j--) { const idx = order.indexOf(GEN_DATA_COLS[j]); if (idx >= 0) { insertAt = idx + 1; break; } }
+    if (i === 0) insertAt = 0;
+    order.splice(insertAt, 0, k);
+  });
+  return order;
+}
+function setGenColOrder(order) { try { localStorage.setItem("gen_col_order", JSON.stringify(order)); } catch (e) {} }
+function getGenHiddenCols() { try { return new Set(JSON.parse(localStorage.getItem("gen_hidden_cols") || "[]")); } catch (e) { return new Set(); } }
+function setGenHiddenCols(set) { try { localStorage.setItem("gen_hidden_cols", JSON.stringify([...set])); } catch (e) {} }
+function toggleGenColVis(key) {
+  const s = getGenHiddenCols();
+  if (s.has(key)) s.delete(key);
+  else {
+    s.add(key);
+    const kind = GEN_COL_FILTER[key];
+    if (kind === "gfl") { window.__genFilters[key] = ""; }
+    else if (kind === "msf") { msfClearUids(["g-" + key]); }
+  }
+  setGenHiddenCols(s);
+  renderFuentes();
+}
+function toggleGenColPanel() { window.__genColPanelOpen = !window.__genColPanelOpen; const el = document.getElementById("gen-col-panel"); if (el) el.style.display = window.__genColPanelOpen ? "block" : "none"; }
+function genColDragStart(ev, key) { window.__genDragCol = key; if (ev.dataTransfer) { ev.dataTransfer.effectAllowed = "move"; try { ev.dataTransfer.setData("text/plain", key); } catch (e) {} } }
+function genColDragOver(ev) { ev.preventDefault(); if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move"; }
+function genColDrop(ev, targetKey) {
+  ev.preventDefault();
+  const from = window.__genDragCol;
+  if (!from || from === targetKey) return;
+  const order = getGenColOrder();
+  const fi = order.indexOf(from);
+  if (fi < 0) return;
+  order.splice(fi, 1);
+  const ti = order.indexOf(targetKey);
+  order.splice(ti < 0 ? order.length : ti, 0, from);
+  setGenColOrder(order);
+  window.__genJustDragged = true; // el <th> también tiene onclick de sort: que el drop no dispare orden
+  renderFuentes();
+}
+function genColDragEnd() { setTimeout(() => { window.__genJustDragged = false; }, 300); }
+function genColReset() { try { localStorage.removeItem("gen_col_order"); localStorage.removeItem("gen_hidden_cols"); } catch (e) {} renderFuentes(); }
 function genSort(key) {
+  if (window.__genJustDragged) return; // venimos de soltar una columna, no de un clic de orden
   const ss = window.__genSort || { key: "prio", dir: "desc" };
   if (ss.key === key) { if (key !== "prio") ss.dir = ss.dir === "asc" ? "desc" : "asc"; }
   else { ss.key = key; ss.dir = (key === "amount" || key === "cierre" || key === "dias") ? "desc" : "asc"; }
@@ -4261,25 +4325,75 @@ function renderFuentes() {
   const gfTh = inner => `<th style="padding:4px 6px; background:#fafafa;">${inner}</th>`;
   const gfSel = (id, opts, cur) => `<select id="${id}" onchange="filterGenRows()" style="${gfS}"><option value="">Todos</option>${opts.map(o => `<option value="${escAttr(o.v)}" ${String(o.v) === String(cur) ? "selected" : ""}>${o.l}</option>`).join("")}</select>`;
   const gfTxt = (id, cur, ph) => `<input type="text" id="${id}" value="${escAttr(cur)}" placeholder="${ph || 'Filtrar…'}" oninput="filterGenRows()" style="${gfS}">`;
+  const gfThVacio = `<th style="padding:4px 6px; background:#fafafa;"></th>`;
+  // Registro de columnas: una entrada por columna movible. El orden real lo define getGenColOrder().
+  const GEN_COLS = {
+    cuenta: { label: "Cuenta",
+      filter: gfTh(gfTxt("gfl-cuenta", gf.cuenta)),
+      cell: (d, p, id) => `<td style="white-space:nowrap;"><span id="genco-${id}">${genCoInner(id)}</span></td>` },
+    owner: { label: "Owner", hi: true,
+      filter: gfTh(msfBtn("g-owner", DAILY_OWNERS.map(o => ({ v: o.id, l: o.name })), "filterGenRows", { live: true })),
+      cell: (d, p, id) => `<td style="background:${hiBg};"><select style="${inS} width:140px;" onchange="genUpdate('${id}','hubspot_owner_id',this.value,'gst-${id}')">${ownerOptions(p.hubspot_owner_id)}</select></td>` },
+    stage: { label: "Stage",
+      filter: gfTh(msfBtn("g-stage", GEN_STAGES.map(s => ({ v: s.id, l: s.label })), "filterGenRows", { live: true })),
+      cell: (d, p, id) => `<td><select style="${inS} width:170px;" onchange="genStageChange('${id}',this.value,'gst-${id}')">${genRowStageOptions(p.dealstage)}</select></td>` },
+    dias: { label: "Días", hi: true,
+      filter: gfTh(`<input type="number" id="gfl-dias" value="${escAttr(gf.dias)}" placeholder="≥ d" oninput="filterGenRows()" style="${gfS} text-align:right;">`),
+      cell: (d, p, id, x) => `<td title="${escAttr(x.slTit)}" style="text-align:center; white-space:nowrap; background:${x.slBg}; cursor:help;"><span style="color:${x.slCol}; font-weight:${x.sl.nivel ? 700 : 500}; font-size:12px;">${x.sl.dias === null ? "—" : x.sl.dias + "d"}</span>${x.slIco}</td>` },
+    bloqueo: { label: "Bloqueo", hi: true,
+      filter: gfTh(gfTxt("gfl-bloqueo", gf.bloqueo)),
+      cell: (d, p, id, x) => `<td style="background:${hiBg};"><input type="text" value="${escAttr(x.blq)}" placeholder="— sin bloqueo" title="Tu percepción comercial: qué traba a este deal. Se guarda en HubSpot." onchange="genUpdate('${id}','${BLOQUEO_PROP}',this.value,'gst-${id}')" style="${inS} width:190px;"></td>` },
+    bloqueoia: { label: "Bloqueo IA", hi: true,
+      filter: gfTh(gfTxt("gfl-bloqueoia", gf.bloqueoia)),
+      cell: (d, p, id, x) => `<td style="background:${hiBg}; max-width:240px;"><span ${x.blqIA ? `title="${escAttr(x.blqIA)}"` : ""} style="display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; ${x.blqIA ? "cursor:help; color:#5b21b6;" : "color:#9ca3af;"}">${x.blqIA ? "🤖 " + escAttr(x.blqIA) : "— sin lectura IA"}</span></td>` },
+    pais: { label: "País",
+      filter: gfTh(msfBtn("g-pais", DAILY_PAISES.map(x => ({ v: x, l: x })), "filterGenRows", { live: true })),
+      cell: (d, p, id) => `<td><select style="${inS} width:70px;" onchange="genUpdate('${id}','segmento',this.value,'gst-${id}')">${paisOptions(p.segmento)}</select></td>` },
+    fuente: { label: "Fuente", hi: true,
+      filter: gfTh(msfBtn("g-fuente", LEAD_SOURCE_OPTS.map(o => ({ v: o.v, l: o.l })), "filterGenRows", { live: true })),
+      cell: (d, p, id) => `<td style="background:${hiBg};"><select style="${inS} width:170px;" onchange="genUpdate('${id}','lead_source',this.value,'gst-${id}');detalleFuenteRefresh('${id}',this.value,'genUpdate','gst')">${leadSourceOptions(p.lead_source || "")}</select></td>` },
+    detalle: { label: "Detalle fuente",
+      filter: gfTh(gfTxt("gfl-detalle", gf.detalle)),
+      cell: (d, p, id) => `<td>${detalleFuenteSelect(id, p.lead_source || "", p.partner___empresa_referidora || "", "genUpdate", "gst")}</td>` },
+    producto: { label: "Producto",
+      filter: gfTh(gfTxt("gfl-producto", gf.producto)),
+      cell: (d, p, id) => `<td><select style="${inS} width:160px;" title="Producto - Servicio (HubSpot)" onchange="genUpdate('${id}','producto',this.value,'gst-${id}')">${productoOptions(p.producto)}</select></td>` },
+    amount: { label: "Amount",
+      filter: gfTh(`<input type="number" id="gfl-amount" value="${escAttr(gf.amount)}" placeholder="≥" oninput="filterGenRows()" style="${gfS} text-align:right;">`),
+      cell: (d, p, id) => `<td style="text-align:right;"><input type="number" value="${escAttr(p.amount || "")}" placeholder="0" style="${inS} width:90px; text-align:right;" onchange="genUpdate('${id}','amount',this.value,'gst-${id}')"></td>` },
+    prob: { label: "Prob. com.",
+      filter: gfThVacio,
+      cell: (d, p, id) => `<td style="text-align:center;">${probComSelect(id, p, "genUpdate", "gst")}</td>` },
+    meses: { label: "Meses",
+      filter: gfTh(msfBtn("g-meses", [1,2,3,4,5,6,7,8,9,10,11,12].map(n => ({ v: String(n), l: String(n) })), "filterGenRows", { live: true })),
+      cell: (d, p, id) => `<td style="text-align:center;"><select style="${inS} width:54px;" onchange="genUpdate('${id}','meses_de_facturacion__hasta_6_',this.value,'gst-${id}')">${mesesOptions(p.meses_de_facturacion__hasta_6_ || 1)}</select></td>` },
+    plan: { label: "Plan pagos",
+      filter: gfThVacio,
+      cell: (d, p, id) => `<td style="text-align:center;">${ppgBtn(id, p)}</td>` },
+    cierre: { label: "Cierre",
+      filter: gfTh(gfTxt("gfl-cierre", gf.cierre, "AAAA-MM")),
+      cell: (d, p, id) => `<td><input type="date" value="${p.closedate ? String(p.closedate).slice(0, 10) : ""}" style="${inS} width:140px;" onchange="updateCierre('${id}',this.value,'gst-${id}','genUpdate')">${fechaCambBadge(p, id)}</td>` },
+    next: { label: "Siguiente paso",
+      filter: gfTh(gfTxt("gfl-next", gf.next)),
+      cell: (d, p, id) => `<td style="max-width:280px;"><div style="display:flex; align-items:center; gap:6px;"><span ${p.hs_next_step ? `title="${escAttr(p.hs_next_step)}"` : ""} style="flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; ${p.hs_next_step ? "cursor:help;" : "color:#9ca3af;"}">${p.hs_next_step ? escAttr(p.hs_next_step) : "— sin ticket"}</span>${p.hs_next_step ? `<span style="flex:0 0 auto; display:flex; gap:4px;"><button onclick="dailyDone('${id}')" title="Hecho: cerrar el ticket y vaciar el siguiente paso" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #a7f3d0; color:#047857; border-radius:5px; background:#ecfdf5;">✓</button><button onclick="dailyDefer('${id}')" title="Baja: cerrar el ticket y vaciar el siguiente paso" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #fecaca; color:#b91c1c; border-radius:5px; background:#fef2f2;">✗</button><button onclick="dailyEditTask('${id}')" title="Editar el ticket" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #d1d5db; color:#6b7280; border-radius:5px; background:white;">✎</button></span>` : ""}</div></td>` }
+  };
+  const genOrder = getGenColOrder();
+  const genHiddenCols = getGenHiddenCols();
+  const genVisible = genOrder.filter(k => !genHiddenCols.has(k) && GEN_COLS[k]);
+  const genColspan = genVisible.length + 3; // ★ + Deal + acciones
+  const thCol = k => {
+    const c = GEN_COLS[k];
+    const base = c.hi
+      ? `text-align:left; padding:8px 10px; font-size:11px; color:#5b21b6; text-transform:uppercase; letter-spacing:.3px; border-bottom:2px solid #ddd6fe; white-space:nowrap; background:${hiBg};`
+      : `text-align:left; padding:8px 10px; font-size:11px; color:#666; text-transform:uppercase; letter-spacing:.3px; border-bottom:2px solid #e5e7eb; white-space:nowrap;`;
+    return `<th draggable="true" ondragstart="genColDragStart(event,'${k}')" ondragover="genColDragOver(event)" ondrop="genColDrop(event,'${k}')" ondragend="genColDragEnd()" onclick="genSort('${k}')" title="Arrastrá para mover · clic para ordenar" style="${base} cursor:grab;">${c.label}${gArrow(k)}</th>`;
+  };
+  const genHeadCols = genVisible.map(thCol).join("");
+  const genFilterCols = genVisible.map(k => GEN_COLS[k].filter).join("");
   const filterRow = `<tr>
     <th style="padding:4px 6px; background:#fafafa; position:sticky; left:0; z-index:3; width:34px; min-width:34px; max-width:34px;"></th>
     <th style="padding:4px 6px; background:#fafafa; position:sticky; left:34px; z-index:2; width:200px; min-width:200px; max-width:200px;"></th>
-    ${gfTh(gfTxt("gfl-cuenta", gf.cuenta))}
-    ${gfTh(msfBtn("g-owner", DAILY_OWNERS.map(o => ({ v: o.id, l: o.name })), "filterGenRows", { live: true }))}
-    ${gfTh(msfBtn("g-stage", GEN_STAGES.map(s => ({ v: s.id, l: s.label })), "filterGenRows", { live: true }))}
-    ${gfTh(`<input type="number" id="gfl-dias" value="${escAttr(gf.dias)}" placeholder="≥ d" oninput="filterGenRows()" style="${gfS} text-align:right;">`)}
-    ${gfTh(gfTxt("gfl-bloqueo", gf.bloqueo))}
-    ${gfTh(gfTxt("gfl-bloqueoia", gf.bloqueoia))}
-    ${gfTh(msfBtn("g-pais", DAILY_PAISES.map(x => ({ v: x, l: x })), "filterGenRows", { live: true }))}
-    ${gfTh(msfBtn("g-fuente", LEAD_SOURCE_OPTS.map(o => ({ v: o.v, l: o.l })), "filterGenRows", { live: true }))}
-    ${gfTh(gfTxt("gfl-detalle", gf.detalle))}
-    ${gfTh(gfTxt("gfl-producto", gf.producto))}
-    ${gfTh(`<input type="number" id="gfl-amount" value="${escAttr(gf.amount)}" placeholder="≥" oninput="filterGenRows()" style="${gfS} text-align:right;">`)}
-    <th style="padding:4px 6px; background:#fafafa;"></th>
-    ${gfTh(msfBtn("g-meses", [1,2,3,4,5,6,7,8,9,10,11,12].map(n => ({ v: String(n), l: String(n) })), "filterGenRows", { live: true }))}
-    <th style="padding:4px 6px; background:#fafafa;"></th>
-    ${gfTh(gfTxt("gfl-cierre", gf.cierre, "AAAA-MM"))}
-    ${gfTh(gfTxt("gfl-next", gf.next))}
+    ${genFilterCols}
     ${gfTh(`<button onclick="clearGenFilters()" title="Limpiar filtros" style="padding:2px 7px; font-size:11px; cursor:pointer; border:1px solid #d1d5db; border-radius:4px; background:white; color:#6b7280;">✕</button>`)}
   </tr>`;
   const genQ = (window.__genSearch || "").trim();
@@ -4294,13 +4408,23 @@ function renderFuentes() {
   } else if (genHid.size) {
     t += `<div style="margin-bottom:6px; text-align:right;"><button onclick="toggleGenMode()" style="padding:3px 10px; font-size:12px; cursor:pointer; border:1px solid #d1d5db; border-radius:5px; background:white; color:#6b7280;">🙈 Ver ocultas (${genHid.size})</button></div>`;
   }
-  t += `<table class="std" style="white-space:nowrap; min-width:1200px;"><thead><tr>${thStar}${thDeal}${th("Cuenta", "cuenta")}${thHi("Owner", "owner")}${th("Stage", "stage")}${thHi("Días", "dias")}${thHi("Bloqueo", "bloqueo")}${thHi("Bloqueo IA", "bloqueoia")}${th("País", "pais")}${thHi("Fuente", "fuente")}${th("Detalle fuente", "detalle")}${th("Producto", "producto")}${th("Amount", "amount")}${th("Prob. com.", "prob")}${th("Meses", "meses")}${th("Plan pagos", "plan")}${th("Cierre", "cierre")}${th("Siguiente paso", "next")}${th("")}</tr>${filterRow}</thead><tbody>`;
+  t += `<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:6px;">
+    <span class="small" style="color:#9ca3af;">Arrastrá los encabezados para reordenar las columnas.</span>
+    <button class="fc-btn secondary" onclick="toggleGenColPanel()" style="font-size:12px;">⚙ Columnas</button>
+    ${genHiddenCols.size ? `<span class="small" style="color:#b45309;">${genHiddenCols.size} oculta(s)</span>` : ""}
+  </div>
+  <div id="gen-col-panel" style="display:${window.__genColPanelOpen ? "block" : "none"}; border:1px solid #e5e7eb; border-radius:8px; padding:10px 12px; margin-bottom:8px; background:#fafafa;">
+    <div style="font-size:12px; font-weight:600; margin-bottom:6px;">Mostrar / ocultar columnas</div>
+    <div style="display:flex; flex-wrap:wrap; gap:8px 16px;">${genOrder.map(k => `<label style="font-size:12px; display:flex; align-items:center; gap:4px; cursor:pointer;"><input type="checkbox" ${genHiddenCols.has(k) ? "" : "checked"} onchange="toggleGenColVis('${k}')"> ${GEN_COLS[k].label}</label>`).join("")}</div>
+    <div style="margin-top:8px;"><button onclick="genColReset()" style="padding:3px 9px; font-size:11px; cursor:pointer; border:1px solid #d1d5db; border-radius:5px; background:white; color:#6b7280;">↺ Restaurar orden original</button></div>
+  </div>`;
+  t += `<table class="std" style="white-space:nowrap; min-width:1200px;"><thead><tr>${thStar}${thDeal}${genHeadCols}${th("")}</tr>${filterRow}</thead><tbody>`;
   if (!trows.length) {
     t += (genMode === "ocultas")
-      ? `<tr><td colspan="19" class="empty">Sin deals ocultos.</td></tr>`
+      ? `<tr><td colspan="${genColspan}" class="empty">Sin deals ocultos.</td></tr>`
       : genQ
-        ? `<tr><td colspan="19" class="empty">Sin deals que coincidan con "${escAttr(genQ)}".</td></tr>`
-        : `<tr><td colspan="19" class="empty">Sin deals de generación todavía. Sumá el primero con <b>＋ Nuevo deal</b>.</td></tr>`;
+        ? `<tr><td colspan="${genColspan}" class="empty">Sin deals que coincidan con "${escAttr(genQ)}".</td></tr>`
+        : `<tr><td colspan="${genColspan}" class="empty">Sin deals de generación todavía. Sumá el primero con <b>＋ Nuevo deal</b>.</td></tr>`;
   }
   trows.forEach(d => {
     const p = d.properties, id = d.id, cur = getDealFuente(id);
@@ -4314,28 +4438,14 @@ function renderFuentes() {
       : `${sl.dias} día(s) sin moverse de etapa · normal hasta ${sl.sla} · trabado grave pasando ${sl.sla * 2}`;
     const blq = getDealBloqueo(d);
     const blqIA = getDealBloqueoIA(d);
+    const gx = { sl, slCol, slBg, slIco, slTit, blq, blqIA, cur, isPrio, genMode };
     t += `<tr id="grow-${id}">
       <td style="text-align:center; position:sticky; left:0; z-index:2; background:white; width:34px; min-width:34px; max-width:34px;"><span onclick="genTogglePriority('${id}')" title="${isPrio ? 'Prioritario (clic para quitar)' : 'Marcar prioritario'}" style="cursor:pointer; font-size:16px; line-height:1; color:${isPrio ? '#f59e0b' : '#d1d5db'};">${isPrio ? '★' : '☆'}</span></td>
       <td style="font-weight:500; width:200px; min-width:200px; max-width:200px; white-space:normal; position:sticky; left:34px; z-index:1; background:white;"><a href="${HUBSPOT_DEAL(id)}" target="_blank">${p.dealname || "(sin nombre)"}</a></td>
-      <td style="white-space:nowrap;"><span id="genco-${id}">${genCoInner(id)}</span></td>
-      <td style="background:${hiBg};"><select style="${inS} width:140px;" onchange="genUpdate('${id}','hubspot_owner_id',this.value,'gst-${id}')">${ownerOptions(p.hubspot_owner_id)}</select></td>
-      <td><select style="${inS} width:170px;" onchange="genStageChange('${id}',this.value,'gst-${id}')">${genRowStageOptions(p.dealstage)}</select></td>
-      <td title="${escAttr(slTit)}" style="text-align:center; white-space:nowrap; background:${slBg}; cursor:help;"><span style="color:${slCol}; font-weight:${sl.nivel ? 700 : 500}; font-size:12px;">${sl.dias === null ? "—" : sl.dias + "d"}</span>${slIco}</td>
-      <td style="background:${hiBg};"><input type="text" value="${escAttr(blq)}" placeholder="— sin bloqueo" title="Tu percepción comercial: qué traba a este deal. Se guarda en HubSpot." onchange="genUpdate('${id}','${BLOQUEO_PROP}',this.value,'gst-${id}')" style="${inS} width:190px;"></td>
-      <td style="background:${hiBg}; max-width:240px;"><span ${blqIA ? `title="${escAttr(blqIA)}"` : ""} style="display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; ${blqIA ? "cursor:help; color:#5b21b6;" : "color:#9ca3af;"}">${blqIA ? "🤖 " + escAttr(blqIA) : "— sin lectura IA"}</span></td>
-      <td><select style="${inS} width:70px;" onchange="genUpdate('${id}','segmento',this.value,'gst-${id}')">${paisOptions(p.segmento)}</select></td>
-      <td style="background:${hiBg};"><select style="${inS} width:170px;" onchange="genUpdate('${id}','lead_source',this.value,'gst-${id}');detalleFuenteRefresh('${id}',this.value,'genUpdate','gst')">${leadSourceOptions(p.lead_source || "")}</select></td>
-      <td>${detalleFuenteSelect(id, p.lead_source || "", p.partner___empresa_referidora || "", "genUpdate", "gst")}</td>
-      <td><select style="${inS} width:160px;" title="Producto - Servicio (HubSpot)" onchange="genUpdate('${id}','producto',this.value,'gst-${id}')">${productoOptions(p.producto)}</select></td>
-      <td style="text-align:right;"><input type="number" value="${escAttr(p.amount || "")}" placeholder="0" style="${inS} width:90px; text-align:right;" onchange="genUpdate('${id}','amount',this.value,'gst-${id}')"></td>
-      <td style="text-align:center;">${probComSelect(id, p, "genUpdate", "gst")}</td>
-      <td style="text-align:center;"><select style="${inS} width:54px;" onchange="genUpdate('${id}','meses_de_facturacion__hasta_6_',this.value,'gst-${id}')">${mesesOptions(p.meses_de_facturacion__hasta_6_ || 1)}</select></td>
-      <td style="text-align:center;">${ppgBtn(id, p)}</td>
-      <td><input type="date" value="${p.closedate ? String(p.closedate).slice(0, 10) : ""}" style="${inS} width:140px;" onchange="updateCierre('${id}',this.value,'gst-${id}','genUpdate')">${fechaCambBadge(p, id)}</td>
-      <td style="max-width:280px;"><div style="display:flex; align-items:center; gap:6px;"><span ${p.hs_next_step ? `title="${escAttr(p.hs_next_step)}"` : ""} style="flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; ${p.hs_next_step ? "cursor:help;" : "color:#9ca3af;"}">${p.hs_next_step ? escAttr(p.hs_next_step) : "— sin ticket"}</span>${p.hs_next_step ? `<span style="flex:0 0 auto; display:flex; gap:4px;"><button onclick="dailyDone('${id}')" title="Hecho: cerrar el ticket y vaciar el siguiente paso" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #a7f3d0; color:#047857; border-radius:5px; background:#ecfdf5;">✓</button><button onclick="dailyDefer('${id}')" title="Baja: cerrar el ticket y vaciar el siguiente paso" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #fecaca; color:#b91c1c; border-radius:5px; background:#fef2f2;">✗</button><button onclick="dailyEditTask('${id}')" title="Editar el ticket" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #d1d5db; color:#6b7280; border-radius:5px; background:white;">✎</button></span>` : ""}</div></td>
+      ${genVisible.map(k => GEN_COLS[k].cell(d, p, id, gx)).join("")}
       <td style="text-align:center; white-space:nowrap;"><button onclick="toggleDailyTask('${id}')" title="Crear ticket / siguiente paso" style="padding:3px 9px; font-size:13px; cursor:pointer; border:1px solid #d1d5db; border-radius:5px; background:white;">+</button> <button onclick="genToNurturing('${id}')" title="Mandar a Nurturing (recuperable, prob 0, no cuenta como perdido)" style="padding:3px 8px; font-size:11px; cursor:pointer; border:1px solid #c4b5fd; color:#5b21b6; border-radius:5px; background:#f5f3ff;">→ Nur</button> <button onclick="genLose('${id}')" title="Marcar Perdido (definitivo, cuenta en estadísticas)" style="padding:3px 8px; font-size:12px; cursor:pointer; border:1px solid #fecaca; color:#b91c1c; border-radius:5px; background:#fef2f2;">✗</button> ${genMode === "ocultas" ? `<button onclick="genUnhideDeal('${id}')" title="Restaurar a la vista" style="padding:3px 8px; font-size:12px; cursor:pointer; border:1px solid #d1d5db; border-radius:5px; background:white;">👁</button>` : `<button onclick="genHideDeal('${id}')" title="Ocultar del dashboard (sigue abierto en HubSpot)" style="padding:3px 8px; font-size:12px; cursor:pointer; border:1px solid #d1d5db; border-radius:5px; background:white;">🙈</button>`} <span id="gst-${id}" class="fc-status" style="font-size:11px;"></span></td>
     </tr>
-    <tr id="dtask-${id}" style="display:none; background:#f9fafb;"><td colspan="19" style="padding:12px 16px; white-space:normal;">
+    <tr id="dtask-${id}" style="display:none; background:#f9fafb;"><td colspan="${genColspan}" style="padding:12px 16px; white-space:normal;">
       <div style="position:sticky; left:16px; max-width:560px; display:flex; flex-direction:column; gap:10px;">
         <div id="tkh-${id}" style="font-size:12px; font-weight:600;">Nuevo ticket</div>
         <label style="display:flex; flex-direction:column; gap:3px; font-size:12px; color:#555;">Asunto<input type="text" id="tk-subj-${id}" placeholder="Próximo paso…" style="width:100%; box-sizing:border-box; padding:3px 7px; font-size:13px; border:1px solid #d1d5db; border-radius:5px;"></label>
@@ -9031,7 +9141,7 @@ function renderDaily(deals) {
     const isFoco = focoSetRender.has(String(id));
     html += `<tr id="drow-${id}">
       <td style="text-align:center; position:sticky; left:0; background:white; z-index:2; width:34px; min-width:34px; max-width:34px;"><input type="checkbox" ${isFoco ? "checked" : ""} onchange="toggleFoco('${id}',this.checked)" title="Marcar en foco" style="cursor:pointer;"></td>
-      <td style="font-weight:500; width:200px; min-width:200px; max-width:200px; white-space:normal; position:sticky; left:34px; background:white; z-index:1;"><a href="${HUBSPOT_DEAL(id)}" target="_blank">${p.dealname || "(sin nombre)"}</a></td>
+      <td style="font-weight:500; width:200px; min-width:200px; max-width:200px; white-space:normal; position:sticky; left:34px; background:white; z-index:1;"><a href="${HUBSPOT_DEAL(id)}" target="_blank">${p.dealname || "(sin nombre)"}</a>${fechaCambBadgeMini(p, id)}</td>
       ${dataCells}
       <td style="text-align:center;">${hideBtn}</td>
       <td><span id="st-${id}" class="fc-status" style="font-size:11px;"></span></td>
