@@ -1744,7 +1744,7 @@ async function fetchAllOpenDeals() {
       filterGroups: [{ filters: [
         { propertyName: "dealstage", operator: "NOT_IN", values: CLOSED_STAGES }
       ]}],
-      properties: ["dealname", "dealstage", "amount", "deal_currency_code", "closedate", "createdate", "hs_lastmodifieddate", "hubspot_owner_id", "hs_deal_stage_probability", "probabilidad_comercial", "probabilidad_comercial_pct", "cambios_fecha_cierre", "notes_last_updated", "num_associated_contacts", "producto", "segmento", "meses_de_facturacion__hasta_6_", "pipeline", "fecha_envio_propuesta", "fecha_de_primer_reunion", "fecha_de_verbal_commit", "hs_next_step", "lead_source", "partner___empresa_referidora", "hs_priority", "plan_de_pagos", "hs_v2_date_entered_qualifiedtobuy", "hs_v2_date_entered_1246562354", "hs_v2_date_entered_presentationscheduled", "hs_v2_date_entered_bda4aa78-3d32-45c0-8f73-5acaedfbb854", "hs_v2_date_entered_1365872702"],
+      properties: ["dealname", "dealstage", "amount", "deal_currency_code", "closedate", "createdate", "hs_lastmodifieddate", "hubspot_owner_id", "hs_deal_stage_probability", "probabilidad_comercial", "probabilidad_comercial_pct", "cambios_fecha_cierre", "notes_last_updated", "num_associated_contacts", "producto", "segmento", "meses_de_facturacion__hasta_6_", "pipeline", "fecha_envio_propuesta", "fecha_de_primer_reunion", "fecha_de_verbal_commit", "hs_next_step", "lead_source", "partner___empresa_referidora", "hs_priority", "plan_de_pagos", "hs_v2_date_entered_qualifiedtobuy", "hs_v2_date_entered_1246562354", "hs_v2_date_entered_presentationscheduled", "hs_v2_date_entered_bda4aa78-3d32-45c0-8f73-5acaedfbb854", "hs_v2_date_entered_1365872702", "bloque_del_deal_percepcion_comercial", "bloqueo_del_deal_agente_ia"],
       sorts: [{ propertyName: "hs_lastmodifieddate", direction: "DESCENDING" }],
       limit: 100, offset,
       chatInsights: { userIntent: "Dashboard Comercial carga de deals abiertos", satisfaction: "NEUTRAL" }
@@ -3074,6 +3074,14 @@ function setDealFuente(id, key) {
   const gv = document.getElementById("view-fuentes");
   if (gv && gv.style.display !== "none") renderFuentes();
 }
+// Bloqueo por deal — DOS propiedades reales de HubSpot (German las creó el 2026-08-26).
+// `BLOQUEO_PROP`    = lo que escribe German a mano en el dash (percepción comercial).
+// `BLOQUEO_IA_PROP` = lo que escribe el agente IA de HubSpot. En el dash es SÓLO LECTURA.
+// Antes esto vivía en localStorage; ya no. Ambas viajan en el fetch de deals abiertos.
+const BLOQUEO_PROP = "bloque_del_deal_percepcion_comercial";
+const BLOQUEO_IA_PROP = "bloqueo_del_deal_agente_ia";
+function getDealBloqueo(d) { return ((d && d.properties) || {})[BLOQUEO_PROP] || ""; }
+function getDealBloqueoIA(d) { return ((d && d.properties) || {})[BLOQUEO_IA_PROP] || ""; }
 // ---- Generación (embudo temprano, HubSpot) ----
 // Deals en SQL – Discovery y Primer reu. Fuente de verdad: HubSpot (se leen de __dailyOpen).
 // Al pasar a "Propuesta Enviada" saltan a Foco: se cambia el dealstage en HubSpot.
@@ -3082,6 +3090,25 @@ const GEN_STAGES = [
   { id: "1246562354", label: "Primer reu" }
 ];
 const GEN_STAGE_IDS = GEN_STAGES.map(s => s.id);
+
+// SLA por etapa: días "normales" antes de considerar que el deal está trabado (German 2026-08-26).
+// Pasado el SLA → ámbar. Pasado el doble → rojo. La fecha sale de `hs_v2_date_entered_<stage>`,
+// que el fetch de deals abiertos YA trae para las dos etapas de Generación (no hace falta pedir nada nuevo).
+const GEN_SLA_DIAS = { qualifiedtobuy: 14, "1246562354": 7 };
+function genDiasEnEtapa(d) {
+  const p = (d && d.properties) || {};
+  const raw = p["hs_v2_date_entered_" + p.dealstage] || p.createdate;
+  if (!raw) return null;
+  const t = new Date(raw).getTime();
+  if (!isFinite(t)) return null;
+  return Math.max(0, Math.floor((Date.now() - t) / 86400000));
+}
+function genSlaNivel(d) {
+  const dias = genDiasEnEtapa(d);
+  const sla = GEN_SLA_DIAS[((d && d.properties) || {}).dealstage] || 14;
+  if (dias === null) return { dias: null, sla: sla, nivel: 0 };
+  return { dias: dias, sla: sla, nivel: dias > sla * 2 ? 2 : (dias > sla ? 1 : 0) };
+}
 
 // Cargar estado persistido sobre los modelos por defecto (corre al parsear el script).
 (function dashInitPersist() {
@@ -4114,18 +4141,18 @@ function msfClear(uid) {
 }
 document.addEventListener("click", () => msfCloseAll());
 
-window.__genFilters = window.__genFilters || { cuenta: "", owner: "", stage: "", pais: "", fuente: "", detalle: "", producto: "", amount: "", meses: "", cierre: "", next: "" };
+window.__genFilters = window.__genFilters || { cuenta: "", owner: "", stage: "", dias: "", bloqueo: "", bloqueoia: "", pais: "", fuente: "", detalle: "", producto: "", amount: "", meses: "", cierre: "", next: "" };
 function genSort(key) {
   const ss = window.__genSort || { key: "prio", dir: "desc" };
   if (ss.key === key) { if (key !== "prio") ss.dir = ss.dir === "asc" ? "desc" : "asc"; }
-  else { ss.key = key; ss.dir = (key === "amount" || key === "cierre") ? "desc" : "asc"; }
+  else { ss.key = key; ss.dir = (key === "amount" || key === "cierre" || key === "dias") ? "desc" : "asc"; }
   window.__genSort = ss;
   renderFuentes();
 }
 function filterGenRows() {
   const g = id => document.getElementById(id);
   const f = window.__genFilters;
-  ["cuenta", "detalle", "producto", "amount", "cierre", "next"].forEach(k => { const el = g("gfl-" + k); if (el) f[k] = el.value; });
+  ["cuenta", "detalle", "producto", "amount", "cierre", "next", "dias", "bloqueo", "bloqueoia"].forEach(k => { const el = g("gfl-" + k); if (el) f[k] = el.value; });
   let vis = 0, tot = 0;
   (window.__genRendered || []).forEach(d => {
     const p = d.properties;
@@ -4134,6 +4161,9 @@ function filterGenRows() {
       (!f.cuenta || co.includes(f.cuenta.toLowerCase())) &&
       msfMatch("g-owner", p.hubspot_owner_id || "") &&
       msfMatch("g-stage", p.dealstage || "") &&
+      (!f.dias || (genDiasEnEtapa(d) || 0) >= parseFloat(f.dias)) &&
+      (!f.bloqueo || getDealBloqueo(d).toLowerCase().includes(f.bloqueo.toLowerCase())) &&
+      (!f.bloqueoia || getDealBloqueoIA(d).toLowerCase().includes(f.bloqueoia.toLowerCase())) &&
       msfMatch("g-pais", p.segmento || "") &&
       msfMatch("g-fuente", p.lead_source || "") &&
       (!f.detalle || (p.partner___empresa_referidora || "").toLowerCase().includes(f.detalle.toLowerCase())) &&
@@ -4154,7 +4184,7 @@ function filterGenRows() {
   }
 }
 function clearGenFilters() {
-  window.__genFilters = { cuenta: "", owner: "", stage: "", pais: "", fuente: "", detalle: "", producto: "", amount: "", meses: "", cierre: "", next: "" };
+  window.__genFilters = { cuenta: "", owner: "", stage: "", dias: "", bloqueo: "", bloqueoia: "", pais: "", fuente: "", detalle: "", producto: "", amount: "", meses: "", cierre: "", next: "" };
   msfClearUids(["g-owner", "g-stage", "g-pais", "g-fuente", "g-meses"]);
   renderFuentes();
 }
@@ -4175,6 +4205,9 @@ function renderFuentes() {
       if (gs.key === "cuenta") { try { const c = getDealCompany(d.id); return c && c.name ? String(c.name).toLowerCase() : "￿"; } catch (e) { return "￿"; } }
       if (gs.key === "owner") return gOwnerName(p.hubspot_owner_id);
       if (gs.key === "stage") { const i = GEN_STAGES.findIndex(s => s.id === p.dealstage); return i < 0 ? 99 : i; }
+      if (gs.key === "dias") { const v = genDiasEnEtapa(d); return v === null ? -1 : v; }
+      if (gs.key === "bloqueo") { const v = getDealBloqueo(d).toLowerCase(); return v || "￿"; }
+      if (gs.key === "bloqueoia") { const v = getDealBloqueoIA(d).toLowerCase(); return v || "￿"; }
       if (gs.key === "pais") return (p.segmento || "").toLowerCase();
       if (gs.key === "fuente") return (p.lead_source || "").toLowerCase();
       if (gs.key === "detalle") return (p.partner___empresa_referidora || "").toLowerCase();
@@ -4207,9 +4240,13 @@ function renderFuentes() {
       <div style="font-size:20px; font-weight:700; color:#111; margin-top:2px;">${val}</div>
       <div class="small" style="color:#666; margin-top:1px;">${sub}</div>
     </div>`;
+  // Trabados: deals que pasaron el SLA de su etapa. Es la alerta agregada de la columna "Días".
+  const trab = rows.filter(d => genSlaNivel(d).nivel > 0);
+  const trabUSD = trab.reduce((s, d) => s + (parseFloat(d.properties.amount) || 0), 0);
   document.getElementById("gen-kpis").innerHTML =
     kpi("Pipeline temprano", fmtMoneyK(total), `${rows.length} deals · ${fmtMoneyK(earlyMRR)}/mes MRR`, "#4030C8") +
-    kpi("Cobertura del gap H2", cobertura + "%", `pipeline temprano ÷ lo necesario`, cobCol);
+    kpi("Cobertura del gap H2", cobertura + "%", `pipeline temprano ÷ lo necesario`, cobCol) +
+    kpi("Trabados", String(trab.length), `${fmtMoneyK(trabUSD)} pasados de SLA en su etapa`, trab.length ? "#dc2626" : "#059669");
 
   const inS = "padding:3px 5px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; background:white;";
   // ↕ gris = columna ordenable pero inactiva (afordancia visual, German 2026-08-14). ▲/▼ = orden activo.
@@ -4230,6 +4267,9 @@ function renderFuentes() {
     ${gfTh(gfTxt("gfl-cuenta", gf.cuenta))}
     ${gfTh(msfBtn("g-owner", DAILY_OWNERS.map(o => ({ v: o.id, l: o.name })), "filterGenRows", { live: true }))}
     ${gfTh(msfBtn("g-stage", GEN_STAGES.map(s => ({ v: s.id, l: s.label })), "filterGenRows", { live: true }))}
+    ${gfTh(`<input type="number" id="gfl-dias" value="${escAttr(gf.dias)}" placeholder="≥ d" oninput="filterGenRows()" style="${gfS} text-align:right;">`)}
+    ${gfTh(gfTxt("gfl-bloqueo", gf.bloqueo))}
+    ${gfTh(gfTxt("gfl-bloqueoia", gf.bloqueoia))}
     ${gfTh(msfBtn("g-pais", DAILY_PAISES.map(x => ({ v: x, l: x })), "filterGenRows", { live: true }))}
     ${gfTh(msfBtn("g-fuente", LEAD_SOURCE_OPTS.map(o => ({ v: o.v, l: o.l })), "filterGenRows", { live: true }))}
     ${gfTh(gfTxt("gfl-detalle", gf.detalle))}
@@ -4254,23 +4294,35 @@ function renderFuentes() {
   } else if (genHid.size) {
     t += `<div style="margin-bottom:6px; text-align:right;"><button onclick="toggleGenMode()" style="padding:3px 10px; font-size:12px; cursor:pointer; border:1px solid #d1d5db; border-radius:5px; background:white; color:#6b7280;">🙈 Ver ocultas (${genHid.size})</button></div>`;
   }
-  t += `<table class="std" style="white-space:nowrap; min-width:1200px;"><thead><tr>${thStar}${thDeal}${th("Cuenta", "cuenta")}${thHi("Owner", "owner")}${th("Stage", "stage")}${th("País", "pais")}${thHi("Fuente", "fuente")}${th("Detalle fuente", "detalle")}${th("Producto", "producto")}${th("Amount", "amount")}${th("Prob. com.", "prob")}${th("Meses", "meses")}${th("Plan pagos", "plan")}${th("Cierre", "cierre")}${th("Siguiente paso", "next")}${th("")}</tr>${filterRow}</thead><tbody>`;
+  t += `<table class="std" style="white-space:nowrap; min-width:1200px;"><thead><tr>${thStar}${thDeal}${th("Cuenta", "cuenta")}${thHi("Owner", "owner")}${th("Stage", "stage")}${thHi("Días", "dias")}${thHi("Bloqueo", "bloqueo")}${thHi("Bloqueo IA", "bloqueoia")}${th("País", "pais")}${thHi("Fuente", "fuente")}${th("Detalle fuente", "detalle")}${th("Producto", "producto")}${th("Amount", "amount")}${th("Prob. com.", "prob")}${th("Meses", "meses")}${th("Plan pagos", "plan")}${th("Cierre", "cierre")}${th("Siguiente paso", "next")}${th("")}</tr>${filterRow}</thead><tbody>`;
   if (!trows.length) {
     t += (genMode === "ocultas")
-      ? `<tr><td colspan="16" class="empty">Sin deals ocultos.</td></tr>`
+      ? `<tr><td colspan="19" class="empty">Sin deals ocultos.</td></tr>`
       : genQ
-        ? `<tr><td colspan="16" class="empty">Sin deals que coincidan con "${escAttr(genQ)}".</td></tr>`
-        : `<tr><td colspan="16" class="empty">Sin deals de generación todavía. Sumá el primero con <b>＋ Nuevo deal</b>.</td></tr>`;
+        ? `<tr><td colspan="19" class="empty">Sin deals que coincidan con "${escAttr(genQ)}".</td></tr>`
+        : `<tr><td colspan="19" class="empty">Sin deals de generación todavía. Sumá el primero con <b>＋ Nuevo deal</b>.</td></tr>`;
   }
   trows.forEach(d => {
     const p = d.properties, id = d.id, cur = getDealFuente(id);
     const isPrio = p.hs_priority === "high";
+    const sl = genSlaNivel(d);
+    const slCol = sl.nivel === 2 ? "#dc2626" : sl.nivel === 1 ? "#b45309" : "#059669";
+    const slBg = sl.nivel === 2 ? "#fef2f2" : sl.nivel === 1 ? "#fffbeb" : hiBg;
+    const slIco = sl.nivel === 2 ? " 🔴" : sl.nivel === 1 ? " ⚠️" : "";
+    const slTit = sl.dias === null
+      ? "Sin fecha de entrada a la etapa en HubSpot"
+      : `${sl.dias} día(s) sin moverse de etapa · normal hasta ${sl.sla} · trabado grave pasando ${sl.sla * 2}`;
+    const blq = getDealBloqueo(d);
+    const blqIA = getDealBloqueoIA(d);
     t += `<tr id="grow-${id}">
       <td style="text-align:center; position:sticky; left:0; z-index:2; background:white; width:34px; min-width:34px; max-width:34px;"><span onclick="genTogglePriority('${id}')" title="${isPrio ? 'Prioritario (clic para quitar)' : 'Marcar prioritario'}" style="cursor:pointer; font-size:16px; line-height:1; color:${isPrio ? '#f59e0b' : '#d1d5db'};">${isPrio ? '★' : '☆'}</span></td>
       <td style="font-weight:500; width:200px; min-width:200px; max-width:200px; white-space:normal; position:sticky; left:34px; z-index:1; background:white;"><a href="${HUBSPOT_DEAL(id)}" target="_blank">${p.dealname || "(sin nombre)"}</a></td>
       <td style="white-space:nowrap;"><span id="genco-${id}">${genCoInner(id)}</span></td>
       <td style="background:${hiBg};"><select style="${inS} width:140px;" onchange="genUpdate('${id}','hubspot_owner_id',this.value,'gst-${id}')">${ownerOptions(p.hubspot_owner_id)}</select></td>
       <td><select style="${inS} width:170px;" onchange="genStageChange('${id}',this.value,'gst-${id}')">${genRowStageOptions(p.dealstage)}</select></td>
+      <td title="${escAttr(slTit)}" style="text-align:center; white-space:nowrap; background:${slBg}; cursor:help;"><span style="color:${slCol}; font-weight:${sl.nivel ? 700 : 500}; font-size:12px;">${sl.dias === null ? "—" : sl.dias + "d"}</span>${slIco}</td>
+      <td style="background:${hiBg};"><input type="text" value="${escAttr(blq)}" placeholder="— sin bloqueo" title="Tu percepción comercial: qué traba a este deal. Se guarda en HubSpot." onchange="genUpdate('${id}','${BLOQUEO_PROP}',this.value,'gst-${id}')" style="${inS} width:190px;"></td>
+      <td style="background:${hiBg}; max-width:240px;"><span ${blqIA ? `title="${escAttr(blqIA)}"` : ""} style="display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; ${blqIA ? "cursor:help; color:#5b21b6;" : "color:#9ca3af;"}">${blqIA ? "🤖 " + escAttr(blqIA) : "— sin lectura IA"}</span></td>
       <td><select style="${inS} width:70px;" onchange="genUpdate('${id}','segmento',this.value,'gst-${id}')">${paisOptions(p.segmento)}</select></td>
       <td style="background:${hiBg};"><select style="${inS} width:170px;" onchange="genUpdate('${id}','lead_source',this.value,'gst-${id}');detalleFuenteRefresh('${id}',this.value,'genUpdate','gst')">${leadSourceOptions(p.lead_source || "")}</select></td>
       <td>${detalleFuenteSelect(id, p.lead_source || "", p.partner___empresa_referidora || "", "genUpdate", "gst")}</td>
@@ -4283,7 +4335,7 @@ function renderFuentes() {
       <td style="max-width:280px;"><div style="display:flex; align-items:center; gap:6px;"><span ${p.hs_next_step ? `title="${escAttr(p.hs_next_step)}"` : ""} style="flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; ${p.hs_next_step ? "cursor:help;" : "color:#9ca3af;"}">${p.hs_next_step ? escAttr(p.hs_next_step) : "— sin ticket"}</span>${p.hs_next_step ? `<span style="flex:0 0 auto; display:flex; gap:4px;"><button onclick="dailyDone('${id}')" title="Hecho: cerrar el ticket y vaciar el siguiente paso" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #a7f3d0; color:#047857; border-radius:5px; background:#ecfdf5;">✓</button><button onclick="dailyDefer('${id}')" title="Baja: cerrar el ticket y vaciar el siguiente paso" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #fecaca; color:#b91c1c; border-radius:5px; background:#fef2f2;">✗</button><button onclick="dailyEditTask('${id}')" title="Editar el ticket" style="padding:2px 7px; font-size:12px; cursor:pointer; border:1px solid #d1d5db; color:#6b7280; border-radius:5px; background:white;">✎</button></span>` : ""}</div></td>
       <td style="text-align:center; white-space:nowrap;"><button onclick="toggleDailyTask('${id}')" title="Crear ticket / siguiente paso" style="padding:3px 9px; font-size:13px; cursor:pointer; border:1px solid #d1d5db; border-radius:5px; background:white;">+</button> <button onclick="genToNurturing('${id}')" title="Mandar a Nurturing (recuperable, prob 0, no cuenta como perdido)" style="padding:3px 8px; font-size:11px; cursor:pointer; border:1px solid #c4b5fd; color:#5b21b6; border-radius:5px; background:#f5f3ff;">→ Nur</button> <button onclick="genLose('${id}')" title="Marcar Perdido (definitivo, cuenta en estadísticas)" style="padding:3px 8px; font-size:12px; cursor:pointer; border:1px solid #fecaca; color:#b91c1c; border-radius:5px; background:#fef2f2;">✗</button> ${genMode === "ocultas" ? `<button onclick="genUnhideDeal('${id}')" title="Restaurar a la vista" style="padding:3px 8px; font-size:12px; cursor:pointer; border:1px solid #d1d5db; border-radius:5px; background:white;">👁</button>` : `<button onclick="genHideDeal('${id}')" title="Ocultar del dashboard (sigue abierto en HubSpot)" style="padding:3px 8px; font-size:12px; cursor:pointer; border:1px solid #d1d5db; border-radius:5px; background:white;">🙈</button>`} <span id="gst-${id}" class="fc-status" style="font-size:11px;"></span></td>
     </tr>
-    <tr id="dtask-${id}" style="display:none; background:#f9fafb;"><td colspan="16" style="padding:12px 16px; white-space:normal;">
+    <tr id="dtask-${id}" style="display:none; background:#f9fafb;"><td colspan="19" style="padding:12px 16px; white-space:normal;">
       <div style="position:sticky; left:16px; max-width:560px; display:flex; flex-direction:column; gap:10px;">
         <div id="tkh-${id}" style="font-size:12px; font-weight:600;">Nuevo ticket</div>
         <label style="display:flex; flex-direction:column; gap:3px; font-size:12px; color:#555;">Asunto<input type="text" id="tk-subj-${id}" placeholder="Próximo paso…" style="width:100%; box-sizing:border-box; padding:3px 7px; font-size:13px; border:1px solid #d1d5db; border-radius:5px;"></label>
@@ -4297,6 +4349,7 @@ function renderFuentes() {
     </td></tr>`;
   });
   t += `</tbody></table>`;
+  t += `<div class="small" style="color:#888; margin-top:6px;"><b>Días</b> = tiempo sin moverse de etapa (fecha de entrada a la etapa, de HubSpot). Normal: <b>Primer reu ${GEN_SLA_DIAS["1246562354"]} d</b> · <b>SQL – Discovery ${GEN_SLA_DIAS.qualifiedtobuy} d</b>. Pasado ese plazo ⚠️, pasado el doble 🔴. <b>Bloqueo</b> es tu percepción comercial y se guarda en HubSpot (<code>${BLOQUEO_PROP}</code>). <b>Bloqueo IA</b> 🤖 lo escribe el agente de HubSpot (<code>${BLOQUEO_IA_PROP}</code>): acá es sólo lectura.</div>`;
   t += `<div class="small" style="color:#888; margin-top:6px;">Etapas de esta vista: <b>SQL – Discovery</b> (5%) y <b>Primer reu</b> (10%). Todo se lee y se escribe en <b>HubSpot</b>. Para pasar el deal a <b>Foco</b>, elegí <b>→ Propuesta Enviada</b> en el dropdown de Stage: cambia el stage en HubSpot y el deal sale de Generación.</div>`;
   document.getElementById("gen-tabla").innerHTML = t;
   filterGenRows();
