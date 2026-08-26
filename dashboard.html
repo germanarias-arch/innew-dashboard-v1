@@ -3391,6 +3391,70 @@ function genGapSemestre() {
   if (!fm || !fm.length) return 0;
   try { return calcPeriodo(fm, fm.map((_, i) => i)).porConstruir || 0; } catch (e) { return 0; }
 }
+
+// ══════════════════════════════════════════════════════════════════
+// APORTE AL SEMESTRE — corrección de unidades (German 2026-08-25)
+// ══════════════════════════════════════════════════════════════════
+// BUG que esto arregla: `genGapSemestre()` devuelve DÓLARES ACUMULADOS de
+// los 6 meses (porConstruir = meta del semestre − facturado − pipeline pond.),
+// pero `genTicketProm()` devuelve MRR MENSUAL. Dividir uno por otro inflaba
+// los deals a generar por la cantidad de meses que cada deal factura:
+// un deal de 12K a 4 meses tapa 12K de porConstruir con UN deal, y la fórmula
+// vieja pedía 4. Resultado: 292 deals donde el número honesto era ~108.
+//
+// Criterio elegido (Opción B): los meses de aporte se DERIVAN del ciclo real
+// de cada producto — no es un multiplicador fijo. Un deal generado hoy cierra
+// a hoy + mediana de días de su producto, y desde ese mes factura hasta
+// diciembre (capado por sus meses_de_facturación). Se pondera por el mix
+// histórico de ganados. Ventaja sobre un M fijo: se auto-ajusta con el
+// calendario — en octubre baja solo, en noviembre tiende a 1, sin tocar nada.
+const ACT_H2_FIN = new Date(2026, 11, 31); // 31-dic-2026: último mes que factura dentro de H2
+
+// Meses calendario inclusive entre dos fechas (el mes de `desde` cuenta como 1).
+function genMesesHasta(desde, hasta) {
+  if (!desde || !hasta || desde > hasta) return 0;
+  return (hasta.getFullYear() - desde.getFullYear()) * 12 + (hasta.getMonth() - desde.getMonth()) + 1;
+}
+
+// Devuelve { meses, filas, den, fallback }: cuántos meses de H2 factura, en promedio
+// ponderado, un deal generado HOY. `filas` trae el desglose por producto para mostrarlo.
+function genAporteSemestre() {
+  const won = (window.__cycleClosed || []).filter(d => d.properties.dealstage === "closedwon");
+  const hoy = new Date();
+  const by = {};
+  won.forEach(d => {
+    const p = d.properties;
+    const created = p.createdate ? new Date(p.createdate).getTime() : null;
+    const closed = p.hs_v2_date_entered_closedwon ? new Date(p.hs_v2_date_entered_closedwon).getTime() : (p.closedate ? new Date(p.closedate).getTime() : null);
+    if (!created || !closed || closed < created) return;
+    const prod = p.producto || "(sin producto)";
+    const o = (by[prod] = by[prod] || { dias: [], meses: [] });
+    o.dias.push((closed - created) / 86400000);
+    o.meses.push(Math.max(1, parseFloat(p.meses_de_facturacion__hasta_6_) || 1));
+  });
+
+  const filas = [];
+  let num = 0, den = 0;
+  Object.keys(by).forEach(prod => {
+    const o = by[prod];
+    const md = genMedian(o.dias);
+    if (md == null) return;
+    const cierre = new Date(hoy.getTime() + md * 86400000);
+    const restantes = genMesesHasta(cierre, ACT_H2_FIN);              // meses de H2 que quedan tras cerrar
+    const facturables = Math.max(1, Math.round(genMedian(o.meses) || 1)); // cuántos meses factura ese producto
+    const aporte = Math.max(0, Math.min(facturables, restantes));
+    filas.push({ producto: prod, n: o.dias.length, medianaDias: md, cierre: cierre, facturables: facturables, aporte: aporte });
+    num += aporte * o.dias.length; den += o.dias.length;
+  });
+
+  // Sin ganados con producto: supuesto explícito de 60 días de ciclo y tope 4 meses.
+  // Se marca `fallback` para poder decirlo en pantalla en vez de fingir precisión.
+  if (!den) {
+    const cierre = new Date(hoy.getTime() + 60 * 86400000);
+    return { meses: Math.max(0, Math.min(4, genMesesHasta(cierre, ACT_H2_FIN))), filas: [], den: 0, fallback: true };
+  }
+  return { meses: num / den, filas: filas.sort((a, b) => b.n - a.n), den: den, fallback: false };
+}
 function renderGenIndicadores() {
   const box = document.getElementById("gen-indicadores");
   if (!box) return;
@@ -3399,9 +3463,14 @@ function renderGenIndicadores() {
   const wr = genWinRate();
   const isOv = genWinRateIsOverride();
   const wrComp = genWinRateComputed();
-  // deals a generar = gap / (ticket × wr); pipeline temprano necesario = gap / wr
-  const dealsGen = (ticket > 0 && wr > 0) ? Math.ceil(gap / (ticket * wr)) : 0;
-  const pipeNec = wr > 0 ? gap / wr : 0;
+  // deals a generar = gap ÷ (ticket × meses de aporte × win rate).
+  // El `gap` viene ACUMULADO del semestre y el `ticket` es MRR mensual: sin el factor
+  // "meses de aporte" se dividen unidades distintas y el resultado se infla por la
+  // cantidad de meses que cada deal factura (ver genAporteSemestre).
+  const ap = genAporteSemestre();
+  const apMeses = ap.meses;
+  const dealsGen = (ticket > 0 && wr > 0 && apMeses > 0) ? Math.ceil(gap / (ticket * apMeses * wr)) : 0;
+  const pipeNec = (wr > 0 && apMeses > 0) ? gap / (apMeses * wr) : 0;
   const cerrar = new Date("2026-12-31T00:00:00");
 
   // ── Bloque 1: cuánto falta generar ──
@@ -3412,9 +3481,9 @@ function renderGenIndicadores() {
       <div class="small" style="color:#666; margin-top:1px;">${sub}</div>
     </div>`;
   let h = `<div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:14px;">
-    ${kpiCard("Falta generar (H2)", fmtMoneyK(gap) + "/mes", "negocio nuevo sin pipeline detrás", "#b45309")}
-    ${kpiCard("Deals a generar", "~" + dealsGen, `ticket prom ${fmtMoneyK(ticket)}/mes`, "#4030C8")}
-    ${kpiCard("Pipeline temprano a sumar", fmtMoneyK(pipeNec) + "/mes", "para cubrir el gap al win rate actual", "#0d9488")}
+    ${kpiCard("Falta generar (H2)", fmtMoneyK(gap), "acumulado del semestre, sin pipeline detrás", "#b45309")}
+    ${kpiCard("Deals a generar", "~" + dealsGen, `ticket ${fmtMoneyK(ticket)}/mes × ${apMeses.toFixed(1)} meses de aporte`, "#4030C8")}
+    ${kpiCard("Pipeline temprano a sumar", fmtMoneyK(pipeNec), "acumulado, para cubrir el gap al win rate actual", "#0d9488")}
     <div style="flex:1; min-width:160px; background:#fff; border:1px solid #e5e7eb; border-left:4px solid #059669; border-radius:8px; padding:12px 14px;">
       <div class="small" style="color:#888; text-transform:uppercase; letter-spacing:.4px; font-size:10px;">Win rate temprano</div>
       <div style="margin-top:4px; display:flex; align-items:center; gap:6px;">
@@ -3423,7 +3492,33 @@ function renderGenIndicadores() {
       <div class="small" style="color:#666; margin-top:2px;">${isOv ? `manual · histórico ${Math.round(wrComp * 100)}% <a href="#" onclick="genResetWinRate();return false;" style="color:#4030C8;">usar</a>` : `histórico (SQL/reu→ganado)`}</div>
     </div>
   </div>`;
-  h += `<div class="small" style="color:#9ca3af; margin:-6px 0 16px;">Estimación: <b>deals = gap ÷ (ticket × win rate)</b>. Todo en MRR (mensual). Ajustá el win rate si el histórico es chico.</div>`;
+  h += `<div class="small" style="color:#9ca3af; margin:-6px 0 8px;">Estimación: <b>deals = gap ÷ (ticket MRR × meses de aporte × win rate)</b>. El gap es <b>acumulado del semestre</b> y el ticket es <b>mensual</b>: los <b>meses de aporte</b> son lo que convierte uno en el otro. Ajustá el win rate si el histórico es chico.</div>`;
+
+  // Desglose de los meses de aporte, para que el número sea auditable y no un supuesto opaco.
+  if (ap.fallback) {
+    h += `<div class="small" style="color:#b45309; background:#fff7ed; border:1px solid #fed7aa; border-radius:6px; padding:8px 10px; margin-bottom:16px;">
+      <b>Meses de aporte estimados (${apMeses.toFixed(1)})</b> — todavía no hay ganados con producto para derivarlos del histórico. Se está usando un supuesto explícito de <b>60 días de ciclo</b> y tope de <b>4 meses</b> de facturación. Va a afinarse solo a medida que cierres deals con producto cargado.
+    </div>`;
+  } else {
+    const fmtD2 = d => d.toLocaleDateString("es-AR", { day: "2-digit", month: "short" });
+    const thA = t => `<th style="text-align:left; padding:6px 10px; font-size:10px; color:#666; text-transform:uppercase; letter-spacing:.3px; border-bottom:2px solid #e5e7eb; white-space:nowrap;">${t}</th>`;
+    h += `<details style="margin-bottom:16px;"><summary style="cursor:pointer; font-size:12px; color:#4030C8; font-weight:600;">Cómo se calculan los ${apMeses.toFixed(1)} meses de aporte (${ap.den} ganados)</summary>
+      <div style="margin-top:8px;">
+      <div class="small" style="color:#6b7280; margin-bottom:6px;">Un deal generado <b>hoy</b> cierra a hoy + la mediana de días de su producto, y desde ese mes factura hasta <b>diciembre</b>, capado por los meses de facturación del producto. El promedio se pondera por el mix histórico de ganados.</div>
+      <table class="std" style="min-width:640px;"><thead><tr>${thA("Producto")}${thA("Ganados (n)")}${thA("Cierre (mediana)")}${thA("Cerraría el")}${thA("Meses que factura")}${thA("Meses dentro de H2")}</tr></thead><tbody>`;
+    ap.filas.forEach(f => {
+      const col = f.aporte <= 0 ? "#b91c1c" : "#111";
+      h += `<tr>
+        <td style="font-weight:500;">${f.producto}</td>
+        <td style="text-align:center;">${f.n}</td>
+        <td style="text-align:center;">${Math.round(f.medianaDias)} d</td>
+        <td style="text-align:center;">${fmtD2(f.cierre)}</td>
+        <td style="text-align:center;">${f.facturables}</td>
+        <td style="text-align:center; font-weight:700; color:${col};">${f.aporte}${f.aporte <= 0 ? " · no llega" : ""}</td>
+      </tr>`;
+    });
+    h += `</tbody></table></div></details>`;
+  }
 
   // ── Bloque 2+3+ranking: tiempo de cierre por producto + deadline + qué generar ──
   const ciclos = genCicloPorProducto();
@@ -3535,7 +3630,12 @@ function actMetas() {
   const gap = typeof genGapSemestre === "function" ? genGapSemestre() : 0;
   const ticket = typeof genTicketProm === "function" ? genTicketProm() : 0;
   const wr = typeof genWinRate === "function" ? genWinRate() : 0.2;
-  const dealsTotal = (gap > 0 && ticket > 0 && wr > 0) ? Math.ceil(gap / (ticket * wr)) : 0;
+  // Misma corrección de unidades que en renderGenIndicadores: el gap es acumulado del
+  // semestre y el ticket es MRR mensual, así que hay que multiplicar por los meses que
+  // un deal generado hoy alcanza a facturar dentro de H2.
+  const ap = (typeof genAporteSemestre === "function") ? genAporteSemestre() : { meses: 1, filas: [], den: 0, fallback: true };
+  const apMeses = ap.meses;
+  const dealsTotal = (gap > 0 && ticket > 0 && wr > 0 && apMeses > 0) ? Math.ceil(gap / (ticket * apMeses * wr)) : 0;
   const hoy = new Date();
   const vivo = actDay0(hoy) <= ACT_GEN_FIN;
   const bdRest = vivo ? Math.max(1, actBD(hoy, ACT_GEN_FIN)) : 0;
@@ -3547,7 +3647,7 @@ function actMetas() {
   const bdMes = actDay0(mIni) > ACT_GEN_FIN ? 0 : actBD(mIni, cap(mFin));
   const u = actUniverso();
   return {
-    gap: gap, ticket: ticket, wr: wr, dealsTotal: dealsTotal, bdRest: bdRest, perBD: perBD,
+    gap: gap, ticket: ticket, wr: wr, apMeses: apMeses, apFallback: ap.fallback, dealsTotal: dealsTotal, bdRest: bdRest, perBD: perBD,
     vivo: vivo,   // ventana de siembra abierta (hoy <= ACT_GEN_FIN). Fuera de ventana no hay objetivo.
     tHoy: (vivo && actIsBD(hoy)) ? perBD : 0,
     tSem: perBD * bdSem, tMes: perBD * bdMes,
@@ -3653,7 +3753,7 @@ function renderMetasActividad() {
   </div>`;
 
   h += `<div class="small" style="color:#9ca3af; margin:0 0 16px;">${m.vivo
-    ? `Ritmo diario = <b>${m.dealsTotal} deals ÷ ${m.bdRest} días hábiles hasta el ${actFmtD(ACT_GEN_FIN)} = ${actNum(m.perBD)}/día hábil</b>.`
+    ? `Ritmo diario = <b>${m.dealsTotal} deals ÷ ${m.bdRest} días hábiles hasta el ${actFmtD(ACT_GEN_FIN)} = ${actNum(m.perBD)}/día hábil</b>. Los ${m.dealsTotal} salen de <b>gap ÷ (ticket MRR × ${Number(m.apMeses).toFixed(1)} meses de aporte × win rate)</b>${m.apFallback ? " · meses de aporte estimados, sin histórico de ganados con producto" : ""}.`
     : `Ritmo diario sin calcular: la ventana de siembra cerró el <b>${actFmtD(ACT_GEN_FIN)}</b>.`} Los deals se cuentan por <b>fecha de creación</b> en HubSpot (sin Nurturing), las propuestas por <b>fecha_envio_propuesta</b> y las 1ª reuniones por la entrada a la etapa <b>Primer reu</b>.</div>`;
 
   // ── Histórico semanal ──
