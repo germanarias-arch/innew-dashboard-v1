@@ -1784,7 +1784,10 @@ async function fetchClosedForCycle() {
       { propertyName: "dealstage", operator: "EQ", value: "closedwon" },
       { propertyName: "hs_v2_date_entered_closedwon", operator: "GT", value: String(since) }
     ]}],
-    properties: ["dealname", "producto", "segmento", "amount", "createdate", "closedate", "hs_v2_date_entered_closedwon", "meses_de_facturacion__hasta_6_"],
+    // OJO: `dealstage` es OBLIGATORIO acá. HubSpot devuelve SÓLO las props pedidas; sin ella
+    // `d.properties.dealstage` queda undefined y los filtros `=== "closedwon"` de genTicketProm,
+    // genCicloPorProducto y genAporteSemestre descartan TODAS las filas (bug 2026-08-26).
+    properties: ["dealname", "dealstage", "producto", "segmento", "amount", "createdate", "closedate", "hs_v2_date_entered_closedwon", "meses_de_facturacion__hasta_6_"],
     limit: 200,
     chatInsights: { userIntent: "Dashboard Comercial: ganados 9m para mediana de tiempo de cierre por producto", satisfaction: "NEUTRAL" }
   });
@@ -3620,7 +3623,10 @@ function actTgtReu() {
   const list = (typeof RITMO_OWNERS !== "undefined" ? RITMO_OWNERS : []);
   return list.reduce((a, o) => { const v = Number(ritmoOwnerTgt(o)); return a + (isNaN(v) ? 0 : v); }, 0);
 }
-function actPropTgtAuto() { return Math.round(actTgtReu() * actConvReuProp() * 10) / 10; }
+// Metas de actividad SIEMPRE enteras y hacia arriba (pedido de German 2026-08-26): no se puede
+// enviar 0,9 propuestas ni generar 1,01 deals. Si da 1,01, la meta es 2.
+function actCeil(n) { const x = Number(n) || 0; return x > 0 ? Math.ceil(x - 1e-9) : 0; }
+function actPropTgtAuto() { return actCeil(actTgtReu() * actConvReuProp()); }
 function actPropTgtIsOverride() { const v = dashLoad()[ACT_PROP_LS]; return v !== undefined && v !== null && v !== "" && !isNaN(Number(v)); }
 function actPropTgt() { return actPropTgtIsOverride() ? Number(dashLoad()[ACT_PROP_LS]) : actPropTgtAuto(); }
 function actSetPropTgt(v) { const p = {}; p[ACT_PROP_LS] = (v === "" || isNaN(parseFloat(v))) ? "" : Number(v); dashSave(p); renderMetasActividad(); }
@@ -3649,15 +3655,18 @@ function actMetas() {
   return {
     gap: gap, ticket: ticket, wr: wr, apMeses: apMeses, apFallback: ap.fallback, dealsTotal: dealsTotal, bdRest: bdRest, perBD: perBD,
     vivo: vivo,   // ventana de siembra abierta (hoy <= ACT_GEN_FIN). Fuera de ventana no hay objetivo.
-    tHoy: (vivo && actIsBD(hoy)) ? perBD : 0,
-    tSem: perBD * bdSem, tMes: perBD * bdMes,
+    // `perBD` queda DECIMAL en el motor (es el ritmo real); el redondeo hacia arriba se aplica
+    // SÓLO al objetivo de cada ventana, que es lo accionable. Consecuencia asumida: meta diaria
+    // × días hábiles ≠ meta mensual, porque cada ventana redondea por su cuenta.
+    tHoy: (vivo && actIsBD(hoy)) ? actCeil(perBD) : 0,
+    tSem: actCeil(perBD * bdSem), tMes: actCeil(perBD * bdMes),
     bdSem: bdSem, bdMes: bdMes,
     rHoy: actCount(u, "createdate", hoy, hoy),
     rSem: actCount(u, "createdate", wIni, wFin),
     rMes: actCount(u, "createdate", mIni, mFin),
     rReu: actCount(u, "hs_v2_date_entered_" + RITMO_STAGE_1RA, wIni, wFin),
     rProp: actCount(u, "fecha_envio_propuesta", wIni, wFin),
-    tReu: actTgtReu(), tProp: actPropTgt(),
+    tReu: actCeil(actTgtReu()), tProp: actCeil(actPropTgt()),
     wIni: wIni, wFin: wFin, mIni: mIni, mFin: mFin
   };
 }
@@ -3744,16 +3753,17 @@ function renderMetasActividad() {
     <div style="flex:1; min-width:175px; background:#fff; border:1px solid #e5e7eb; border-left:4px solid #6b7280; border-radius:8px; padding:12px 14px;">
       <div class="small" style="color:#888; text-transform:uppercase; letter-spacing:.4px; font-size:10px;">Objetivo propuestas/sem</div>
       <div style="margin-top:4px; display:flex; align-items:center; gap:6px;">
-        <input type="number" min="0" step="0.5" value="${actNum(m.tProp)}" onchange="actSetPropTgt(this.value)" style="width:70px; padding:4px 6px; font-size:16px; font-weight:700; border:1px solid #d1d5db; border-radius:5px; text-align:right;">
+        <input type="number" min="0" step="1" value="${m.tProp}" onchange="actSetPropTgt(this.value)" style="width:70px; padding:4px 6px; font-size:16px; font-weight:700; border:1px solid #d1d5db; border-radius:5px; text-align:right;">
       </div>
       <div class="small" style="color:#666; margin-top:3px;">${actPropTgtIsOverride()
-        ? `manual · sugerido ${actNum(actPropTgtAuto())} <a href="#" onclick="actResetPropTgt();return false;" style="color:#4030C8;">usar</a>`
-        : `auto = ${actNum(m.tReu)} reus × ${Math.round(actConvReuProp() * 100)}% de conversión reu→propuesta`}</div>
+        ? `manual · sugerido ${actPropTgtAuto()} <a href="#" onclick="actResetPropTgt();return false;" style="color:#4030C8;">usar</a>`
+        : `auto = ${m.tReu} reus × ${Math.round(actConvReuProp() * 100)}% de conversión reu→propuesta`}</div>
+      ${actConvReuProp() < 0.5 ? `<div class="small" style="color:#b45309; margin-top:4px; line-height:1.35;">⚠️ La conversión reu→propuesta la calcula el campo <b>fecha_envio_propuesta</b>, que está subcargado en HubSpot. Mientras siga así, el sugerido es ruido: mandá el manual.</div>` : ""}
     </div>
   </div>`;
 
   h += `<div class="small" style="color:#9ca3af; margin:0 0 16px;">${m.vivo
-    ? `Ritmo diario = <b>${m.dealsTotal} deals ÷ ${m.bdRest} días hábiles hasta el ${actFmtD(ACT_GEN_FIN)} = ${actNum(m.perBD)}/día hábil</b>. Los ${m.dealsTotal} salen de <b>gap ÷ (ticket MRR × ${Number(m.apMeses).toFixed(1)} meses de aporte × win rate)</b>${m.apFallback ? " · meses de aporte estimados, sin histórico de ganados con producto" : ""}.`
+    ? `Ritmo diario = <b>${m.dealsTotal} deals ÷ ${m.bdRest} días hábiles hasta el ${actFmtD(ACT_GEN_FIN)} = ${actNum(m.perBD)}/día hábil</b>. Los ${m.dealsTotal} salen de <b>gap ÷ (ticket MRR × ${Number(m.apMeses).toFixed(1)} meses de aporte × win rate)</b>${m.apFallback ? " · meses de aporte estimados, sin histórico de ganados con producto" : ""}. Las metas se muestran <b>enteras y redondeadas hacia arriba</b>, cada ventana por su cuenta: por eso meta diaria × días hábiles no da exacto la meta mensual.`
     : `Ritmo diario sin calcular: la ventana de siembra cerró el <b>${actFmtD(ACT_GEN_FIN)}</b>.`} Los deals se cuentan por <b>fecha de creación</b> en HubSpot (sin Nurturing), las propuestas por <b>fecha_envio_propuesta</b> y las 1ª reuniones por la entrada a la etapa <b>Primer reu</b>.</div>`;
 
   // ── Histórico semanal ──
