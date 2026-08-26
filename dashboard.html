@@ -4408,6 +4408,13 @@ function renderFuentes() {
   } else if (genHid.size) {
     t += `<div style="margin-bottom:6px; text-align:right;"><button onclick="toggleGenMode()" style="padding:3px 10px; font-size:12px; cursor:pointer; border:1px solid #d1d5db; border-radius:5px; background:white; color:#6b7280;">🙈 Ver ocultas (${genHid.size})</button></div>`;
   }
+  // Leyenda del semáforo de Días: el umbral es por ETAPA, no un número fijo de días.
+  t += `<div style="display:flex; align-items:center; gap:8px 14px; flex-wrap:wrap; margin-bottom:8px; padding:7px 11px; border:1px solid #e5e7eb; border-radius:8px; background:#fafafa; font-size:12px; color:#4b5563;">
+    <span><b>Días</b> = sin moverse de etapa. <b>El plazo depende de la etapa</b>, no de un número fijo:</span>
+    <span style="white-space:nowrap;"><b>Primer reu</b> → normal ${GEN_SLA_DIAS["1246562354"]} d · ⚠️ +${GEN_SLA_DIAS["1246562354"]} · 🔴 +${GEN_SLA_DIAS["1246562354"] * 2}</span>
+    <span style="white-space:nowrap;"><b>SQL – Discovery</b> → normal ${GEN_SLA_DIAS.qualifiedtobuy} d · ⚠️ +${GEN_SLA_DIAS.qualifiedtobuy} · 🔴 +${GEN_SLA_DIAS.qualifiedtobuy * 2}</span>
+    <span style="color:#9ca3af;">Por eso 28 d puede ser ⚠️ en Discovery y 🔴 en Primer reu.</span>
+  </div>`;
   t += `<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:6px;">
     <span class="small" style="color:#9ca3af;">Arrastrá los encabezados para reordenar las columnas.</span>
     <button class="fc-btn secondary" onclick="toggleGenColPanel()" style="font-size:12px;">⚙ Columnas</button>
@@ -4433,9 +4440,11 @@ function renderFuentes() {
     const slCol = sl.nivel === 2 ? "#dc2626" : sl.nivel === 1 ? "#b45309" : "#059669";
     const slBg = sl.nivel === 2 ? "#fef2f2" : sl.nivel === 1 ? "#fffbeb" : hiBg;
     const slIco = sl.nivel === 2 ? " 🔴" : sl.nivel === 1 ? " ⚠️" : "";
+    // El umbral depende de la ETAPA, no de un número fijo: por eso 28d puede ser ⚠️ en una y 🔴 en otra.
+    const slEtq = (GEN_STAGES.find(s => s.id === p.dealstage) || {}).label || "esta etapa";
     const slTit = sl.dias === null
       ? "Sin fecha de entrada a la etapa en HubSpot"
-      : `${sl.dias} día(s) sin moverse de etapa · normal hasta ${sl.sla} · trabado grave pasando ${sl.sla * 2}`;
+      : `${sl.dias} día(s) sin moverse de "${slEtq}"\nEl plazo depende de la etapa: en "${slEtq}" lo normal es hasta ${sl.sla} d.\n⚠️ pasando ${sl.sla} d · 🔴 pasando ${sl.sla * 2} d\nEstado: ${sl.nivel === 2 ? "🔴 trabado grave" : sl.nivel === 1 ? "⚠️ fuera de plazo" : "✅ en plazo"}`;
     const blq = getDealBloqueo(d);
     const blqIA = getDealBloqueoIA(d);
     const gx = { sl, slCol, slBg, slIco, slTit, blq, blqIA, cur, isPrio, genMode };
