@@ -3575,10 +3575,31 @@ function actSaveWeek(m) {
   dashSave({ actHist: h });
 }
 
+// Semáforo de cumplimiento — MISMO criterio en todo el dashboard (fijado por German 2026-08-25):
+//   ≤69% rojo · 70–89% naranja · 90–99% amarillo · ≥100% verde.
+// Antes acá había un corte propio en 60% que no coincidía con el resto de los paneles.
+function actColP(p) { return p >= 100 ? "#047857" : p >= 90 ? "#ca8a04" : p >= 70 ? "#ea580c" : "#b91c1c"; }
+
+// Franja proporcional al porcentaje. El relleno mide lo que se cumplió y va del color del
+// semáforo. Si el relleno es muy angosto para contener el número, el número sale AFUERA
+// (a la derecha de la franja) en vez de quedar tapado — pedido explícito de German.
+function actBarPct(pct, c) {
+  const w = Math.max(0, Math.min(100, pct));
+  const dentro = w >= 35;  // ~35% de 120px ≈ 42px: recién ahí entra "100%" sin cortarse
+  return `<div style="display:flex; align-items:center; gap:6px; min-width:130px;">
+    <div style="flex:1; height:16px; background:#f3f4f6; border-radius:8px; overflow:hidden;">
+      <div style="width:${w}%; height:100%; background:${c}; border-radius:8px; display:flex; align-items:center; justify-content:flex-end; box-sizing:border-box; ${dentro ? "padding-right:7px;" : ""}">
+        ${dentro ? `<span style="font-size:11px; font-weight:700; color:#fff; line-height:1;">${pct}%</span>` : ""}
+      </div>
+    </div>
+    ${dentro ? "" : `<span style="font-size:11px; font-weight:700; color:${c}; line-height:1; white-space:nowrap;">${pct}%</span>`}
+  </div>`;
+}
+
 function actCard(label, real, tgt, sub, color) {
   const t = Math.max(0, Number(tgt) || 0);
   const pct = t > 0 ? Math.round(real / t * 100) : (real > 0 ? 100 : 0);
-  const c = t <= 0 ? "#6b7280" : pct >= 100 ? "#047857" : pct >= 60 ? "#b45309" : "#b91c1c";
+  const c = t <= 0 ? "#6b7280" : actColP(pct);
   return `<div style="flex:1; min-width:175px; background:#fff; border:1px solid #e5e7eb; border-left:4px solid ${color}; border-radius:8px; padding:12px 14px;">
     <div class="small" style="color:#888; text-transform:uppercase; letter-spacing:.4px; font-size:10px;">${label}</div>
     <div style="display:flex; align-items:baseline; gap:6px; margin-top:2px;">
@@ -3647,7 +3668,7 @@ function renderMetasActividad() {
     const cell = (r, t) => {
       const tt = Math.max(0, Number(t) || 0);
       const pct = tt > 0 ? Math.round(r / tt * 100) : (r > 0 ? 100 : 0);
-      const c = tt <= 0 ? "#6b7280" : pct >= 100 ? "#047857" : pct >= 60 ? "#b45309" : "#b91c1c";
+      const c = tt <= 0 ? "#6b7280" : actColP(pct);
       return `<td style="text-align:center; white-space:nowrap;"><b style="color:${c};">${r}</b> <span class="small" style="color:#9ca3af;">/ ${actNum(tt)}</span></td>`;
     };
     h += `<table class="std" style="min-width:620px;"><thead><tr>${th("Semana")}${th("Deals generados")}${th("1ª reuniones")}${th("Propuestas")}${th("Cumplimiento")}</tr></thead><tbody>`;
@@ -3658,11 +3679,11 @@ function renderMetasActividad() {
       const tot = (Number(w.tDeals) || 0) + (Number(w.tReus) || 0) + (Number(w.tProps) || 0);
       const rea = (w.deals || 0) + (w.reus || 0) + (w.props || 0);
       const pct = tot > 0 ? Math.round(rea / tot * 100) : 0;
-      const c = pct >= 100 ? "#047857" : pct >= 60 ? "#b45309" : "#b91c1c";
+      const c = actColP(pct);
       h += `<tr${k === curKey ? ' style="background:#f5f3ff;"' : ""}>
         <td style="white-space:nowrap;"><b>${actFmtD(lun)} → ${actFmtD(dom)}</b>${k === curKey ? ' <span class="small" style="color:#4030C8; font-weight:700;">· en curso</span>' : ""}</td>
         ${cell(w.deals || 0, w.tDeals)}${cell(w.reus || 0, w.tReus)}${cell(w.props || 0, w.tProps)}
-        <td style="text-align:center;"><span style="display:inline-block; min-width:44px; padding:2px 8px; border-radius:10px; font-weight:700; font-size:12px; color:#fff; background:${c};">${pct}%</span></td>
+        <td style="min-width:150px;">${actBarPct(pct, c)}</td>
       </tr>`;
     });
     h += `</tbody></table>`;
