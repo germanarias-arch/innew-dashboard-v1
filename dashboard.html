@@ -8299,23 +8299,65 @@ function cartAggregate(model) {
   return { cur: model.cur, meses: meses, brk: brk };
 }
 
-/* ---------- persistencia: escribe en cuentas_meta (fuente única) ---------- */
-function cartVtexOf(cli) { const v = cuentasGetMeta(cli).vtex; return (v && typeof v === "object") ? v : null; }
+/* ---------- persistencia: escribe en cuentas_meta (fuente única) ----------
+   MULTI-MARCA: una cuenta puede tener varias tiendas con export propio (Grupo Azeta →
+   Sueñolar · Koala · Nueva Americana · Ferrex; Corporación Wong ⊃ Entre Páginas; Dale Play
+   ⊃ Mondo Sound). Cada tienda guarda SU moneda y SU historia; si guardáramos todo plano en
+   la cuenta, el segundo archivo pisaría al primero en los meses solapados.
+     cuentas_meta[cli].vtex = { updated, tiendas: { "<tienda>": {cur, archivo, updated, meses, brk} } } */
+const CART_TIENDA_DEF = "(principal)";
 
-// Guarda el resumen en cuentas_meta[cli].vtex Y rellena gmvHist para TODOS los meses del archivo.
-// Merge, no reemplazo: subir un archivo de otro semestre no borra el anterior.
-function cartSaveToAccount(cli, agg, filename) {
-  const prev = cartVtexOf(cli) || {};
-  const meses = Object.assign({}, prev.meses || {}, agg.meses);
-  const brk = Object.assign({}, prev.brk || {}, agg.brk);
+function cartVtexOf(cli) {
+  const v = cuentasGetMeta(cli).vtex;
+  if (!v || typeof v !== "object") return null;
+  if (v.tiendas && typeof v.tiendas === "object") return v;
+  // migración en lectura: formato viejo (una sola tienda plana) → tiendas["(principal)"]
+  if (v.meses && typeof v.meses === "object") {
+    const t = {};
+    t[CART_TIENDA_DEF] = { cur: v.cur || "USD", archivo: v.archivo || "", updated: v.updated || "", meses: v.meses, brk: v.brk || {} };
+    return { updated: v.updated || "", tiendas: t };
+  }
+  return null;
+}
+function cartTiendasOf(cli) { const v = cartVtexOf(cli); return v ? v.tiendas : null; }
+
+// GMV de cuenta (gmvHist, el mismo campo que German carga a mano y que viaja a HubSpot como
+// gmv_mensual) = SUMA de sus tiendas. Si todas comparten moneda se suma en esa moneda; si hay
+// monedas mezcladas se suma en USD y se saltean los meses sin cotización cargada.
+function cartRollupGmvHist(cli, tiendas) {
+  const hist = Object.assign({}, cuentasGetMeta(cli).gmvHist || {});
+  const nombres = Object.keys(tiendas || {});
+  const curs = {};
+  nombres.forEach(n => { curs[(tiendas[n] || {}).cur || "USD"] = 1; });
+  const unica = Object.keys(curs).length <= 1;
+  const acc = {};
+  nombres.forEach(n => {
+    const t = tiendas[n] || {};
+    Object.keys(t.meses || {}).forEach(m => {
+      const v = unica ? t.meses[m].gmv : cartToUsd(t.meses[m].gmv, t.cur || "USD", m);
+      if (v === null || !isFinite(v)) return;
+      acc[m] = (acc[m] || 0) + v;
+    });
+  });
+  Object.keys(acc).forEach(m => { hist[m] = Math.round(acc[m]); });
+  return hist;
+}
+
+// Guarda el resumen en cuentas_meta[cli].vtex.tiendas[tienda] y recalcula el gmvHist de la cuenta.
+// Merge por tienda, no reemplazo: subir un archivo de otro semestre no borra el anterior,
+// y subir OTRA marca no pisa la primera.
+function cartSaveToAccount(cli, agg, filename, tienda) {
+  const nom = String(tienda || "").trim() || CART_TIENDA_DEF;
+  const prev = cartVtexOf(cli) || { tiendas: {} };
+  const tiendas = Object.assign({}, prev.tiendas || {});
+  const t = tiendas[nom] || {};
+  const meses = Object.assign({}, t.meses || {}, agg.meses);
+  const brk = Object.assign({}, t.brk || {}, agg.brk);
   const keys = Object.keys(meses).sort();
   keys.slice(0, Math.max(0, keys.length - CART_MAX_MESES)).forEach(k => { delete meses[k]; delete brk[k]; });
-  const gmvHist = Object.assign({}, cuentasGetMeta(cli).gmvHist || {});
-  Object.keys(meses).forEach(m => { gmvHist[m] = meses[m].gmv; });
-  cuentasSetMeta(cli, {
-    vtex: { cur: agg.cur || prev.cur || "USD", updated: new Date().toISOString().slice(0, 10), archivo: filename || prev.archivo || "", meses: meses, brk: brk },
-    gmvHist: gmvHist
-  });
+  const hoy = new Date().toISOString().slice(0, 10);
+  tiendas[nom] = { cur: agg.cur || t.cur || "USD", archivo: filename || t.archivo || "", updated: hoy, meses: meses, brk: brk };
+  cuentasSetMeta(cli, { vtex: { updated: hoy, tiendas: tiendas }, gmvHist: cartRollupGmvHist(cli, tiendas) });
   return Object.keys(agg.meses).length;
 }
 
@@ -8346,11 +8388,16 @@ function cartToUsd(v, cur, mes) {
 
 /* ---------- mapa archivo → cuenta (el "selector al subir" se recuerda) ---------- */
 function cartFileMapAll() { try { return JSON.parse(localStorage.getItem("cartera_filemap") || "{}"); } catch (e) { return {}; } }
-function cartFileMapGet(name) { return cartFileMapAll()[String(name || "").toLowerCase()] || ""; }
-function cartFileMapSet(name, cli) {
+// Guarda {cli, tienda}. Tolera el formato viejo (string = sólo cuenta).
+function cartFileMapGet(name) {
+  const v = cartFileMapAll()[String(name || "").toLowerCase()];
+  if (!v) return null;
+  return (typeof v === "string") ? { cli: v, tienda: "" } : v;
+}
+function cartFileMapSet(name, cli, tienda) {
   const all = cartFileMapAll();
   const k = String(name || "").toLowerCase();
-  if (cli) all[k] = cli; else delete all[k];
+  if (cli) all[k] = { cli: cli, tienda: tienda || "" }; else delete all[k];
   try { localStorage.setItem("cartera_filemap", JSON.stringify(all)); } catch (e) {}
 }
 
@@ -8359,7 +8406,9 @@ function cartFileMapSet(name, cli) {
 let CART_PERIOD = 12;      // ventana en meses (0 = todo)
 let CART_DIM = "pay";      // dimensión del pivot: pay | inst | utm
 let CART_SEL = "";         // cuenta enfocada en el pivot ("" = toda la cartera)
-let CART_PENDING = [];     // archivos leídos esperando que German elija la cuenta
+let CART_SEL_T = "";       // tienda enfocada dentro de esa cuenta ("" = todas)
+let CART_PENDING = [];     // archivos leídos esperando que German elija cuenta + tienda
+let CART_OPEN = {};        // cuentas con las tiendas desplegadas en la tabla
 
 function cliTab(which) {
   ["cuentas", "cartera"].forEach(t => {
@@ -8393,44 +8442,68 @@ function cartFactUsd(companyId, meses) {
 }
 
 /* --- selección de meses según la ventana elegida --- */
-function cartMesesEnRango(vtex) {
-  const keys = Object.keys((vtex && vtex.meses) || {}).sort();
-  if (!CART_PERIOD) return keys;
-  return keys.slice(-CART_PERIOD);
+// Calcula UNA tienda dentro de la ventana activa, ya convertida a USD mes a mes.
+function cartCalcTienda(t) {
+  const cur = (t && t.cur) || "USD";
+  const keys = Object.keys((t && t.meses) || {}).sort();
+  const meses = CART_PERIOD ? keys.slice(-CART_PERIOD) : keys;
+  let gmv = 0, ped = 0, val = 0, can = 0, lost = 0, sinFx = 0;
+  const okMeses = [], mesUsd = {};
+  meses.forEach(m => {
+    const s = t.meses[m];
+    const u = cartToUsd(s.gmv, cur, m);
+    if (u === null) { sinFx++; return; }
+    okMeses.push(m); mesUsd[m] = u;
+    gmv += u; ped += s.ped; val += s.val || 0; can += s.can;
+    const lu = cartToUsd(s.lost, cur, m); lost += (lu === null ? 0 : lu);
+  });
+  return {
+    cur: cur, meses: meses, okMeses: okMeses, mesUsd: mesUsd, sinFx: sinFx,
+    gmv: gmv, ped: ped, val: val, can: can, lost: lost,
+    tick: val ? gmv / val : 0, cancelRate: ped ? can / ped : 0,
+    archivo: (t && t.archivo) || "", updated: (t && t.updated) || ""
+  };
 }
 
-// Cuentas activas con datos VTEX cargados. Devuelve la fila ya calculada en USD.
+// Cuentas activas con datos VTEX cargados. Una fila por CUENTA, con sus tiendas adentro (r.tiendas).
+// Todo se suma en USD: nunca se mezclan monedas locales, y la penetración se calcula
+// Σ facturación ÷ Σ GMV (no promedio de porcentajes).
 function cartRows() {
   const out = [];
   (window.__cuentasData || []).forEach(c => {
     const cli = (c.properties.name || "").trim();
     if (!cli) return;
-    const vtex = cartVtexOf(cli);
-    if (!vtex || !vtex.meses || !Object.keys(vtex.meses).length) return;
-    const cur = vtex.cur || "USD";
-    const meses = cartMesesEnRango(vtex);
+    const tiendas = cartTiendasOf(cli);
+    if (!tiendas || !Object.keys(tiendas).length) return;
+    const subs = Object.keys(tiendas).sort()
+      .map(n => Object.assign({ tienda: n }, cartCalcTienda(tiendas[n])))
+      .filter(s => s.meses.length);
+    if (!subs.length) return;
     let gmv = 0, ped = 0, val = 0, can = 0, lost = 0, sinFx = 0;
-    const okMeses = [], serie = [];
-    meses.forEach(m => {
-      const s = vtex.meses[m];
-      const u = cartToUsd(s.gmv, cur, m);
-      if (u === null) { sinFx++; serie.push(0); return; }
-      okMeses.push(m); serie.push(u);
-      gmv += u; ped += s.ped; val += s.val || 0; can += s.can;
-      const lu = cartToUsd(s.lost, cur, m); lost += (lu === null ? 0 : lu);
+    const mesesSet = {}, okSet = {}, serieAcc = {};
+    subs.forEach(s => {
+      gmv += s.gmv; ped += s.ped; val += s.val; can += s.can; lost += s.lost; sinFx += s.sinFx;
+      s.meses.forEach(m => { mesesSet[m] = 1; });
+      s.okMeses.forEach(m => { okSet[m] = 1; serieAcc[m] = (serieAcc[m] || 0) + s.mesUsd[m]; });
     });
+    const meses = Object.keys(mesesSet).sort();
+    const okMeses = Object.keys(okSet).sort();
+    const serie = meses.map(m => serieAcc[m] || 0);
+    const curs = []; subs.forEach(s => { if (curs.indexOf(s.cur) < 0) curs.push(s.cur); });
     const fact = cartFactUsd(c.id, okMeses);
     out.push({
-      companyId: c.id, cli: cli, cur: cur, pais: normPais(c.properties.country),
+      companyId: c.id, cli: cli, cur: curs.join(" / "), curs: curs,
+      pais: normPais(c.properties.country),
       csm: (c.properties.csm_asignado || "").trim(),
       bcg: (c.properties.calificacion_matriz_bcg || "").trim(),
+      tiendas: subs, multi: subs.length > 1,
       meses: meses, okMeses: okMeses, sinFx: sinFx, serie: serie,
       gmv: gmv, ped: ped, val: val, can: can, lost: lost,
       tick: val ? gmv / val : 0,
       cancelRate: ped ? can / ped : 0,
       fact: fact,
       pen: (fact !== null && gmv > 0) ? fact / gmv : null,
-      updated: vtex.updated || ""
+      updated: subs.map(s => s.updated).sort().pop() || ""
     });
   });
   return out.sort((a, b) => b.gmv - a.gmv);
@@ -8455,10 +8528,15 @@ async function cartHandleFiles(fileList) {
       const model = await cartReadFile(f);
       const agg = cartAggregate(model);
       const mk = Object.keys(agg.meses).sort();
+      const rec = cartFileMapGet(f.name);
       CART_PENDING.push({
         name: f.name, label: model.label, cur: agg.cur,
         pedidos: model.orders.length, desde: mk[0] || "", hasta: mk[mk.length - 1] || "",
-        agg: agg, sugerida: cartSugerirCuenta(f.name, model.label)
+        agg: agg,
+        sugerida: cartSugerirCuenta(f.name, model.label),
+        // Tienda por defecto = Seller Name del propio export. Si ya subiste este archivo antes,
+        // gana lo que elegiste esa vez.
+        tiendaSug: (rec && rec.tienda) || (model.label || "").trim() || CART_TIENDA_DEF
       });
       if (st) { st.textContent = ""; }
     } catch (err) {
@@ -8471,7 +8549,7 @@ async function cartHandleFiles(fileList) {
 // Sugerencia de cuenta: primero el mapa recordado, después match laxo por nombre.
 function cartSugerirCuenta(filename, label) {
   const rec = cartFileMapGet(filename);
-  if (rec) return rec;
+  if (rec && rec.cli) return rec.cli;
   const norm = s => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
   const l = norm(label);
   if (!l) return "";
@@ -8489,21 +8567,52 @@ function cartAssign(i) {
   const p = CART_PENDING[i];
   if (!p) return;
   const sel = document.getElementById("cart-sel-" + i);
+  const inp = document.getElementById("cart-tienda-" + i);
   const cli = sel ? sel.value : "";
   if (!cli) { alert("Elegí a qué cuenta corresponde el archivo."); return; }
-  const n = cartSaveToAccount(cli, p.agg, p.name);
-  cartFileMapSet(p.name, cli);
+  const nom = (inp ? inp.value : "").trim() || CART_TIENDA_DEF;
+  const n = cartSaveToAccount(cli, p.agg, p.name, nom);
+  cartFileMapSet(p.name, cli, nom);
   CART_PENDING.splice(i, 1);
   renderCartera();
   if (document.getElementById("cue-tabla")) renderCuentas();
   const st = document.getElementById("cart-drop-status");
-  if (st) { st.textContent = "✓ " + cli + ": " + n + " meses guardados"; st.style.color = "#059669"; }
+  if (st) { st.textContent = "✓ " + cli + " › " + nom + ": " + n + " meses guardados"; st.style.color = "#059669"; }
 }
 function cartDiscard(i) { CART_PENDING.splice(i, 1); renderCartera(); }
+function cartToggleOpen(ri) { const r = cartRows()[ri]; if (!r) return; CART_OPEN[r.cli] = !CART_OPEN[r.cli]; renderCartera(); }
 
-function cartBorrarCuenta(cli) {
-  if (!confirm("¿Borrar los datos de cartera de " + cli + "? El GMV cargado a mano no se toca.")) return;
-  cuentasSetMeta(cli, { vtex: null });
+// Borra la cuenta entera (ti undefined) o una sola tienda. Se trabaja por índice de fila
+// para no meter nombres con comillas dentro de un onclick.
+function cartBorrar(ri, ti) {
+  const r = cartRows()[ri];
+  if (!r) return;
+  if (ti === undefined || ti === null) {
+    if (!confirm("¿Borrar TODOS los datos de cartera de " + r.cli + " (" + r.tiendas.length + " tienda/s)? El GMV cargado a mano no se toca.")) return;
+    cuentasSetMeta(r.cli, { vtex: null });
+  } else {
+    const s = r.tiendas[ti];
+    if (!s) return;
+    if (!confirm("¿Borrar la tienda “" + s.tienda + "” de " + r.cli + "?")) return;
+    const v = cartVtexOf(r.cli);
+    if (!v) return;
+    const tiendas = Object.assign({}, v.tiendas);
+    delete tiendas[s.tienda];
+    if (!Object.keys(tiendas).length) cuentasSetMeta(r.cli, { vtex: null });
+    else cuentasSetMeta(r.cli, { vtex: { updated: new Date().toISOString().slice(0, 10), tiendas: tiendas }, gmvHist: cartRollupGmvHist(r.cli, tiendas) });
+  }
+  renderCartera();
+}
+// Foco del pivot: "" = toda la cartera · "ri" = una cuenta · "ri.ti" = una tienda.
+function cartPivotSel(v) {
+  const rows = cartRows();
+  if (!v) { CART_SEL = ""; CART_SEL_T = ""; }
+  else {
+    const p = String(v).split(".");
+    const r = rows[Number(p[0])];
+    CART_SEL = r ? r.cli : "";
+    CART_SEL_T = (r && p.length > 1 && r.tiendas[Number(p[1])]) ? r.tiendas[Number(p[1])].tienda : "";
+  }
   renderCartera();
 }
 
@@ -8524,6 +8633,9 @@ function cartRenderDrop() {
         <div style="font-size:11px; color:#6b7280;">${p.pedidos.toLocaleString("es-AR")} pedidos · ${esc(p.cur)} · ${cuMonthLabel(p.desde)} → ${cuMonthLabel(p.hasta)}${p.label ? " · seller: " + esc(p.label) : ""}</div>
       </div>
       ${sel}
+      <input id="cart-tienda-${i}" type="text" value="${esc(p.tiendaSug)}" placeholder="tienda / marca"
+        title="Si la cuenta tiene varias tiendas o marcas, poné acá cuál es. Cada una guarda su propia historia y su propia moneda."
+        style="padding:5px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12px; width:150px;">
       <button class="fc-btn" style="font-size:12px;" onclick="cartAssign(${i})">Guardar</button>
       <button class="fc-btn secondary" style="font-size:12px;" onclick="cartDiscard(${i})">Descartar</button>
     </div>`;
@@ -8546,10 +8658,13 @@ function cartRenderFx() {
   const el = document.getElementById("cart-fx");
   if (!el) return;
   const need = {};
+  // La moneda vive por TIENDA, no por cuenta: una cuenta puede tener una marca en ARS y otra en USD.
   cartRows().forEach(r => {
-    if (r.cur === "USD") return;
-    need[r.cur] = need[r.cur] || {};
-    r.meses.forEach(m => { need[r.cur][m] = true; });
+    r.tiendas.forEach(s => {
+      if (s.cur === "USD") return;
+      need[s.cur] = need[s.cur] || {};
+      s.meses.forEach(m => { need[s.cur][m] = true; });
+    });
   });
   const curs = Object.keys(need).sort();
   if (!curs.length) { el.innerHTML = ""; return; }
@@ -8583,9 +8698,9 @@ function cartRenderKpis() {
   if (!el) return;
   const rows = cartRows();
   if (!rows.length) { el.innerHTML = ""; return; }
-  let gmv = 0, fact = 0, gmvConFact = 0, ped = 0, val = 0, can = 0, lost = 0, sinDeals = 0;
+  let gmv = 0, fact = 0, gmvConFact = 0, ped = 0, val = 0, can = 0, lost = 0, sinDeals = 0, nTiendas = 0;
   rows.forEach(r => {
-    gmv += r.gmv; ped += r.ped; val += r.val; can += r.can; lost += r.lost;
+    gmv += r.gmv; ped += r.ped; val += r.val; can += r.can; lost += r.lost; nTiendas += r.tiendas.length;
     if (r.fact === null) sinDeals++; else { fact += r.fact; gmvConFact += r.gmv; }
   });
   // Σ numeradores ÷ Σ denominadores. NUNCA promedio de porcentajes mensuales (Simpson).
@@ -8599,7 +8714,7 @@ function cartRenderKpis() {
       <span class="perf-st" style="font-size:11px; color:#9ca3af;"></span>
     </div>
     <div class="cue-kpis">
-      ${card("GMV cartera (USD)", fmtMoney(gmv), rows.length + " cuentas · " + per)}
+      ${card("GMV cartera (USD)", fmtMoney(gmv), rows.length + " cuentas" + (nTiendas > rows.length ? " · " + nTiendas + " tiendas" : "") + " · " + per)}
       ${card("Facturación Innew (USD)", fact ? fmtMoney(fact) : "—", sinDeals ? sinDeals + " cuentas sin deals cargados" : "deals ganados en la ventana")}
       ${card("% del P&L del cliente", pen === null ? "—" : (pen * 100).toFixed(2) + "%", "Σ facturación ÷ Σ GMV", pen === null ? "" : pen < 0.01 ? "#dc2626" : pen < 0.025 ? "#d97706" : "#059669")}
       ${card("Pedidos válidos", val.toLocaleString("es-AR"), "ticket " + fmtMoney(val ? gmv / val : 0) + " · " + (ped ? (can / ped * 100).toFixed(1) : "0") + "% cancelado")}
@@ -8616,12 +8731,20 @@ function cartRenderTabla() {
     return;
   }
   const th = (t, a) => `<th style="padding:7px 9px; text-align:${a || "left"}; font-size:9px; text-transform:uppercase; color:#6b7280; border-bottom:2px solid #e5e7eb; white-space:nowrap;">${t}</th>`;
-  const body = rows.map(r => {
+  // Una fila por CUENTA (roll-up en USD). Si tiene varias tiendas/marcas, se despliegan
+  // como sub-filas. Facturación y % del P&L viven SOLO a nivel cuenta: el numerador sale de
+  // los deals de la company en HubSpot, que no distingue marca.
+  const body = rows.map((r, ri) => {
     const penTxt = r.pen === null ? `<span style="color:#9ca3af; font-style:italic;">sin deals</span>`
       : `<span style="font-weight:700; color:${r.pen < 0.01 ? "#dc2626" : r.pen < 0.025 ? "#d97706" : "#059669"};">${(r.pen * 100).toFixed(2)}%</span>`;
     const alerta = r.sinFx ? `<span title="${r.sinFx} mes(es) sin cotización cargada" style="color:#d97706;">⚠︎</span>` : "";
-    return `<tr style="border-bottom:1px solid #f1f5f9;">
-      <td style="padding:7px 9px; font-weight:600;">${esc(r.cli)} ${alerta}</td>
+    const abierto = !!CART_OPEN[r.cli];
+    const exp = r.multi
+      ? `<a href="#" onclick="cartToggleOpen(${ri}); return false;" title="Ver las ${r.tiendas.length} tiendas" style="text-decoration:none; color:#6b7280; margin-right:5px;">${abierto ? "▾" : "▸"}</a>`
+      : `<span style="display:inline-block; width:13px;"></span>`;
+    const badge = r.multi ? ` <span title="${r.tiendas.length} tiendas / marcas" style="font-size:9px; background:#EDE9FE; color:#430C89; border-radius:8px; padding:1px 6px; font-weight:700;">${r.tiendas.length} tiendas</span>` : "";
+    const head = `<tr style="border-bottom:1px solid #f1f5f9;">
+      <td style="padding:7px 9px; font-weight:600;">${exp}${esc(r.cli)}${badge} ${alerta}</td>
       <td style="padding:7px 9px; font-size:11px; color:#6b7280;">${esc(r.cur)}${r.pais ? " · " + esc(r.pais) : ""}</td>
       <td style="padding:7px 9px; font-size:11px; color:#6b7280;">${r.okMeses.length}</td>
       <td style="padding:7px 9px; text-align:right; font-variant-numeric:tabular-nums; font-weight:600;">${fmtMoney(r.gmv)}</td>
@@ -8632,10 +8755,31 @@ function cartRenderTabla() {
       <td style="padding:7px 9px; text-align:right;">${penTxt}</td>
       <td style="padding:7px 9px;">${r.serie.length >= 2 ? cuGmvSparkSvg(r.serie, 80, 24) : ""}</td>
       <td style="padding:7px 9px; text-align:right; white-space:nowrap;">
-        <a href="#" onclick="CART_SEL='${esc(r.cli).replace(/'/g, "")}'; renderCartera(); return false;" style="font-size:11px; color:#4030C8;">pivot</a>
-        <a href="#" onclick="cartBorrarCuenta('${esc(r.cli).replace(/'/g, "")}'); return false;" style="font-size:11px; color:#dc2626; margin-left:8px;">borrar</a>
+        <a href="#" onclick="cartPivotSel('${ri}'); return false;" style="font-size:11px; color:#4030C8;">pivot</a>
+        <a href="#" onclick="cartBorrar(${ri}); return false;" style="font-size:11px; color:#dc2626; margin-left:8px;">borrar</a>
       </td>
     </tr>`;
+    if (!r.multi || !abierto) return head;
+    const subs = r.tiendas.map((s, ti) => {
+      const al = s.sinFx ? `<span title="${s.sinFx} mes(es) sin cotización cargada" style="color:#d97706;">⚠︎</span>` : "";
+      return `<tr style="border-bottom:1px solid #f8fafc; background:#fafafa;">
+        <td style="padding:5px 9px 5px 28px; font-size:11px; color:#374151;">↳ ${esc(s.tienda)} ${al}</td>
+        <td style="padding:5px 9px; font-size:11px; color:#6b7280;">${esc(s.cur)}</td>
+        <td style="padding:5px 9px; font-size:11px; color:#6b7280;">${s.okMeses.length}</td>
+        <td style="padding:5px 9px; text-align:right; font-variant-numeric:tabular-nums; font-size:11px;">${fmtMoney(s.gmv)}</td>
+        <td style="padding:5px 9px; text-align:right; font-variant-numeric:tabular-nums; font-size:11px;">${s.val.toLocaleString("es-AR")}</td>
+        <td style="padding:5px 9px; text-align:right; font-variant-numeric:tabular-nums; font-size:11px;">${fmtMoney(s.tick)}</td>
+        <td style="padding:5px 9px; text-align:right; font-variant-numeric:tabular-nums; font-size:11px; color:${s.cancelRate > .15 ? "#dc2626" : "#6b7280"};">${(s.cancelRate * 100).toFixed(1)}%</td>
+        <td style="padding:5px 9px; text-align:right; font-size:10px; color:#9ca3af; font-style:italic;">—</td>
+        <td style="padding:5px 9px; text-align:right; font-size:10px; color:#9ca3af; font-style:italic;">a nivel cuenta</td>
+        <td style="padding:5px 9px; font-size:10px; color:#9ca3af;">${esc(s.archivo || "")}</td>
+        <td style="padding:5px 9px; text-align:right; white-space:nowrap;">
+          <a href="#" onclick="cartPivotSel('${ri}.${ti}'); return false;" style="font-size:11px; color:#4030C8;">pivot</a>
+          <a href="#" onclick="cartBorrar(${ri}, ${ti}); return false;" style="font-size:11px; color:#dc2626; margin-left:8px;">borrar</a>
+        </td>
+      </tr>`;
+    }).join("");
+    return head + subs;
   }).join("");
   el.innerHTML = `<div style="overflow-x:auto; border:1px solid #e5e7eb; border-radius:10px; background:#fff; margin-bottom:14px;">
     <table style="width:100%; border-collapse:collapse; font-size:12px;">
@@ -8652,19 +8796,24 @@ function cartRenderPivot() {
   if (!el) return;
   const rows = cartRows();
   if (!rows.length) { el.innerHTML = ""; return; }
+  // Los breakdowns viven por TIENDA (cada una con su moneda), así que se recorre
+  // cuenta → tienda → mes y se convierte con la moneda de esa tienda.
   const target = rows.filter(r => !CART_SEL || r.cli === CART_SEL);
   const acc = {};
   target.forEach(r => {
-    const vtex = cartVtexOf(r.cli);
-    if (!vtex || !vtex.brk) return;
-    r.okMeses.forEach(m => {
-      const b = vtex.brk[m] && vtex.brk[m][CART_DIM];
-      if (!b) return;
-      Object.keys(b).forEach(k => {
-        const u = cartToUsd(b[k].g, r.cur, m);
-        if (u === null) return;
-        if (!acc[k]) acc[k] = { g: 0, n: 0 };
-        acc[k].g += u; acc[k].n += b[k].n;
+    const tiendas = cartTiendasOf(r.cli) || {};
+    r.tiendas.forEach(s => {
+      if (CART_SEL_T && s.tienda !== CART_SEL_T) return;
+      const brk = (tiendas[s.tienda] || {}).brk || {};
+      s.okMeses.forEach(m => {
+        const b = brk[m] && brk[m][CART_DIM];
+        if (!b) return;
+        Object.keys(b).forEach(k => {
+          const u = cartToUsd(b[k].g, s.cur, m);
+          if (u === null) return;
+          if (!acc[k]) acc[k] = { g: 0, n: 0 };
+          acc[k].g += u; acc[k].n += b[k].n;
+        });
       });
     });
   });
@@ -8685,9 +8834,16 @@ function cartRenderPivot() {
     <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
       <strong style="font-size:12px;">🔎 Composición del GMV</strong>
       ${["pay", "inst", "utm"].map(d => `<button class="fc-btn${CART_DIM === d ? "" : " secondary"}" style="font-size:11px; padding:4px 10px;" onclick="CART_DIM='${d}'; renderCartera();">${dimLbl[d]}</button>`).join("")}
-      <select onchange="CART_SEL=this.value; renderCartera();" style="margin-left:auto; padding:4px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:11px;">
+      <select onchange="cartPivotSel(this.value);" style="margin-left:auto; padding:4px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:11px;">
         <option value=""${CART_SEL ? "" : " selected"}>Toda la cartera</option>
-        ${rows.map(r => `<option value="${esc(r.cli)}"${CART_SEL === r.cli ? " selected" : ""}>${esc(r.cli)}</option>`).join("")}
+        ${rows.map((r, ri) => {
+          const selCta = CART_SEL === r.cli && !CART_SEL_T;
+          const head = `<option value="${ri}"${selCta ? " selected" : ""}>${esc(r.cli)}${r.multi ? " (todas)" : ""}</option>`;
+          if (!r.multi) return head;
+          return head + r.tiendas.map((s, ti) =>
+            `<option value="${ri}.${ti}"${CART_SEL === r.cli && CART_SEL_T === s.tienda ? " selected" : ""}>&nbsp;&nbsp;› ${esc(s.tienda)}</option>`
+          ).join("");
+        }).join("")}
       </select>
     </div>
     <table style="width:100%; border-collapse:collapse; font-size:12px;">
