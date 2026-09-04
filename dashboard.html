@@ -359,6 +359,11 @@ table.std tr:hover td { background: #fafafa; }
 
 /* Vista Cuentas activas */
 .cue-alert { background: #fef3c7; border: 1px solid #fde68a; color: #92400e; padding: 11px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 16px; font-weight: 500; }
+.clitab { border: none; background: none; padding: 8px 14px; font-size: 13px; font-weight: 600; color: #6b7280; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -2px; font-family: inherit; }
+.clitab:hover { color: #430C89; }
+.clitab.active { color: #430C89; border-bottom-color: #430C89; }
+.cart-drop { border: 2px dashed #C7BDFF; border-radius: 10px; padding: 22px; text-align: center; background: #FAF9FF; transition: background .15s, border-color .15s; }
+.cart-drop.over { background: #F1EFFF; border-color: #430C89; }
 .cue-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; }
 .cue-kpi { background: white; border: 1px solid #e5e5e5; border-radius: 8px; padding: 13px 14px; }
 .cue-kpi .kl { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.4px; }
@@ -781,15 +786,31 @@ table.std tr:hover td { background: #fafafa; }
 
   <!-- ===================== CLIENTES (tabla en vivo) ===================== -->
   <div id="view-clientes" style="display:none">
-    <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">🏬 Cuentas activas en vivo desde HubSpot (customer): CSM, horas S&G, país y deals reales. Clic en la celda <b>Deals</b> de una cuenta para ver y editar sus deals asociados. El financiero (MRR, GMV, vencimiento, LTV, % penetración) se suma al conectar el Sheet maestro.</div>
-    <div style="margin-bottom:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;"><input type="text" id="cue-search" oninput="onCuentasSearch()" placeholder="🔎 Buscar cuenta por nombre… (muestra su CSM)" style="padding:7px 11px; border:1px solid #d1d5db; border-radius:8px; font-size:13px; width:320px; max-width:100%;"><button class="fc-btn" onclick="toggleNewAccount()">➕ Nueva cuenta</button></div>
-    <div id="cue-new-form" style="display:none; margin-bottom:12px;"></div>
-    <div id="cue-csm" style="margin-bottom:12px;"></div>
-    <div class="cue-kpis" id="cue-kpis"></div>
-    <div id="cue-tabla"></div>
-    <div class="cue-foco-grid" id="cue-focos"></div>
-    <div class="small" style="margin-top:12px; font-style:italic; color:#888;">
-      % Penetración = MRR anualizado ÷ GMV del cliente (baja = más techo para crecer). Antigüedad y LTV se calculan; servicios y deals saldrán de HubSpot; MRR, GMV, CSM y vencimiento del Sheet maestro.
+    <div style="display:flex; gap:6px; margin-bottom:12px; border-bottom:2px solid #e5e7eb;">
+      <button id="clitab-btn-cuentas" class="clitab active" onclick="cliTab('cuentas')">🏬 Cuentas activas</button>
+      <button id="clitab-btn-cartera" class="clitab" onclick="cliTab('cartera')">📦 Cartera GMV</button>
+    </div>
+
+    <div id="clitab-cuentas">
+      <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">🏬 Cuentas activas en vivo desde HubSpot (customer): CSM, horas S&G, país y deals reales. Clic en la celda <b>Deals</b> de una cuenta para ver y editar sus deals asociados. El financiero (MRR, GMV, vencimiento, LTV, % penetración) se suma al conectar el Sheet maestro.</div>
+      <div style="margin-bottom:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;"><input type="text" id="cue-search" oninput="onCuentasSearch()" placeholder="🔎 Buscar cuenta por nombre… (muestra su CSM)" style="padding:7px 11px; border:1px solid #d1d5db; border-radius:8px; font-size:13px; width:320px; max-width:100%;"><button class="fc-btn" onclick="toggleNewAccount()">➕ Nueva cuenta</button></div>
+      <div id="cue-new-form" style="display:none; margin-bottom:12px;"></div>
+      <div id="cue-csm" style="margin-bottom:12px;"></div>
+      <div class="cue-kpis" id="cue-kpis"></div>
+      <div id="cue-tabla"></div>
+      <div class="cue-foco-grid" id="cue-focos"></div>
+      <div class="small" style="margin-top:12px; font-style:italic; color:#888;">
+        % Penetración = facturación Innew ÷ GMV del cliente (baja = más techo para crecer). Antigüedad y LTV se calculan; servicios y deals salen de HubSpot; el GMV se carga a mano o subiendo el export de pedidos en la pestaña <b>Cartera GMV</b>.
+      </div>
+    </div>
+
+    <div id="clitab-cartera" style="display:none">
+      <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">📦 Cartera GMV — cuánto venden nuestros clientes y qué parte de ese P&amp;L somos nosotros. Soltá el export de pedidos de VTEX (CSV, ZIP o XLSX) y elegí la cuenta. <b>El archivo se procesa en tu navegador: no se sube a ningún lado</b>; sólo se guarda el resumen mensual.</div>
+      <div id="cart-drop"></div>
+      <div id="cart-fx"></div>
+      <div id="cart-kpis"></div>
+      <div id="cart-tabla"></div>
+      <div id="cart-pivot"></div>
     </div>
   </div><!-- /view-clientes -->
 
@@ -5584,13 +5605,15 @@ function perfSetBcg(v) { window.__perfBcg = v; renderClientePerf(); }
 
 // Trae los deals (abiertos + cerrados) de cada cuenta con num_associated_deals>0 y los cachea.
 async function perfLoadAll(force) {
-  const st = document.getElementById("perf-status");
+  // Hay más de un lugar que muestra el estado (Clientes › Cuentas y Clientes › Cartera GMV):
+  // se pintan TODOS los .perf-st, no un id único (getElementById devolvería sólo el primero).
+  const say = (txt, color) => { document.querySelectorAll(".perf-st").forEach(n => { n.textContent = txt; n.style.color = color; }); };
   if (!window.__cuentasData) { try { window.__cuentasData = await fetchCuentas(); } catch (e) { window.__cuentasData = null; } }
-  if (!window.__cuentasData) { if (st) { st.textContent = "no se pudieron cargar las cuentas"; st.style.color = "#dc2626"; } return; }
+  if (!window.__cuentasData) { say("no se pudieron cargar las cuentas", "#dc2626"); return; }
   if (force) window.__cuentaDealsCache = {};
   const targets = (window.__cuentasData || []).filter(c => parseInt(c.properties.num_associated_deals || 0) > 0 && !window.__cuentaDealsCache[c.id]);
   const total = targets.length; let done = 0;
-  const paint = () => { if (st) { st.textContent = `cargando deals… ${done}/${total}`; st.style.color = "#9ca3af"; } };
+  const paint = () => { say(`cargando deals… ${done}/${total}`, "#9ca3af"); };
   paint();
   let i = 0; const conc = 6;
   async function worker() {
@@ -5603,8 +5626,11 @@ async function perfLoadAll(force) {
   }
   await Promise.all(Array.from({ length: conc }, worker));
   window.__perfLoaded = true;
-  if (st) { st.textContent = `✓ ${total} cuentas · actualizado`; st.style.color = "#059669"; }
+  say(`✓ ${total} cuentas · actualizado`, "#059669");
   renderClientePerf();
+  // Si la pestaña Cartera GMV está abierta, refrescar el numerador (facturación Innew).
+  const cartPane = document.getElementById("clitab-cartera");
+  if (cartPane && cartPane.style.display !== "none" && typeof renderCartera === "function") renderCartera();
 }
 
 // Agrega por cuenta desde el cache de deals.
@@ -5666,7 +5692,7 @@ function renderClientePerf() {
     <span class="small" style="color:#888;">CSM:</span>${loaded ? csmDd : '<span class="small" style="color:#bbb;">—</span>'}
     <span class="small" style="color:#888;">BCG:</span>${loaded ? bcgDd : '<span class="small" style="color:#bbb;">—</span>'}
     <button class="fc-btn secondary" onclick="perfLoadAll(true)" style="font-size:12px; margin-left:auto;">${loaded ? "↻ Actualizar" : "⟳ Cargar performance"}</button>
-    <span id="perf-status" class="small" style="color:#9ca3af;"></span>
+    <span class="small perf-st" style="color:#9ca3af;"></span>
   </div>`;
 
   if (!loaded) { body.innerHTML = `<div class="empty" style="padding:14px;">Tocá <b>Cargar performance</b> para traer los deals (abiertos + cerrados) de cada cuenta desde HubSpot.</div>`; return; }
@@ -7956,6 +7982,736 @@ function cuGmvDetail(cli, companyId) {
   document.body.appendChild(div);
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════
+   CARTERA GMV — ingesta de exports de pedidos VTEX (CSV / ZIP / XLSX)
+   Todo se parsea EN EL NAVEGADOR: ningún archivo se sube a ningún lado.
+   El resultado se guarda como RESUMEN MENSUAL + BREAKDOWNS en cuentas_meta[cli].vtex
+   y alimenta cuentas_meta[cli].gmvHist (la única fuente de GMV del dashboard).
+   Los pedidos crudos se descartan después de agregar: no entran a localStorage.
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+const CART_MES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+const CART_CUR_NAME = { ARS: "Peso argentino", PYG: "Guaraní", CLP: "Peso chileno", MXN: "Peso mexicano", PEN: "Sol peruano", GTQ: "Quetzal", UYU: "Peso uruguayo", COP: "Peso colombiano", BRL: "Real", EUR: "Euro", USD: "Dólar" };
+// Escape de HTML: los nombres de archivo y de cuenta entran a innerHTML.
+function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
+
+const CART_MAX_MESES = 24;   // tope de historia por cuenta
+const CART_MAX_KEYS = 12;    // tope de categorías por breakdown (el resto va a "Otros")
+
+/* ---------- parsing ---------- */
+
+function cartDetectDelim(line) {
+  const c = { ";": 0, ",": 0, "\t": 0 };
+  let q = false;
+  for (const ch of line) {
+    if (ch === '"') q = !q;
+    else if (!q && ch in c) c[ch]++;
+  }
+  return Object.keys(c).sort((a, b) => c[b] - c[a])[0];
+}
+
+function cartParseCSV(text, delim) {
+  const rows = [];
+  let row = [], field = "", q = false, i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (q) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
+        q = false; i++; continue;
+      }
+      field += ch; i++; continue;
+    }
+    if (ch === '"') { q = true; i++; continue; }
+    if (ch === delim) { row.push(field); field = ""; i++; continue; }
+    if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && text[i + 1] === "\n") i++;
+      row.push(field); field = "";
+      if (row.length > 1 || row[0] !== "") rows.push(row);
+      row = []; i++; continue;
+    }
+    field += ch; i++;
+  }
+  row.push(field);
+  if (row.length > 1 || row[0] !== "") rows.push(row);
+  return rows;
+}
+
+// Parseo numérico tolerante a formato LATAM (1.234,56) y anglo (1,234.56).
+function cartNum(v) {
+  if (v === undefined || v === null) return 0;
+  let s = String(v).trim();
+  if (!s) return 0;
+  s = s.replace(/[^\d.,-]/g, "");
+  const lc = s.lastIndexOf(","), ld = s.lastIndexOf(".");
+  if (lc > -1 && ld > -1) {
+    if (lc > ld) s = s.replace(/\./g, "").replace(",", ".");
+    else s = s.replace(/,/g, "");
+  } else if (lc > -1) {
+    s = (s.length - lc - 1) === 3 && s.replace(/[^,]/g, "").length === 1 && s.length > 4
+      ? s.replace(",", "") : s.replace(",", ".");
+  }
+  const n = parseFloat(s);
+  return isFinite(n) ? n : 0;
+}
+
+const CART_CANCEL_RE = /cancel/i;
+function cartIsCancelled(status, raw) {
+  return CART_CANCEL_RE.test(status || "") || CART_CANCEL_RE.test(raw || "");
+}
+
+function cartParseDate(v) {
+  const s = String(v || "").trim();
+  if (!s) return null;
+  if (/^\d{5}(\.\d+)?$/.test(s)) {                       // serial de Excel
+    const d = new Date(Date.UTC(1899, 11, 30) + parseFloat(s) * 86400000);
+    return isNaN(d) ? null : d;
+  }
+  const m = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})(?:[ T](\d{1,2}):(\d{2}))?/);
+  if (m) {
+    const d = new Date(Date.UTC(+m[3], +m[2] - 1, +m[1], +(m[4] || 0), +(m[5] || 0)));
+    return isNaN(d) ? null : d;
+  }
+  const d = new Date(s.replace(" ", "T"));
+  return isNaN(d) ? null : d;
+}
+
+/* --- ZIP: central directory + DecompressionStream nativo, sin librerías --- */
+async function cartUnzip(buf) {
+  const dv = new DataView(buf), U8 = new Uint8Array(buf);
+  let eocd = -1;
+  for (let i = U8.length - 22; i >= 0 && i > U8.length - 66000; i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error("El ZIP está dañado o incompleto.");
+  const n = dv.getUint16(eocd + 10, true);
+  let off = dv.getUint32(eocd + 16, true);
+  const dec = new TextDecoder();
+  const out = [];
+  for (let k = 0; k < n; k++) {
+    if (dv.getUint32(off, true) !== 0x02014b50) break;
+    const method = dv.getUint16(off + 10, true);
+    const csize = dv.getUint32(off + 20, true);
+    const fnLen = dv.getUint16(off + 28, true);
+    const exLen = dv.getUint16(off + 30, true);
+    const cmLen = dv.getUint16(off + 32, true);
+    const lho = dv.getUint32(off + 42, true);
+    const name = dec.decode(U8.subarray(off + 46, off + 46 + fnLen));
+    const lfn = dv.getUint16(lho + 26, true), lex = dv.getUint16(lho + 28, true);
+    const start = lho + 30 + lfn + lex;
+    let bytes = U8.subarray(start, start + csize);
+    if (method === 8) {
+      const ds = new DecompressionStream("deflate-raw");
+      bytes = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(ds)).arrayBuffer());
+    } else if (method !== 0) {
+      throw new Error("El ZIP usa una compresión que el navegador no puede abrir. Descomprimilo y soltá el CSV.");
+    }
+    out.push({ name, bytes });
+    off += 46 + fnLen + exLen + cmLen;
+  }
+  return out;
+}
+
+/* --- XLSX: es un ZIP con XML adentro --- */
+function cartColIndex(ref) {
+  let n = 0;
+  for (const ch of ref) {
+    const c = ch.charCodeAt(0);
+    if (c < 65 || c > 90) break;
+    n = n * 26 + (c - 64);
+  }
+  return n - 1;
+}
+
+async function cartXlsxRows(buf) {
+  const entries = await cartUnzip(buf);
+  const get = nm => entries.find(e => e.name === nm);
+  const dec = new TextDecoder();
+  const sheets = entries.filter(e => /^xl\/worksheets\/sheet\d+\.xml$/.test(e.name))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  if (!sheets.length) throw new Error("El Excel no tiene hojas legibles.");
+  const P = new DOMParser();
+  let shared = [];
+  const ss = get("xl/sharedStrings.xml");
+  if (ss) {
+    const sdoc = P.parseFromString(dec.decode(ss.bytes), "application/xml");
+    shared = Array.from(sdoc.getElementsByTagName("si")).map(si =>
+      Array.from(si.getElementsByTagName("t")).map(t => t.textContent).join(""));
+  }
+  const doc = P.parseFromString(dec.decode(sheets[0].bytes), "application/xml");
+  const rows = [];
+  for (const row of doc.getElementsByTagName("row")) {
+    const arr = [];
+    for (const c of row.getElementsByTagName("c")) {
+      const i = cartColIndex(c.getAttribute("r") || "");
+      const t = c.getAttribute("t");
+      let v = "";
+      if (t === "inlineStr") {
+        v = Array.from(c.getElementsByTagName("t")).map(x => x.textContent).join("");
+      } else {
+        const vn = c.getElementsByTagName("v")[0];
+        v = vn ? vn.textContent : "";
+        if (t === "s") v = shared[+v] != null ? shared[+v] : "";
+      }
+      arr[i < 0 ? arr.length : i] = v;
+    }
+    for (let i = 0; i < arr.length; i++) if (arr[i] === undefined) arr[i] = "";
+    rows.push(arr);
+  }
+  if (rows.length < 2) throw new Error("La hoja no tiene filas de datos.");
+  return rows;
+}
+
+/* --- filas → pedidos deduplicados ---
+   OJO: el export de VTEX trae UNA FILA POR LÍNEA DE PRODUCTO y repite el total del
+   pedido en cada línea. Sumar la columna Total sin deduplicar infla el GMV. */
+function cartRowsToModel(rows, filename) {
+  const head = rows[0].map(h => String(h || "").replace(/^﻿/, "").trim());
+  const idx = {};
+  head.forEach((h, i) => { idx[h.toLowerCase()] = i; });
+  const col = function () {
+    for (let i = 0; i < arguments.length; i++) {
+      const j = idx[String(arguments[i]).toLowerCase()];
+      if (j !== undefined) return j;
+    }
+    return -1;
+  };
+  const C = {
+    order: col("Order", "Pedido", "Order Id"),
+    date: col("Creation Date", "Data de criação", "Fecha de creación"),
+    status: col("Status", "Estado"),
+    raw: col("Status raw value (temporary)"),
+    total: col("Total Value", "Valor total"),
+    inst: col("Installments"),
+    seller: col("Seller Name"),
+    cur: col("Currency Code", "Moneda"),
+    utm: col("UtmSource"),
+    pay: col("Payment System Name")
+  };
+  if (C.order < 0 || C.total < 0) throw new Error("No encontré las columnas de pedido e importe. ¿Es el export de pedidos de VTEX?");
+
+  const seen = new Map();
+  for (let r = 1; r < rows.length; r++) {
+    const row = rows[r];
+    if (!row || row.length < 3) continue;
+    const id = (row[C.order] || "").trim();
+    if (!id || seen.has(id)) continue;
+    const g = i => i > -1 ? (row[i] || "").trim() : "";
+    const d = cartParseDate(g(C.date));
+    seen.set(id, {
+      id: id,
+      month: d ? d.toISOString().slice(0, 7) : "?",
+      total: cartNum(row[C.total]),
+      cancelled: cartIsCancelled(g(C.status), g(C.raw)),
+      utm: g(C.utm) || "Directo / sin campaña",
+      pay: (g(C.pay) || "(sin dato)").split(",")[0].trim(),
+      inst: (g(C.inst) || "(sin dato)").split(",")[0].trim(),
+      seller: g(C.seller),
+      cur: (g(C.cur) || "").toUpperCase()
+    });
+  }
+  const orders = Array.from(seen.values());
+  if (!orders.length) throw new Error("No se leyeron pedidos del archivo.");
+
+  const tally = {};
+  orders.forEach(o => { if (o.seller) tally[o.seller] = (tally[o.seller] || 0) + 1; });
+  const label = Object.keys(tally).sort((a, b) => tally[b] - tally[a])[0] || String(filename).replace(/\.(csv|txt|zip|xlsx)$/i, "");
+  const ct = {};
+  orders.forEach(o => { if (o.cur) ct[o.cur] = (ct[o.cur] || 0) + 1; });
+  const cur = Object.keys(ct).sort((a, b) => ct[b] - ct[a])[0] || "USD";
+  return { name: filename, label: label, cur: cur, orders: orders };
+}
+
+function cartIngestText(text, filename) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const nl = text.indexOf("\n");
+  const firstLine = text.slice(0, nl > -1 ? nl : 400);
+  const rows = cartParseCSV(text, cartDetectDelim(firstLine));
+  if (rows.length < 2) throw new Error("El archivo no tiene filas de datos.");
+  return cartRowsToModel(rows, filename);
+}
+
+// Lee un File del input/drop y devuelve el modelo de pedidos. Dispatch por extensión.
+async function cartReadFile(file) {
+  const nm = (file.name || "").toLowerCase();
+  if (/\.xlsx$/.test(nm)) {
+    const rows = await cartXlsxRows(await file.arrayBuffer());
+    return cartRowsToModel(rows, file.name);
+  }
+  if (/\.zip$/.test(nm)) {
+    const entries = await cartUnzip(await file.arrayBuffer());
+    const inner = entries.find(e => /\.(csv|txt)$/i.test(e.name) && !/^__MACOSX/.test(e.name));
+    if (inner) return cartIngestText(new TextDecoder().decode(inner.bytes), inner.name);
+    const xl = entries.find(e => /\.xlsx$/i.test(e.name));
+    if (xl) { const rows = await cartXlsxRows(xl.bytes.buffer); return cartRowsToModel(rows, xl.name); }
+    throw new Error("El ZIP no tiene un CSV ni un XLSX adentro.");
+  }
+  return cartIngestText(await file.text(), file.name);
+}
+
+/* ---------- agregación: pedidos → resumen mensual + breakdowns ----------
+   Acá se descartan los pedidos crudos. Lo que sobrevive es lo que se persiste. */
+function cartTopN(obj, n) {
+  const keys = Object.keys(obj).sort((a, b) => obj[b].g - obj[a].g);
+  if (keys.length <= n) { const o = {}; keys.forEach(k => { o[k] = obj[k]; }); return o; }
+  const out = {}, otros = { g: 0, n: 0 };
+  keys.forEach((k, i) => {
+    if (i < n) out[k] = obj[k];
+    else { otros.g += obj[k].g; otros.n += obj[k].n; }
+  });
+  if (otros.n) out["Otros"] = otros;
+  return out;
+}
+
+function cartAggregate(model) {
+  const meses = {}, brk = {};
+  model.orders.forEach(o => {
+    const m = o.month;
+    if (!m || m === "?") return;
+    if (!meses[m]) meses[m] = { gmv: 0, ped: 0, val: 0, can: 0, lost: 0, tick: 0 };
+    const s = meses[m];
+    s.ped++;
+    if (o.cancelled) { s.can++; s.lost += o.total; return; }
+    s.val++; s.gmv += o.total;
+    if (!brk[m]) brk[m] = { pay: {}, inst: {}, utm: {} };
+    ["pay", "inst", "utm"].forEach(dim => {
+      const k = o[dim] || "(sin dato)";
+      const b = brk[m][dim];
+      if (!b[k]) b[k] = { g: 0, n: 0 };
+      b[k].g += o.total; b[k].n++;
+    });
+  });
+  Object.keys(meses).forEach(m => {
+    const s = meses[m];
+    s.tick = s.val ? s.gmv / s.val : 0;
+    ["gmv", "lost", "tick"].forEach(k => { s[k] = Math.round(s[k] * 100) / 100; });
+  });
+  Object.keys(brk).forEach(m => {
+    ["pay", "inst", "utm"].forEach(dim => {
+      brk[m][dim] = cartTopN(brk[m][dim], CART_MAX_KEYS);
+      Object.keys(brk[m][dim]).forEach(k => { brk[m][dim][k].g = Math.round(brk[m][dim][k].g); });
+    });
+  });
+  // tope de historia: nos quedamos con los últimos CART_MAX_MESES
+  const keys = Object.keys(meses).sort();
+  const drop = keys.slice(0, Math.max(0, keys.length - CART_MAX_MESES));
+  drop.forEach(k => { delete meses[k]; delete brk[k]; });
+  return { cur: model.cur, meses: meses, brk: brk };
+}
+
+/* ---------- persistencia: escribe en cuentas_meta (fuente única) ---------- */
+function cartVtexOf(cli) { const v = cuentasGetMeta(cli).vtex; return (v && typeof v === "object") ? v : null; }
+
+// Guarda el resumen en cuentas_meta[cli].vtex Y rellena gmvHist para TODOS los meses del archivo.
+// Merge, no reemplazo: subir un archivo de otro semestre no borra el anterior.
+function cartSaveToAccount(cli, agg, filename) {
+  const prev = cartVtexOf(cli) || {};
+  const meses = Object.assign({}, prev.meses || {}, agg.meses);
+  const brk = Object.assign({}, prev.brk || {}, agg.brk);
+  const keys = Object.keys(meses).sort();
+  keys.slice(0, Math.max(0, keys.length - CART_MAX_MESES)).forEach(k => { delete meses[k]; delete brk[k]; });
+  const gmvHist = Object.assign({}, cuentasGetMeta(cli).gmvHist || {});
+  Object.keys(meses).forEach(m => { gmvHist[m] = meses[m].gmv; });
+  cuentasSetMeta(cli, {
+    vtex: { cur: agg.cur || prev.cur || "USD", updated: new Date().toISOString().slice(0, 10), archivo: filename || prev.archivo || "", meses: meses, brk: brk },
+    gmvHist: gmvHist
+  });
+  return Object.keys(agg.meses).length;
+}
+
+/* ---------- FX por mes (clave: el archivo trae moneda local, la comparación es en USD) ----------
+   El navegador no puede pegarle al BNA por CORS → la carga es manual, por moneda × mes.
+   Regla de German: dólar oficial Banco Nación, columna VENTA. */
+function cartFxAll() { try { return JSON.parse(localStorage.getItem("cartera_fx") || "{}"); } catch (e) { return {}; } }
+function cartFxGet(cur, mes) {
+  if (!cur || cur === "USD") return 1;
+  const t = cartFxAll()[cur];
+  const v = t ? parseFloat(t[mes]) : NaN;
+  return isFinite(v) && v > 0 ? v : null;
+}
+function cartFxSet(cur, mes, v) {
+  const all = cartFxAll();
+  all[cur] = all[cur] || {};
+  const n = parseFloat(String(v).replace(",", "."));
+  if (isFinite(n) && n > 0) all[cur][mes] = n; else delete all[cur][mes];
+  if (!Object.keys(all[cur]).length) delete all[cur];
+  try { localStorage.setItem("cartera_fx", JSON.stringify(all)); } catch (e) {}
+}
+// Convierte un monto de moneda local a USD usando el TC DE ESE MES. null = falta cotización.
+function cartToUsd(v, cur, mes) {
+  const r = cartFxGet(cur, mes);
+  if (r === null) return null;
+  return v / r;
+}
+
+/* ---------- mapa archivo → cuenta (el "selector al subir" se recuerda) ---------- */
+function cartFileMapAll() { try { return JSON.parse(localStorage.getItem("cartera_filemap") || "{}"); } catch (e) { return {}; } }
+function cartFileMapGet(name) { return cartFileMapAll()[String(name || "").toLowerCase()] || ""; }
+function cartFileMapSet(name, cli) {
+  const all = cartFileMapAll();
+  const k = String(name || "").toLowerCase();
+  if (cli) all[k] = cli; else delete all[k];
+  try { localStorage.setItem("cartera_filemap", JSON.stringify(all)); } catch (e) {}
+}
+
+/* ══════════════════════ CARTERA GMV — vista ══════════════════════ */
+
+let CART_PERIOD = 12;      // ventana en meses (0 = todo)
+let CART_DIM = "pay";      // dimensión del pivot: pay | inst | utm
+let CART_SEL = "";         // cuenta enfocada en el pivot ("" = toda la cartera)
+let CART_PENDING = [];     // archivos leídos esperando que German elija la cuenta
+
+function cliTab(which) {
+  ["cuentas", "cartera"].forEach(t => {
+    const pane = document.getElementById("clitab-" + t);
+    const btn = document.getElementById("clitab-btn-" + t);
+    if (pane) pane.style.display = (t === which) ? "block" : "none";
+    if (btn) btn.className = "clitab" + (t === which ? " active" : "");
+  });
+  if (which === "cartera") renderCartera();
+}
+
+/* --- facturación Innew: cuota de un deal GANADO en un mes dado ---
+   Variante de metasCuotaEnMes SIN el guard de "cierre futuro": acá justamente
+   necesitamos la facturación histórica, que por definición tiene closedate pasado. */
+function cuFactEnMes(d, mKey) {
+  const p = (d && d.properties) || {};
+  if (!p.closedate || p.dealstage !== WON_STAGE) return 0;
+  const cd = new Date(p.closedate);
+  const parts = String(mKey).split("-");
+  const off = (Number(parts[0]) - cd.getFullYear()) * 12 + (Number(parts[1]) - 1 - cd.getMonth());
+  if (off < 0) return 0;
+  return dealMonthlyAmount(d, off);
+}
+// Facturación Innew (USD) para una company en una lista de meses.
+function cartFactUsd(companyId, meses) {
+  const deals = (window.__cuentaDealsCache || {})[companyId];
+  if (!deals || !deals.length) return null;
+  let t = 0;
+  deals.forEach(d => { meses.forEach(m => { t += cuFactEnMes(d, m); }); });
+  return t;
+}
+
+/* --- selección de meses según la ventana elegida --- */
+function cartMesesEnRango(vtex) {
+  const keys = Object.keys((vtex && vtex.meses) || {}).sort();
+  if (!CART_PERIOD) return keys;
+  return keys.slice(-CART_PERIOD);
+}
+
+// Cuentas activas con datos VTEX cargados. Devuelve la fila ya calculada en USD.
+function cartRows() {
+  const out = [];
+  (window.__cuentasData || []).forEach(c => {
+    const cli = (c.properties.name || "").trim();
+    if (!cli) return;
+    const vtex = cartVtexOf(cli);
+    if (!vtex || !vtex.meses || !Object.keys(vtex.meses).length) return;
+    const cur = vtex.cur || "USD";
+    const meses = cartMesesEnRango(vtex);
+    let gmv = 0, ped = 0, val = 0, can = 0, lost = 0, sinFx = 0;
+    const okMeses = [], serie = [];
+    meses.forEach(m => {
+      const s = vtex.meses[m];
+      const u = cartToUsd(s.gmv, cur, m);
+      if (u === null) { sinFx++; serie.push(0); return; }
+      okMeses.push(m); serie.push(u);
+      gmv += u; ped += s.ped; val += s.val || 0; can += s.can;
+      const lu = cartToUsd(s.lost, cur, m); lost += (lu === null ? 0 : lu);
+    });
+    const fact = cartFactUsd(c.id, okMeses);
+    out.push({
+      companyId: c.id, cli: cli, cur: cur, pais: normPais(c.properties.country),
+      csm: (c.properties.csm_asignado || "").trim(),
+      bcg: (c.properties.calificacion_matriz_bcg || "").trim(),
+      meses: meses, okMeses: okMeses, sinFx: sinFx, serie: serie,
+      gmv: gmv, ped: ped, val: val, can: can, lost: lost,
+      tick: val ? gmv / val : 0,
+      cancelRate: ped ? can / ped : 0,
+      fact: fact,
+      pen: (fact !== null && gmv > 0) ? fact / gmv : null,
+      updated: vtex.updated || ""
+    });
+  });
+  return out.sort((a, b) => b.gmv - a.gmv);
+}
+
+/* --- ingesta --- */
+function cartDropInit() {
+  const z = document.getElementById("cart-zone");
+  if (!z) return;
+  z.ondragover = e => { e.preventDefault(); z.classList.add("over"); };
+  z.ondragleave = () => z.classList.remove("over");
+  z.ondrop = e => { e.preventDefault(); z.classList.remove("over"); cartHandleFiles(e.dataTransfer.files); };
+}
+
+async function cartHandleFiles(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  const st = document.getElementById("cart-drop-status");
+  for (const f of files) {
+    if (st) { st.textContent = "leyendo " + f.name + "…"; st.style.color = "#6b7280"; }
+    try {
+      const model = await cartReadFile(f);
+      const agg = cartAggregate(model);
+      const mk = Object.keys(agg.meses).sort();
+      CART_PENDING.push({
+        name: f.name, label: model.label, cur: agg.cur,
+        pedidos: model.orders.length, desde: mk[0] || "", hasta: mk[mk.length - 1] || "",
+        agg: agg, sugerida: cartSugerirCuenta(f.name, model.label)
+      });
+      if (st) { st.textContent = ""; }
+    } catch (err) {
+      if (st) { st.textContent = "✗ " + f.name + ": " + (err && err.message ? err.message : err); st.style.color = "#dc2626"; }
+    }
+  }
+  renderCartera();
+}
+
+// Sugerencia de cuenta: primero el mapa recordado, después match laxo por nombre.
+function cartSugerirCuenta(filename, label) {
+  const rec = cartFileMapGet(filename);
+  if (rec) return rec;
+  const norm = s => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const l = norm(label);
+  if (!l) return "";
+  let hit = "";
+  (window.__cuentasData || []).forEach(c => {
+    const nm = (c.properties.name || "").trim();
+    const n = norm(nm);
+    if (!n || hit) return;
+    if (n === l || n.indexOf(l) === 0 || l.indexOf(n) === 0) hit = nm;
+  });
+  return hit;
+}
+
+function cartAssign(i) {
+  const p = CART_PENDING[i];
+  if (!p) return;
+  const sel = document.getElementById("cart-sel-" + i);
+  const cli = sel ? sel.value : "";
+  if (!cli) { alert("Elegí a qué cuenta corresponde el archivo."); return; }
+  const n = cartSaveToAccount(cli, p.agg, p.name);
+  cartFileMapSet(p.name, cli);
+  CART_PENDING.splice(i, 1);
+  renderCartera();
+  if (document.getElementById("cue-tabla")) renderCuentas();
+  const st = document.getElementById("cart-drop-status");
+  if (st) { st.textContent = "✓ " + cli + ": " + n + " meses guardados"; st.style.color = "#059669"; }
+}
+function cartDiscard(i) { CART_PENDING.splice(i, 1); renderCartera(); }
+
+function cartBorrarCuenta(cli) {
+  if (!confirm("¿Borrar los datos de cartera de " + cli + "? El GMV cargado a mano no se toca.")) return;
+  cuentasSetMeta(cli, { vtex: null });
+  renderCartera();
+}
+
+/* --- render: zona de carga --- */
+function cartRenderDrop() {
+  const el = document.getElementById("cart-drop");
+  if (!el) return;
+  const opts = (window.__cuentasData || [])
+    .map(c => (c.properties.name || "").trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
+  const pend = CART_PENDING.map((p, i) => {
+    const sel = `<select id="cart-sel-${i}" style="padding:5px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12px; min-width:220px;">
+      <option value="">— elegí la cuenta —</option>
+      ${opts.map(o => `<option value="${esc(o)}"${o === p.sugerida ? " selected" : ""}>${esc(o)}</option>`).join("")}
+    </select>`;
+    return `<div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:9px 12px; border:1px solid #e5e7eb; border-radius:8px; background:#fff; margin-top:8px;">
+      <div style="flex:1; min-width:240px;">
+        <div style="font-weight:600; font-size:12px;">📄 ${esc(p.name)}</div>
+        <div style="font-size:11px; color:#6b7280;">${p.pedidos.toLocaleString("es-AR")} pedidos · ${esc(p.cur)} · ${cuMonthLabel(p.desde)} → ${cuMonthLabel(p.hasta)}${p.label ? " · seller: " + esc(p.label) : ""}</div>
+      </div>
+      ${sel}
+      <button class="fc-btn" style="font-size:12px;" onclick="cartAssign(${i})">Guardar</button>
+      <button class="fc-btn secondary" style="font-size:12px;" onclick="cartDiscard(${i})">Descartar</button>
+    </div>`;
+  }).join("");
+  el.innerHTML = `
+    <div id="cart-zone" class="cart-drop">
+      <div style="font-size:26px; margin-bottom:6px;">📥</div>
+      <div style="font-size:13px; font-weight:600; color:#430C89;">Soltá acá el export de pedidos de VTEX</div>
+      <div style="font-size:11px; color:#6b7280; margin:5px 0 10px;">CSV, ZIP o XLSX · se procesa en tu navegador, no se sube a ningún servidor</div>
+      <input type="file" id="cart-file" multiple accept=".csv,.txt,.zip,.xlsx" style="display:none" onchange="cartHandleFiles(this.files); this.value='';">
+      <button class="fc-btn" onclick="document.getElementById('cart-file').click()">Elegir archivo…</button>
+      <div id="cart-drop-status" style="font-size:11px; margin-top:8px; min-height:14px;"></div>
+    </div>
+    ${pend}`;
+  cartDropInit();
+}
+
+/* --- render: editor de cotizaciones (moneda × mes) --- */
+function cartRenderFx() {
+  const el = document.getElementById("cart-fx");
+  if (!el) return;
+  const need = {};
+  cartRows().forEach(r => {
+    if (r.cur === "USD") return;
+    need[r.cur] = need[r.cur] || {};
+    r.meses.forEach(m => { need[r.cur][m] = true; });
+  });
+  const curs = Object.keys(need).sort();
+  if (!curs.length) { el.innerHTML = ""; return; }
+  const faltan = curs.reduce((a, c) => a + Object.keys(need[c]).filter(m => cartFxGet(c, m) === null).length, 0);
+  const body = curs.map(cur => {
+    const meses = Object.keys(need[cur]).sort();
+    const inputs = meses.map(m => {
+      const v = cartFxGet(cur, m);
+      const falta = v === null;
+      return `<div style="display:flex; flex-direction:column; gap:2px;">
+        <label style="font-size:9px; text-transform:uppercase; color:${falta ? "#dc2626" : "#6b7280"};">${cuMonthLabel(m)}</label>
+        <input type="text" value="${v === null ? "" : v}" placeholder="—" onchange="cartFxSet('${cur}','${m}',this.value); renderCartera();"
+          style="width:78px; padding:4px 6px; border:1px solid ${falta ? "#fca5a5" : "#d1d5db"}; border-radius:6px; font-size:11px; text-align:right; font-variant-numeric:tabular-nums;">
+      </div>`;
+    }).join("");
+    return `<div style="margin-bottom:10px;">
+      <div style="font-size:11px; font-weight:700; margin-bottom:4px;">${cur} · ${CART_CUR_NAME[cur] || cur} <span style="font-weight:400; color:#9ca3af;">— ${cur} por 1 USD</span></div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">${inputs}</div>
+    </div>`;
+  }).join("");
+  el.innerHTML = `<details${faltan ? " open" : ""} style="margin-bottom:14px; border:1px solid #e5e7eb; border-radius:10px; padding:10px 14px; background:#fff;">
+    <summary style="cursor:pointer; font-size:12px; font-weight:700; color:#430C89;">💱 Cotizaciones por mes ${faltan ? `<span style="color:#dc2626; font-weight:600;">— faltan ${faltan}</span>` : `<span style="color:#059669; font-weight:600;">— completas</span>`}</summary>
+    <div style="font-size:11px; color:#6b7280; margin:8px 0 10px;">Cada mes se convierte con <b>su propio</b> tipo de cambio, no con uno solo para todo el período. Para ARS: dólar oficial Banco Nación, columna <b>venta</b> (<a href="https://www.bna.com.ar/Personas" target="_blank" style="color:#4030C8;">bna.com.ar ↗</a>). Los meses sin cotización quedan fuera del cálculo — de la penetración también, para no comparar peras con manzanas.</div>
+    ${body}
+  </details>`;
+}
+
+/* --- render: KPIs consolidados de cartera --- */
+function cartRenderKpis() {
+  const el = document.getElementById("cart-kpis");
+  if (!el) return;
+  const rows = cartRows();
+  if (!rows.length) { el.innerHTML = ""; return; }
+  let gmv = 0, fact = 0, gmvConFact = 0, ped = 0, val = 0, can = 0, lost = 0, sinDeals = 0;
+  rows.forEach(r => {
+    gmv += r.gmv; ped += r.ped; val += r.val; can += r.can; lost += r.lost;
+    if (r.fact === null) sinDeals++; else { fact += r.fact; gmvConFact += r.gmv; }
+  });
+  // Σ numeradores ÷ Σ denominadores. NUNCA promedio de porcentajes mensuales (Simpson).
+  const pen = gmvConFact > 0 ? fact / gmvConFact : null;
+  const per = CART_PERIOD ? "últ. " + CART_PERIOD + " meses" : "todo el histórico";
+  const card = (lbl, val, sub, color) => `<div class="cue-kpi"><div class="kl">${lbl}</div><div class="kv"${color ? ` style="color:${color}"` : ""}>${val}</div><div class="ks">${sub}</div></div>`;
+  el.innerHTML = `<div style="display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">
+      <span style="font-size:11px; color:#6b7280; font-weight:600;">Ventana:</span>
+      ${[[6, "6 meses"], [12, "12 meses"], [0, "Todo"]].map(p => `<button class="fc-btn${CART_PERIOD === p[0] ? "" : " secondary"}" style="font-size:11px; padding:4px 10px;" onclick="CART_PERIOD=${p[0]}; renderCartera();">${p[1]}</button>`).join("")}
+      <button class="fc-btn secondary" style="font-size:11px; padding:4px 10px; margin-left:auto;" onclick="perfLoadAll(true)">⟳ Cargar facturación Innew</button>
+      <span class="perf-st" style="font-size:11px; color:#9ca3af;"></span>
+    </div>
+    <div class="cue-kpis">
+      ${card("GMV cartera (USD)", fmtMoney(gmv), rows.length + " cuentas · " + per)}
+      ${card("Facturación Innew (USD)", fact ? fmtMoney(fact) : "—", sinDeals ? sinDeals + " cuentas sin deals cargados" : "deals ganados en la ventana")}
+      ${card("% del P&L del cliente", pen === null ? "—" : (pen * 100).toFixed(2) + "%", "Σ facturación ÷ Σ GMV", pen === null ? "" : pen < 0.01 ? "#dc2626" : pen < 0.025 ? "#d97706" : "#059669")}
+      ${card("Pedidos válidos", val.toLocaleString("es-AR"), "ticket " + fmtMoney(val ? gmv / val : 0) + " · " + (ped ? (can / ped * 100).toFixed(1) : "0") + "% cancelado")}
+    </div>`;
+}
+
+/* --- render: tabla por cliente --- */
+function cartRenderTabla() {
+  const el = document.getElementById("cart-tabla");
+  if (!el) return;
+  const rows = cartRows();
+  if (!rows.length) {
+    el.innerHTML = `<div style="padding:22px; text-align:center; color:#9ca3af; font-size:13px; font-style:italic; border:1px solid #e5e7eb; border-radius:10px; background:#fff;">Todavía no cargaste ningún export. Soltá un archivo arriba para empezar.</div>`;
+    return;
+  }
+  const th = (t, a) => `<th style="padding:7px 9px; text-align:${a || "left"}; font-size:9px; text-transform:uppercase; color:#6b7280; border-bottom:2px solid #e5e7eb; white-space:nowrap;">${t}</th>`;
+  const body = rows.map(r => {
+    const penTxt = r.pen === null ? `<span style="color:#9ca3af; font-style:italic;">sin deals</span>`
+      : `<span style="font-weight:700; color:${r.pen < 0.01 ? "#dc2626" : r.pen < 0.025 ? "#d97706" : "#059669"};">${(r.pen * 100).toFixed(2)}%</span>`;
+    const alerta = r.sinFx ? `<span title="${r.sinFx} mes(es) sin cotización cargada" style="color:#d97706;">⚠︎</span>` : "";
+    return `<tr style="border-bottom:1px solid #f1f5f9;">
+      <td style="padding:7px 9px; font-weight:600;">${esc(r.cli)} ${alerta}</td>
+      <td style="padding:7px 9px; font-size:11px; color:#6b7280;">${esc(r.cur)}${r.pais ? " · " + esc(r.pais) : ""}</td>
+      <td style="padding:7px 9px; font-size:11px; color:#6b7280;">${r.okMeses.length}</td>
+      <td style="padding:7px 9px; text-align:right; font-variant-numeric:tabular-nums; font-weight:600;">${fmtMoney(r.gmv)}</td>
+      <td style="padding:7px 9px; text-align:right; font-variant-numeric:tabular-nums;">${r.val.toLocaleString("es-AR")}</td>
+      <td style="padding:7px 9px; text-align:right; font-variant-numeric:tabular-nums;">${fmtMoney(r.tick)}</td>
+      <td style="padding:7px 9px; text-align:right; font-variant-numeric:tabular-nums; color:${r.cancelRate > .15 ? "#dc2626" : "#6b7280"};">${(r.cancelRate * 100).toFixed(1)}%</td>
+      <td style="padding:7px 9px; text-align:right; font-variant-numeric:tabular-nums;">${r.fact === null ? "—" : fmtMoney(r.fact)}</td>
+      <td style="padding:7px 9px; text-align:right;">${penTxt}</td>
+      <td style="padding:7px 9px;">${r.serie.length >= 2 ? cuGmvSparkSvg(r.serie, 80, 24) : ""}</td>
+      <td style="padding:7px 9px; text-align:right; white-space:nowrap;">
+        <a href="#" onclick="CART_SEL='${esc(r.cli).replace(/'/g, "")}'; renderCartera(); return false;" style="font-size:11px; color:#4030C8;">pivot</a>
+        <a href="#" onclick="cartBorrarCuenta('${esc(r.cli).replace(/'/g, "")}'); return false;" style="font-size:11px; color:#dc2626; margin-left:8px;">borrar</a>
+      </td>
+    </tr>`;
+  }).join("");
+  el.innerHTML = `<div style="overflow-x:auto; border:1px solid #e5e7eb; border-radius:10px; background:#fff; margin-bottom:14px;">
+    <table style="width:100%; border-collapse:collapse; font-size:12px;">
+      <thead><tr>${th("Cliente")}${th("Moneda / país")}${th("Meses")}${th("GMV USD", "right")}${th("Pedidos", "right")}${th("Ticket USD", "right")}${th("% Cancel", "right")}${th("Facturación Innew", "right")}${th("% del P&L", "right")}${th("Tendencia")}${th("", "right")}</tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+  </div>
+  <div class="small" style="font-style:italic; color:#888; margin-bottom:16px;">GMV = pedidos NO cancelados, deduplicados por número de pedido (el export de VTEX repite el total en cada línea de producto). <b>% del P&amp;L</b> = facturación Innew ÷ GMV del cliente, ambos en USD y sumados antes de dividir. Las bandas de color (&lt;1% rojo · 1–2,5% ámbar · &gt;2,5% verde) son una <b>hipótesis inicial</b>: conviene calibrarlas contra 8–10 cuentas reales antes de tomarlas como benchmark.</div>`;
+}
+
+/* --- render: pivot por medio de pago / cuotas / campaña --- */
+function cartRenderPivot() {
+  const el = document.getElementById("cart-pivot");
+  if (!el) return;
+  const rows = cartRows();
+  if (!rows.length) { el.innerHTML = ""; return; }
+  const target = rows.filter(r => !CART_SEL || r.cli === CART_SEL);
+  const acc = {};
+  target.forEach(r => {
+    const vtex = cartVtexOf(r.cli);
+    if (!vtex || !vtex.brk) return;
+    r.okMeses.forEach(m => {
+      const b = vtex.brk[m] && vtex.brk[m][CART_DIM];
+      if (!b) return;
+      Object.keys(b).forEach(k => {
+        const u = cartToUsd(b[k].g, r.cur, m);
+        if (u === null) return;
+        if (!acc[k]) acc[k] = { g: 0, n: 0 };
+        acc[k].g += u; acc[k].n += b[k].n;
+      });
+    });
+  });
+  const keys = Object.keys(acc).sort((a, b) => acc[b].g - acc[a].g);
+  const tot = keys.reduce((s, k) => s + acc[k].g, 0);
+  const dimLbl = { pay: "Medio de pago", inst: "Cuotas", utm: "Campaña / origen" };
+  const body = keys.length ? keys.map(k => {
+    const p = tot ? acc[k].g / tot : 0;
+    return `<tr style="border-bottom:1px solid #f1f5f9;">
+      <td style="padding:6px 9px;">${esc(k)}</td>
+      <td style="padding:6px 9px; text-align:right; font-variant-numeric:tabular-nums;">${fmtMoney(acc[k].g)}</td>
+      <td style="padding:6px 9px; text-align:right; font-variant-numeric:tabular-nums;">${acc[k].n.toLocaleString("es-AR")}</td>
+      <td style="padding:6px 9px; width:180px;"><div style="background:#f1f5f9; border-radius:3px; height:8px;"><div style="background:#430C89; height:8px; border-radius:3px; width:${(p * 100).toFixed(1)}%;"></div></div></td>
+      <td style="padding:6px 9px; text-align:right; font-variant-numeric:tabular-nums; font-weight:600;">${(p * 100).toFixed(1)}%</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="5" style="padding:14px; color:#9ca3af; font-style:italic;">Sin datos para esta combinación (puede faltar la cotización del mes).</td></tr>`;
+  el.innerHTML = `<div style="border:1px solid #e5e7eb; border-radius:10px; background:#fff; padding:12px 14px;">
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
+      <strong style="font-size:12px;">🔎 Composición del GMV</strong>
+      ${["pay", "inst", "utm"].map(d => `<button class="fc-btn${CART_DIM === d ? "" : " secondary"}" style="font-size:11px; padding:4px 10px;" onclick="CART_DIM='${d}'; renderCartera();">${dimLbl[d]}</button>`).join("")}
+      <select onchange="CART_SEL=this.value; renderCartera();" style="margin-left:auto; padding:4px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:11px;">
+        <option value=""${CART_SEL ? "" : " selected"}>Toda la cartera</option>
+        ${rows.map(r => `<option value="${esc(r.cli)}"${CART_SEL === r.cli ? " selected" : ""}>${esc(r.cli)}</option>`).join("")}
+      </select>
+    </div>
+    <table style="width:100%; border-collapse:collapse; font-size:12px;">
+      <thead><tr>
+        <th style="padding:6px 9px; text-align:left; font-size:9px; text-transform:uppercase; color:#6b7280; border-bottom:2px solid #e5e7eb;">${dimLbl[CART_DIM]}</th>
+        <th style="padding:6px 9px; text-align:right; font-size:9px; text-transform:uppercase; color:#6b7280; border-bottom:2px solid #e5e7eb;">GMV USD</th>
+        <th style="padding:6px 9px; text-align:right; font-size:9px; text-transform:uppercase; color:#6b7280; border-bottom:2px solid #e5e7eb;">Pedidos</th>
+        <th style="padding:6px 9px; border-bottom:2px solid #e5e7eb;"></th>
+        <th style="padding:6px 9px; text-align:right; font-size:9px; text-transform:uppercase; color:#6b7280; border-bottom:2px solid #e5e7eb;">Share</th>
+      </tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderCartera() {
+  if (!document.getElementById("cart-drop")) return;
+  cartRenderDrop();
+  cartRenderFx();
+  cartRenderKpis();
+  cartRenderTabla();
+  cartRenderPivot();
+}
+
 function toggleCuentasBody() {
   const b = document.getElementById("cue-body"), t = document.getElementById("cue-toggle");
   if (!b) return;
@@ -8291,7 +9047,7 @@ async function cuentasReloadDeals(companyId) {
 async function fetchCuentaDeals(companyId) {
   const res = await withTimeout(mcpCall("mcp__aaaa9eed-76e4-4bc8-a1a2-fad976f54ccb__search_crm_objects", {
     objectType: "deals",
-    properties: ["dealname", "amount", "dealstage", "closedate", "hs_next_step", "hs_deal_stage_probability", "probabilidad_comercial", "probabilidad_comercial_pct", "cambios_fecha_cierre", "meses_de_facturacion__hasta_6_", "pipeline"].concat(DAILY_STAGES.map(function (s) { return "hs_v2_date_entered_" + s.id; })),
+    properties: ["dealname", "amount", "dealstage", "closedate", "hs_next_step", "hs_deal_stage_probability", "probabilidad_comercial", "probabilidad_comercial_pct", "cambios_fecha_cierre", "meses_de_facturacion__hasta_6_", "plan_de_pagos", "pipeline"].concat(DAILY_STAGES.map(function (s) { return "hs_v2_date_entered_" + s.id; })),
     filterGroups: [{ associatedWith: [{ objectType: "companies", operator: "EQUAL", objectIdValues: [Number(companyId)] }] }],
     limit: 50,
     chatInsights: { userIntent: "Clientes: listar deals asociados a una cuenta para ver/editar valor, stage, cierre y próximo paso", satisfaction: "NEUTRAL" }
