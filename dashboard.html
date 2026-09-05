@@ -8223,6 +8223,8 @@ function cartRowsToModel(rows, filename) {
     seen.set(id, {
       id: id,
       month: mes,
+      // día del mes: lo único que permite después saber si el mes está completo o cortado
+      day: d ? d.getUTCDate() : 0,
       total: cartNum(row[C.total]),
       cancelled: cartIsCancelled(g(C.status), g(C.raw)),
       utm: g(C.utm) || "Directo / sin campaña",
@@ -8312,9 +8314,11 @@ function cartAggregate(model) {
   model.orders.forEach(o => {
     const m = o.month;
     if (!m || m === "?") return;
-    if (!meses[m]) meses[m] = { gmv: 0, ped: 0, val: 0, can: 0, lost: 0, tick: 0 };
+    if (!meses[m]) meses[m] = { gmv: 0, ped: 0, val: 0, can: 0, lost: 0, tick: 0, d0: 0, d1: 0 };
     const s = meses[m];
     s.ped++;
+    // primer y último día del mes con pedidos: sirve para detectar meses cortados
+    if (o.day) { if (!s.d0 || o.day < s.d0) s.d0 = o.day; if (o.day > s.d1) s.d1 = o.day; }
     // Estado del pedido y motivo de cancelación se cuentan sobre TODOS los pedidos
     // (si no, los cancelados —que son justo los que interesan acá— quedarían fuera).
     add(m, "est", o.est || "(sin dato)", o.total);
@@ -8641,6 +8645,38 @@ function cartFactUsd(companyId, meses) {
   return { opex: opex, capex: capex, total: opex + capex };
 }
 
+/* ---------- control de calidad: meses PARCIALES ----------
+   Un export bajado el 5 de septiembre trae 5 días de septiembre. Si ese mes entra al
+   promedio, hunde el GMV, inventa una caída en Var. GMV y rompe la penetración (la
+   facturación de Innew del mes completo contra un GMV de 5 días). Lo mismo pasa con el
+   PRIMER mes de un export que arranca a mitad de mes.
+   Se detecta con d0/d1 (primer y último día con pedidos), que se guardan al agregar.
+   Sólo se evalúan los extremos de la serie: un mes interior está completo por construcción.
+   Datos viejos sin d0/d1 → sólo se detecta el mes en curso. */
+const CART_PARCIAL_TOL = 3;   // días de gracia: una tienda chica puede no vender el día 1 ni el 30
+
+function cartMesHoy() { return new Date().toISOString().slice(0, 7); }
+function cartUltimoDia(m) {
+  const p = String(m).split("-");
+  return new Date(Date.UTC(+p[0], +p[1], 0)).getUTCDate();
+}
+// Devuelve { parcial:bool, txt:"" } para un mes dentro de su serie completa (keys ordenadas).
+function cartParcial(m, s, keys) {
+  if (m >= cartMesHoy()) return { parcial: true, txt: "mes en curso" };
+  if (!s || !s.d1) return { parcial: false, txt: "" };
+  const primero = keys[0] === m, ultimo = keys[keys.length - 1] === m;
+  if (primero && s.d0 > 1 + CART_PARCIAL_TOL) return { parcial: true, txt: "arranca el " + s.d0 };
+  if (ultimo && s.d1 < cartUltimoDia(m) - CART_PARCIAL_TOL) return { parcial: true, txt: "corta el " + s.d1 };
+  return { parcial: false, txt: "" };
+}
+// Chip ◐ para avisar en la tabla que hubo meses descartados por incompletos.
+function cartParcialChip(ms) {
+  if (!ms || !ms.length) return "";
+  const t = ms.length + " mes" + (ms.length > 1 ? "es" : "") + " sin contar por estar incompleto"
+    + (ms.length > 1 ? "s" : "") + ": " + ms.map(cartMesTxt).join(", ");
+  return ` <span title="${esc(t)}" style="color:#d97706; font-weight:700; cursor:help;">◐</span>`;
+}
+
 /* --- selección de meses según la ventana elegida --- */
 // Calcula UNA tienda dentro de la ventana activa, ya convertida a USD mes a mes.
 function cartCalcTienda(t) {
@@ -8648,30 +8684,40 @@ function cartCalcTienda(t) {
   const keys = Object.keys((t && t.meses) || {}).sort();
   const meses = CART_PERIOD ? keys.slice(-CART_PERIOD) : keys;
   let gmv = 0, ped = 0, val = 0, can = 0, lost = 0, sinFx = 0;
-  const okMeses = [], mesUsd = {}, filas = [];
+  const okMeses = [], mesUsd = {}, filas = [], parciales = [];
   meses.forEach(m => {
     const s = t.meses[m];
     const u = cartToUsd(s.gmv, cur, m);
     if (u === null) { sinFx++; return; }
-    okMeses.push(m); mesUsd[m] = u;
-    gmv += u; ped += s.ped; val += s.val || 0; can += s.can;
-    const lu = cartToUsd(s.lost, cur, m); lost += (lu === null ? 0 : lu);
-    // fila mes a mes para el popup: % potencial y Var. GMV se derivan acá, no se guardan
+    const lu = cartToUsd(s.lost, cur, m);
+    const lo = (lu === null ? 0 : lu);
+    const par = cartParcial(m, s, keys);
+    // fila mes a mes para el popup: % potencial y Var. GMV se derivan acá, no se guardan.
+    // Los parciales SÍ se muestran (marcados), pero no suman a ningún total.
     filas.push({
       mes: m, ped: s.ped, val: s.val || 0, can: s.can,
       cancelRate: s.ped ? s.can / s.ped : 0,
-      gmv: u, lost: (lu === null ? 0 : lu),
-      pot: (u + (lu === null ? 0 : lu)) > 0 ? (lu === null ? 0 : lu) / (u + (lu === null ? 0 : lu)) : 0,
+      gmv: u, lost: lo,
+      pot: (u + lo) > 0 ? lo / (u + lo) : 0,
       tick: (s.val || 0) ? u / s.val : 0,
-      varGmv: null
+      varGmv: null,
+      parcial: par.parcial, parcialTxt: par.txt,
+      dias: (s.d0 && s.d1) ? (s.d0 + "–" + s.d1) : ""
     });
+    if (par.parcial) { parciales.push(m); return; }
+    okMeses.push(m); mesUsd[m] = u;
+    gmv += u; ped += s.ped; val += s.val || 0; can += s.can; lost += lo;
   });
-  for (let i = 1; i < filas.length; i++) {
-    const prev = filas[i - 1].gmv;
-    filas[i].varGmv = prev > 0 ? (filas[i].gmv - prev) / prev : null;
-  }
+  // Var. GMV encadena sólo meses completos: comparar contra un mes cortado inventa una caída.
+  let prevG = null;
+  filas.forEach(f => {
+    if (f.parcial) { f.varGmv = null; return; }
+    f.varGmv = (prevG !== null && prevG > 0) ? (f.gmv - prevG) / prevG : null;
+    prevG = f.gmv;
+  });
   return {
     cur: cur, meses: meses, okMeses: okMeses, mesUsd: mesUsd, sinFx: sinFx, filas: filas,
+    parciales: parciales,
     gmv: gmv, ped: ped, val: val, can: can, lost: lost,
     tick: val ? gmv / val : 0, cancelRate: ped ? can / ped : 0,
     archivo: (t && t.archivo) || "", updated: (t && t.updated) || ""
@@ -8693,15 +8739,18 @@ function cartRows() {
       .filter(s => s.meses.length);
     if (!subs.length) return;
     let gmv = 0, ped = 0, val = 0, can = 0, lost = 0, sinFx = 0;
-    const mesesSet = {}, okSet = {}, serieAcc = {};
+    const mesesSet = {}, okSet = {}, serieAcc = {}, parSet = {};
     subs.forEach(s => {
       gmv += s.gmv; ped += s.ped; val += s.val; can += s.can; lost += s.lost; sinFx += s.sinFx;
       s.meses.forEach(m => { mesesSet[m] = 1; });
+      (s.parciales || []).forEach(m => { parSet[m] = 1; });
       s.okMeses.forEach(m => { okSet[m] = 1; serieAcc[m] = (serieAcc[m] || 0) + s.mesUsd[m]; });
     });
     const meses = Object.keys(mesesSet).sort();
     const okMeses = Object.keys(okSet).sort();
-    const serie = meses.map(m => serieAcc[m] || 0);
+    // la tendencia dibuja SÓLO meses completos con cotización: un mes cortado se vería
+    // como un derrumbe que no existe
+    const serie = okMeses.map(m => serieAcc[m] || 0);
     const curs = []; subs.forEach(s => { if (curs.indexOf(s.cur) < 0) curs.push(s.cur); });
     const fact = cartFactUsd(c.id, okMeses);
     const opex = fact ? fact.opex : null;
@@ -8716,6 +8765,7 @@ function cartRows() {
       industria: ind.txt, indMixta: ind.mixta,
       tiendas: subs, multi: subs.length > 1,
       meses: meses, okMeses: okMeses, sinFx: sinFx, serie: serie,
+      parciales: Object.keys(parSet).sort(),
       periodo: cartRangoTxt(okMeses.length ? okMeses : meses),
       gmv: gmv, ped: ped, val: val, can: can, lost: lost,
       tick: val ? gmv / val : 0,
@@ -9075,7 +9125,7 @@ function cartRenderTabla() {
       ${td(`${exp}${esc(r.cli)}${badge} ${alerta}`, "left", "font-weight:600;")}
       ${td(indPill)}
       ${td(`${esc(r.cur)}${r.pais ? " · " + esc(r.pais) : ""}`, "left", "font-size:11px; color:#6b7280;")}
-      ${td(esc(r.periodo), "left", "font-size:11px; color:#6b7280; white-space:nowrap;")}
+      ${td(esc(r.periodo) + cartParcialChip(r.parciales), "left", "font-size:11px; color:#6b7280; white-space:nowrap;")}
       ${td(fmtMoney(r.gmv), "right", "font-weight:600;")}
       ${td(r.serie.length >= 2 ? cuGmvSparkSvg(r.serie, 72, 22) : "")}
       ${td(r.val.toLocaleString("es-AR"), "right")}
@@ -9100,7 +9150,7 @@ function cartRenderTabla() {
         <td style="${sm} padding-left:28px; color:#374151;">↳ <a href="#" onclick="cartPopup(${ri},${ti}); return false;" style="color:#430C89; font-weight:600; text-decoration:none; border-bottom:1px dotted #430C89;" title="Ver el detalle mes a mes, los desgloses y el análisis cruzado de esta marca">${esc(s.tienda)}</a> ${al}</td>
         <td style="${sm}"><input value="${esc(s.industria || "")}" placeholder="industria…" style="width:110px; font-size:10px; padding:2px 5px; border:1px solid #e5e7eb; border-radius:4px;" onchange="cartSetIndustria(${JSON.stringify(r.cli).replace(/"/g, "&quot;")}, ${JSON.stringify(s.tienda).replace(/"/g, "&quot;")}, this.value)"></td>
         <td style="${sm} color:#6b7280;">${esc(s.cur)}</td>
-        <td style="${sm} color:#6b7280; white-space:nowrap;">${esc(cartRangoTxt(s.okMeses.length ? s.okMeses : s.meses))}</td>
+        <td style="${sm} color:#6b7280; white-space:nowrap;">${esc(cartRangoTxt(s.okMeses.length ? s.okMeses : s.meses))}${cartParcialChip(s.parciales)}</td>
         <td style="${sm} text-align:right; font-variant-numeric:tabular-nums;">${fmtMoney(s.gmv)}</td>
         <td style="${sm}"></td>
         <td style="${sm} text-align:right; font-variant-numeric:tabular-nums;">${s.val.toLocaleString("es-AR")}</td>
@@ -9323,16 +9373,19 @@ function cartPopMeses(d) {
   const num = v => `<td style="padding:5px 9px; text-align:right; font-variant-numeric:tabular-nums;">${v}</td>`;
   const varTxt = v => v === null || v === undefined ? `<span style="color:#d1d5db;">—</span>`
     : `<span style="color:${v >= 0 ? "#059669" : "#dc2626"}; font-weight:600;">${v >= 0 ? "▲" : "▼"} ${Math.abs(v * 100).toFixed(1)}%</span>`;
-  const body = f.map(x => `<tr style="border-bottom:1px solid #f1f5f9;">
-      <td style="padding:5px 9px; font-weight:600; white-space:nowrap;">${cartMesTxt(x.mes)}</td>
+  // Los meses incompletos se muestran (no se esconde información) pero van en gris,
+  // rotulados, y NO suman al total: son los que ensucian el promedio.
+  const body = f.map(x => `<tr style="border-bottom:1px solid #f1f5f9;${x.parcial ? " background:#fffbeb; color:#9ca3af;" : ""}">
+      <td style="padding:5px 9px; font-weight:600; white-space:nowrap;">${cartMesTxt(x.mes)}${x.parcial ? ` <span title="Mes incompleto — no entra en ningún total" style="font-weight:600; color:#b45309; font-size:10px;">◐ parcial${x.parcialTxt ? " · " + esc(x.parcialTxt) : ""}${x.dias ? " (días " + esc(x.dias) + ")" : ""}</span>` : ""}</td>
       ${num(x.ped.toLocaleString("es-AR"))}${num(x.val.toLocaleString("es-AR"))}${num(x.can.toLocaleString("es-AR"))}
-      ${num(`<span style="color:${x.cancelRate > 0.3 ? "#dc2626" : x.cancelRate > 0.15 ? "#d97706" : "#059669"}; font-weight:600;">${(x.cancelRate * 100).toFixed(1)}%</span>`)}
-      ${num(`<b>${fmtMoney(x.gmv)}</b>`)}${num(`<span style="color:#dc2626;">${fmtMoney(x.lost)}</span>`)}
-      ${num((x.pot * 100).toFixed(1) + "%")}${num(fmtMoney(x.tick))}${num(varTxt(x.varGmv))}
+      ${num(`<span style="color:${x.parcial ? "#9ca3af" : x.cancelRate > 0.3 ? "#dc2626" : x.cancelRate > 0.15 ? "#d97706" : "#059669"}; font-weight:600;">${(x.cancelRate * 100).toFixed(1)}%</span>`)}
+      ${num(x.parcial ? fmtMoney(x.gmv) : `<b>${fmtMoney(x.gmv)}</b>`)}${num(`<span style="color:${x.parcial ? "#9ca3af" : "#dc2626"};">${fmtMoney(x.lost)}</span>`)}
+      ${num((x.pot * 100).toFixed(1) + "%")}${num(fmtMoney(x.tick))}${num(x.parcial ? `<span style="color:#d1d5db;">—</span>` : varTxt(x.varGmv))}
     </tr>`).join("");
-  const t = f.reduce((a, x) => ({ ped: a.ped + x.ped, val: a.val + x.val, can: a.can + x.can, gmv: a.gmv + x.gmv, lost: a.lost + x.lost }), { ped: 0, val: 0, can: 0, gmv: 0, lost: 0 });
-  const foot = f.length ? `<tr style="border-top:2px solid #e5e7eb; font-weight:700; background:#faf8ff;">
-      <td style="padding:6px 9px;">Total</td>
+  const fOk = f.filter(x => !x.parcial);
+  const t = fOk.reduce((a, x) => ({ ped: a.ped + x.ped, val: a.val + x.val, can: a.can + x.can, gmv: a.gmv + x.gmv, lost: a.lost + x.lost }), { ped: 0, val: 0, can: 0, gmv: 0, lost: 0 });
+  const foot = fOk.length ? `<tr style="border-top:2px solid #e5e7eb; font-weight:700; background:#faf8ff;">
+      <td style="padding:6px 9px;">Total<span style="font-weight:400; color:#6b7280; font-size:10px;"> · ${fOk.length} mes${fOk.length > 1 ? "es" : ""} completo${fOk.length > 1 ? "s" : ""}</span></td>
       ${num(t.ped.toLocaleString("es-AR"))}${num(t.val.toLocaleString("es-AR"))}${num(t.can.toLocaleString("es-AR"))}
       ${num(t.ped ? (t.can / t.ped * 100).toFixed(1) + "%" : "—")}
       ${num(fmtMoney(t.gmv))}${num(fmtMoney(t.lost))}
@@ -9345,7 +9398,7 @@ function cartPopMeses(d) {
         <tbody>${body || `<tr><td colspan="10" style="padding:16px; color:#9ca3af; font-style:italic;">Sin meses con cotización cargada.</td></tr>`}${foot}</tbody>
       </table>
     </div>
-    <div class="small" style="font-style:italic; color:#888; margin-top:9px;"><b>GMV neto</b> = pedidos no cancelados · <b>Perdido</b> = importe de los cancelados · <b>% potencial</b> = perdido ÷ (GMV + perdido): cuánto crecería la marca sin cancelaciones. Todo en USD, cada mes a su propia cotización oficial.</div>`;
+    <div class="small" style="font-style:italic; color:#888; margin-top:9px;"><b>GMV neto</b> = pedidos no cancelados · <b>Perdido</b> = importe de los cancelados · <b>% potencial</b> = perdido ÷ (GMV + perdido): cuánto crecería la marca sin cancelaciones. Todo en USD, cada mes a su propia cotización oficial. Los meses <b>◐ parciales</b> (mes en curso, o extremo cortado del export) se muestran pero <b>no suman a ningún total ni a la penetración</b>: un mes de 5 días comparado contra facturación de mes entero da un número falso.</div>`;
 }
 
 function cartPopRender() {
@@ -9368,7 +9421,7 @@ function cartPopRender() {
       <div style="background:#430C89; color:#fff; padding:14px 18px; display:flex; align-items:flex-start; gap:12px;">
         <div style="flex:1;">
           <div style="font-size:16px; font-weight:800;">${esc(s.tienda)}</div>
-          <div style="font-size:11px; opacity:.85;">${esc(r.cli)}${s.industria ? " · " + esc(s.industria) : ""} · ${esc(s.cur)} · ${cartRangoTxt(s.okMeses.length ? s.okMeses : s.meses)}${s.sinFx ? ` · <span title="Meses sin cotización cargada">⚠︎ ${s.sinFx} mes${s.sinFx > 1 ? "es" : ""} sin cotización</span>` : ""}</div>
+          <div style="font-size:11px; opacity:.85;">${esc(r.cli)}${s.industria ? " · " + esc(s.industria) : ""} · ${esc(s.cur)} · ${cartRangoTxt(s.okMeses.length ? s.okMeses : s.meses)}${s.sinFx ? ` · <span title="Meses sin cotización cargada">⚠︎ ${s.sinFx} mes${s.sinFx > 1 ? "es" : ""} sin cotización</span>` : ""}${(s.parciales || []).length ? ` · <span title="Meses incompletos, excluidos de todos los totales">◐ ${s.parciales.length} mes${s.parciales.length > 1 ? "es" : ""} incompleto${s.parciales.length > 1 ? "s" : ""}</span>` : ""}</div>
         </div>
         <button onclick="cartPopClose()" style="border:none; background:rgba(255,255,255,.16); color:#fff; width:28px; height:28px; border-radius:8px; cursor:pointer; font-size:15px; line-height:1;">✕</button>
       </div>
