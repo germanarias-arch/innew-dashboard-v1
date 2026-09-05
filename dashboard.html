@@ -8381,12 +8381,237 @@ function cartVtexOf(cli) {
 }
 function cartTiendasOf(cli) { const v = cartVtexOf(cli); return v ? v.tiendas : null; }
 
+
+/* --- vocabulario de industria: sale de la propiedad `industry` de companies en HubSpot ---
+   Las 10 primeras son las opciones que Innew agregó al portal; abajo van las ~143 estándar.
+   TRAMPA: en varias el value NO es el label (Beauty → "Beauty & Pharma") y hay values que son
+   literales en español ("Electro", "Grocery", "Hogar & Deco + Outdoor + Librería").
+   Regla, igual que con lead_source y producto: SE GUARDA EL VALUE, SE MUESTRA EL LABEL. */
+const CART_IND_INNEW = [
+  { v: "APPAREL_FASHION", l: "Apparel & Fashion" },
+  { v: "SPORTS", l: "Sports" },
+  { v: "AUTOMOTIVE", l: "Automotive" },
+  { v: "PHARMACEUTICALS", l: "Pharmaceuticals" },
+  { v: "Hogar & Deco + Outdoor + Librería", l: "Hogar & Deco + Outdoor + Librería" },
+  { v: "Regalería/Multidepartamental", l: "Regalería/Multidepartamental" },
+  { v: "Electro", l: "Electro" },
+  { v: "Grocery", l: "Grocery" },
+  { v: "Beauty", l: "Beauty & Pharma" },
+  { v: "ISV", l: "ISV" }
+];
+const CART_IND_STD = [
+  { v: "AIRLINES_AVIATION", l: "Airlines/Aviation" },
+  { v: "ACCOUNTING", l: "Accounting" },
+  { v: "ALTERNATIVE_DISPUTE_RESOLUTION", l: "Alternative Dispute Resolution" },
+  { v: "ALTERNATIVE_MEDICINE", l: "Alternative Medicine" },
+  { v: "ANIMATION", l: "Animation" },
+  { v: "ARCHITECTURE_PLANNING", l: "Architecture & Planning" },
+  { v: "ARTS_AND_CRAFTS", l: "Arts and Crafts" },
+  { v: "AVIATION_AEROSPACE", l: "Aviation & Aerospace" },
+  { v: "BANKING", l: "Banking" },
+  { v: "BIOTECHNOLOGY", l: "Biotechnology" },
+  { v: "BROADCAST_MEDIA", l: "Broadcast Media" },
+  { v: "BUILDING_MATERIALS", l: "Building Materials" },
+  { v: "BUSINESS_SUPPLIES_AND_EQUIPMENT", l: "Business Supplies and Equipment" },
+  { v: "CAPITAL_MARKETS", l: "Capital Markets" },
+  { v: "CHEMICALS", l: "Chemicals" },
+  { v: "CIVIC_SOCIAL_ORGANIZATION", l: "Civic & Social Organization" },
+  { v: "CIVIL_ENGINEERING", l: "Civil Engineering" },
+  { v: "COMMERCIAL_REAL_ESTATE", l: "Commercial Real Estate" },
+  { v: "COMPUTER_NETWORK_SECURITY", l: "Computer & Network Security" },
+  { v: "COMPUTER_GAMES", l: "Computer Games" },
+  { v: "COMPUTER_HARDWARE", l: "Computer Hardware" },
+  { v: "COMPUTER_NETWORKING", l: "Computer Networking" },
+  { v: "COMPUTER_SOFTWARE", l: "Computer Software" },
+  { v: "INTERNET", l: "Internet" },
+  { v: "CONSTRUCTION", l: "Construction" },
+  { v: "CONSUMER_ELECTRONICS", l: "Consumer Electronics" },
+  { v: "CONSUMER_GOODS", l: "Consumer Goods" },
+  { v: "CONSUMER_SERVICES", l: "Consumer Services" },
+  { v: "COSMETICS", l: "Cosmetics" },
+  { v: "DAIRY", l: "Dairy" },
+  { v: "DEFENSE_SPACE", l: "Defense & Space" },
+  { v: "DESIGN", l: "Design" },
+  { v: "EDUCATION_MANAGEMENT", l: "Education Management" },
+  { v: "E_LEARNING", l: "E-Learning" },
+  { v: "ELECTRICAL_ELECTRONIC_MANUFACTURING", l: "Electrical/Electronic Manufacturing" },
+  { v: "ENTERTAINMENT", l: "Entertainment" },
+  { v: "ENVIRONMENTAL_SERVICES", l: "Environmental Services" },
+  { v: "EVENTS_SERVICES", l: "Events Services" },
+  { v: "EXECUTIVE_OFFICE", l: "Executive Office" },
+  { v: "FACILITIES_SERVICES", l: "Facilities Services" },
+  { v: "FARMING", l: "Farming" },
+  { v: "SUPERMARKETS", l: "Supermarkets" },
+  { v: "FINANCIAL_SERVICES", l: "Financial Services" },
+  { v: "FINE_ART", l: "Fine Art" },
+  { v: "FISHERY", l: "Fishery" },
+  { v: "FOOD_BEVERAGES", l: "Food & Beverages" },
+  { v: "FOOD_PRODUCTION", l: "Food Production" },
+  { v: "FUND_RAISING", l: "Fund-Raising" },
+  { v: "FURNITURE", l: "Furniture" },
+  { v: "GAMBLING_CASINOS", l: "Gambling & Casinos" },
+  { v: "GLASS_CERAMICS_CONCRETE", l: "Glass, Ceramics & Concrete" },
+  { v: "GOVERNMENT_ADMINISTRATION", l: "Government Administration" },
+  { v: "GOVERNMENT_RELATIONS", l: "Government Relations" },
+  { v: "GRAPHIC_DESIGN", l: "Graphic Design" },
+  { v: "HEALTH_WELLNESS_AND_FITNESS", l: "Health, Wellness and Fitness" },
+  { v: "HIGHER_EDUCATION", l: "Higher Education" },
+  { v: "HOSPITAL_HEALTH_CARE", l: "Hospital & Health Care" },
+  { v: "HOSPITALITY", l: "Hospitality" },
+  { v: "HUMAN_RESOURCES", l: "Human Resources" },
+  { v: "IMPORT_AND_EXPORT", l: "Import and Export" },
+  { v: "INDIVIDUAL_FAMILY_SERVICES", l: "Individual & Family Services" },
+  { v: "INDUSTRIAL_AUTOMATION", l: "Industrial Automation" },
+  { v: "INFORMATION_SERVICES", l: "Information Services" },
+  { v: "INFORMATION_TECHNOLOGY_AND_SERVICES", l: "Information Technology and Services" },
+  { v: "INSURANCE", l: "Insurance" },
+  { v: "INTERNATIONAL_AFFAIRS", l: "International Affairs" },
+  { v: "INTERNATIONAL_TRADE_AND_DEVELOPMENT", l: "International Trade and Development" },
+  { v: "INVESTMENT_BANKING", l: "Investment Banking" },
+  { v: "INVESTMENT_MANAGEMENT", l: "Investment Management" },
+  { v: "JUDICIARY", l: "Judiciary" },
+  { v: "LAW_ENFORCEMENT", l: "Law Enforcement" },
+  { v: "LAW_PRACTICE", l: "Law Practice" },
+  { v: "LEGAL_SERVICES", l: "Legal Services" },
+  { v: "LEGISLATIVE_OFFICE", l: "Legislative Office" },
+  { v: "LEISURE_TRAVEL_TOURISM", l: "Leisure, Travel & Tourism" },
+  { v: "LIBRARIES", l: "Libraries" },
+  { v: "LOGISTICS_AND_SUPPLY_CHAIN", l: "Logistics and Supply Chain" },
+  { v: "LUXURY_GOODS_JEWELRY", l: "Luxury Goods & Jewelry" },
+  { v: "MACHINERY", l: "Machinery" },
+  { v: "MANAGEMENT_CONSULTING", l: "Management Consulting" },
+  { v: "MARITIME", l: "Maritime" },
+  { v: "MARKET_RESEARCH", l: "Market Research" },
+  { v: "MARKETING_AND_ADVERTISING", l: "Marketing and Advertising" },
+  { v: "MECHANICAL_OR_INDUSTRIAL_ENGINEERING", l: "Mechanical or Industrial Engineering" },
+  { v: "MEDIA_PRODUCTION", l: "Media Production" },
+  { v: "MEDICAL_DEVICES", l: "Medical Devices" },
+  { v: "MEDICAL_PRACTICE", l: "Medical Practice" },
+  { v: "MENTAL_HEALTH_CARE", l: "Mental Health Care" },
+  { v: "MILITARY", l: "Military" },
+  { v: "MINING_METALS", l: "Mining & Metals" },
+  { v: "MOTION_PICTURES_AND_FILM", l: "Motion Pictures and Film" },
+  { v: "MUSEUMS_AND_INSTITUTIONS", l: "Museums and Institutions" },
+  { v: "MUSIC", l: "Music" },
+  { v: "NANOTECHNOLOGY", l: "Nanotechnology" },
+  { v: "NEWSPAPERS", l: "Newspapers" },
+  { v: "NON_PROFIT_ORGANIZATION_MANAGEMENT", l: "Non-Profit Organization Management" },
+  { v: "OIL_ENERGY", l: "Oil & Energy" },
+  { v: "ONLINE_MEDIA", l: "Online Media" },
+  { v: "OUTSOURCING_OFFSHORING", l: "Outsourcing/Offshoring" },
+  { v: "PACKAGE_FREIGHT_DELIVERY", l: "Package/Freight Delivery" },
+  { v: "PACKAGING_AND_CONTAINERS", l: "Packaging and Containers" },
+  { v: "PAPER_FOREST_PRODUCTS", l: "Paper & Forest Products" },
+  { v: "PERFORMING_ARTS", l: "Performing Arts" },
+  { v: "PHILANTHROPY", l: "Philanthropy" },
+  { v: "PHOTOGRAPHY", l: "Photography" },
+  { v: "PLASTICS", l: "Plastics" },
+  { v: "POLITICAL_ORGANIZATION", l: "Political Organization" },
+  { v: "PRIMARY_SECONDARY_EDUCATION", l: "Primary/Secondary Education" },
+  { v: "PRINTING", l: "Printing" },
+  { v: "PROFESSIONAL_TRAINING_COACHING", l: "Professional Training & Coaching" },
+  { v: "PROGRAM_DEVELOPMENT", l: "Program Development" },
+  { v: "PUBLIC_POLICY", l: "Public Policy" },
+  { v: "PUBLIC_RELATIONS_AND_COMMUNICATIONS", l: "Public Relations and Communications" },
+  { v: "PUBLIC_SAFETY", l: "Public Safety" },
+  { v: "PUBLISHING", l: "Publishing" },
+  { v: "RAILROAD_MANUFACTURE", l: "Railroad Manufacture" },
+  { v: "RANCHING", l: "Ranching" },
+  { v: "REAL_ESTATE", l: "Real Estate" },
+  { v: "RECREATIONAL_FACILITIES_AND_SERVICES", l: "Recreational Facilities and Services" },
+  { v: "RELIGIOUS_INSTITUTIONS", l: "Religious Institutions" },
+  { v: "RENEWABLES_ENVIRONMENT", l: "Renewables & Environment" },
+  { v: "RESEARCH", l: "Research" },
+  { v: "RESTAURANTS", l: "Restaurants" },
+  { v: "RETAIL", l: "Retail" },
+  { v: "SECURITY_AND_INVESTIGATIONS", l: "Security and Investigations" },
+  { v: "SEMICONDUCTORS", l: "Semiconductors" },
+  { v: "SHIPBUILDING", l: "Shipbuilding" },
+  { v: "SPORTING_GOODS", l: "Sporting Goods" },
+  { v: "STAFFING_AND_RECRUITING", l: "Staffing and Recruiting" },
+  { v: "TELECOMMUNICATIONS", l: "Telecommunications" },
+  { v: "TEXTILES", l: "Textiles" },
+  { v: "THINK_TANKS", l: "Think Tanks" },
+  { v: "TOBACCO", l: "Tobacco" },
+  { v: "TRANSLATION_AND_LOCALIZATION", l: "Translation and Localization" },
+  { v: "TRANSPORTATION_TRUCKING_RAILROAD", l: "Transportation/Trucking/Railroad" },
+  { v: "UTILITIES", l: "Utilities" },
+  { v: "VENTURE_CAPITAL_PRIVATE_EQUITY", l: "Venture Capital & Private Equity" },
+  { v: "VETERINARY", l: "Veterinary" },
+  { v: "WAREHOUSING", l: "Warehousing" },
+  { v: "WHOLESALE", l: "Wholesale" },
+  { v: "WINE_AND_SPIRITS", l: "Wine and Spirits" },
+  { v: "WIRELESS", l: "Wireless" },
+  { v: "WRITING_AND_EDITING", l: "Writing and Editing" }
+];
+const CART_IND_ALL = CART_IND_INNEW.concat(CART_IND_STD);
+const CART_IND_LBL = {}; CART_IND_ALL.forEach(o => { CART_IND_LBL[o.v] = o.l; });
+// Índice para migrar lo que se cargó a mano antes de que esto fuera un dropdown:
+// matchea contra value o contra label, sin distinguir mayúsculas ("Automotive" → AUTOMOTIVE).
+const CART_IND_IDX = {};
+CART_IND_ALL.forEach(o => { CART_IND_IDX[String(o.v).toLowerCase()] = o.v; CART_IND_IDX[String(o.l).toLowerCase()] = o.v; });
+
+/* Normaliza a value de HubSpot. Si no matchea nada lo devuelve tal cual: es preferible
+   mostrar un texto viejo raro antes que perder el dato que German ya había cargado. */
+function cartIndNorm(v) {
+  const s = String(v == null ? "" : v).trim();
+  if (!s) return "";
+  return CART_IND_IDX[s.toLowerCase()] || s;
+}
+function cartIndLabel(v) {
+  const s = cartIndNorm(v);
+  return s ? (CART_IND_LBL[s] || s) : "";
+}
+/* <select> reutilizable (alta y edición). El value que viaja es el de HubSpot y el texto
+   visible es el label. Si el valor guardado no está en la lista se agrega una opción
+   "(fuera de lista)" para no pisarlo en silencio al abrir el combo. */
+function cartIndSelect(val, onchange, style, id) {
+  const cur = cartIndNorm(val);
+  const opt = o => `<option value="${esc(o.v)}"${o.v === cur ? " selected" : ""}>${esc(o.l)}</option>`;
+  const suelto = (cur && !CART_IND_LBL[cur]) ? `<option value="${esc(cur)}" selected>${esc(cur)} (fuera de lista)</option>` : "";
+  return `<select${id ? ` id="${id}"` : ""} style="${style || ""}" onchange="${onchange}" title="Opciones de la propiedad Industry de HubSpot. Se puede cambiar cuando quieras.">
+    <option value="">— sin industria —</option>${suelto}
+    <optgroup label="Innew">${CART_IND_INNEW.map(opt).join("")}</optgroup>
+    <optgroup label="HubSpot">${CART_IND_STD.map(opt).join("")}</optgroup>
+  </select>`;
+}
+
+/* Tendencia con los meses debajo. NO reusa cuGmvSparkSvg a propósito: esa función la comparte
+   la vista Clientes y cambiarle la firma la rompería. Acá se redibuja la curva para poder
+   anclar cada etiqueta en la x exacta de su punto. */
+function cartSparkMeses(vals, meses, w, h) {
+  if (!vals || vals.length < 2) return "";
+  const lblH = 11, pad = 3, n = vals.length;
+  const min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
+  const span = (max - min) || 1;
+  const xs = vals.map((v, i) => pad + i * ((w - pad * 2) / (n - 1)));
+  const pts = vals.map((v, i) => [Math.round(xs[i] * 10) / 10, Math.round((h - pad - ((v - min) / span) * (h - pad * 2)) * 10) / 10]);
+  const color = vals[n - 1] >= vals[0] ? "#1D9E75" : "#E24B4A";
+  const last = pts[n - 1];
+  const ms = meses || [];
+  // si la serie cruza de año, el año importa para leerla
+  const multiAnio = ms.length > 1 && String(ms[0]).slice(0, 4) !== String(ms[ms.length - 1]).slice(0, 4);
+  // con muchos meses las etiquetas se pisan: se saltea una sí una no, pero los extremos van siempre
+  const paso = n > 6 ? 2 : 1;
+  const labs = ms.map((m, i) => {
+    if (i % paso !== 0 && i !== n - 1) return "";
+    const p = cartMesTxt(m).split(" ");
+    const t = p[0] + ((multiAnio && (i === 0 || String(m).slice(5, 7) === "01")) ? " " + p[1] : "");
+    const anchor = i === 0 ? "start" : (i === n - 1 ? "end" : "middle");
+    const x = i === 0 ? 0 : (i === n - 1 ? w : xs[i]);
+    return `<text x="${Math.round(x * 10) / 10}" y="${h + lblH - 2}" text-anchor="${anchor}" font-size="8" fill="#9ca3af">${esc(t)}</text>`;
+  }).join("");
+  const tip = ms.map((m, i) => cartMesTxt(m) + ": " + fmtMoney(vals[i])).join(" · ");
+  return `<svg width="${w}" height="${h + lblH}" viewBox="0 0 ${w} ${h + lblH}" style="display:block;"><title>${esc(tip)}</title><polyline points="${pts.map(p => p.join(",")).join(" ")}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/><circle cx="${last[0]}" cy="${last[1]}" r="2.2" fill="${color}"/>${labs}</svg>`;
+}
+
 /* --- industria POR MARCA, no por empresa ---
    Vive dentro del objeto de la tienda, en paralelo a `cur`: dos marcas de un mismo grupo
    pueden jugar en rubros distintos (Ferrex = ferretería, Sueñolar = colchones). */
 function cartIndustriaOf(cli, tienda) {
   const ts = cartTiendasOf(cli) || {};
-  return ((ts[tienda] || {}).industria || "").trim();
+  // normalizado a value de HubSpot: lo que se cargó a mano antes del dropdown se migra al vuelo
+  return cartIndNorm(((ts[tienda] || {}).industria || "").trim());
 }
 function cartSetIndustria(cli, tienda, val) {
   const prev = cartVtexOf(cli);
@@ -8397,13 +8622,15 @@ function cartSetIndustria(cli, tienda, val) {
   cuentasSetMeta(cli, { vtex: { updated: prev.updated || "", tiendas: tiendas } });
   renderCartera();
 }
-// Industria a nivel cuenta: una sola si todas las marcas coinciden, "mixta · N" si difieren.
+/* Industria a nivel cuenta: una sola si todas las marcas coinciden, "mixta · N" si difieren.
+   Se deduplica por VALUE de HubSpot pero `txt` devuelve el LABEL: esa es la string que termina
+   en la fila, y de la fila salen tanto el orden alfabético como las opciones del filtro. */
 function cartIndustriaCuenta(tiendas) {
-  const vals = Object.keys(tiendas || {}).map(n => ((tiendas[n] || {}).industria || "").trim()).filter(Boolean);
+  const vals = Object.keys(tiendas || {}).map(n => cartIndNorm((tiendas[n] || {}).industria)).filter(Boolean);
   const uniq = Array.from(new Set(vals));
-  if (!uniq.length) return { txt: "", mixta: false, n: 0 };
-  if (uniq.length === 1) return { txt: uniq[0], mixta: false, n: 1 };
-  return { txt: "mixta · " + uniq.length, mixta: true, n: uniq.length };
+  if (!uniq.length) return { txt: "", val: "", mixta: false, n: 0 };
+  if (uniq.length === 1) return { txt: cartIndLabel(uniq[0]), val: uniq[0], mixta: false, n: 1 };
+  return { txt: "mixta · " + uniq.length, val: "", mixta: true, n: uniq.length };
 }
 
 // GMV de cuenta (gmvHist, el mismo campo que German carga a mano y que viaja a HubSpot como
@@ -8735,7 +8962,7 @@ function cartRows() {
     const tiendas = cartTiendasOf(cli);
     if (!tiendas || !Object.keys(tiendas).length) return;
     const subs = Object.keys(tiendas).sort()
-      .map(n => Object.assign({ tienda: n, industria: ((tiendas[n] || {}).industria || "").trim() }, cartCalcTienda(tiendas[n])))
+      .map(n => Object.assign({ tienda: n, industria: cartIndNorm((tiendas[n] || {}).industria) }, cartCalcTienda(tiendas[n])))
       .filter(s => s.meses.length);
     if (!subs.length) return;
     let gmv = 0, ped = 0, val = 0, can = 0, lost = 0, sinFx = 0;
@@ -8930,9 +9157,7 @@ function cartRenderDrop() {
       <input id="cart-tienda-${i}" type="text" value="${esc(p.tiendaSug)}" placeholder="tienda / marca"
         title="Si la cuenta tiene varias tiendas o marcas, poné acá cuál es. Cada una guarda su propia historia y su propia moneda."
         style="padding:5px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12px; width:150px;">
-      <input id="cart-ind-${i}" type="text" value="" placeholder="industria"
-        title="La industria va por marca, no por empresa: un mismo grupo puede tener una marca de indumentaria y otra de deco. Se puede editar después desde la tabla."
-        style="padding:5px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12px; width:130px;">
+      ${cartIndSelect("", "", "padding:5px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12px; width:170px;", "cart-ind-" + i)}
       <button class="fc-btn" style="font-size:12px;" onclick="cartAssign(${i})">Guardar</button>
       <button class="fc-btn secondary" style="font-size:12px;" onclick="cartDiscard(${i})">Descartar</button>
     </div>`;
@@ -9118,16 +9343,24 @@ function cartRenderTabla() {
     const abierto = !!CART_OPEN[r.cli];
     const exp = `<a href="#" onclick="cartToggleOpen(${ri}); return false;" title="Ver mes a mes${r.multi ? " y las " + r.tiendas.length + " tiendas" : ""}" style="text-decoration:none; color:#6b7280; margin-right:5px;">${abierto ? "▾" : "▸"}</a>`;
     const badge = r.multi ? ` <span title="${r.tiendas.length} tiendas / marcas" style="font-size:9px; background:#EDE9FE; color:#430C89; border-radius:8px; padding:1px 6px; font-weight:700;">${r.tiendas.length} tiendas</span>` : "";
-    const indPill = r.industria
-      ? `<span style="font-size:10px; background:${r.indMixta ? "#FEF3C7" : "#F3F4F6"}; color:${r.indMixta ? "#92400e" : "#374151"}; border-radius:8px; padding:1px 7px;">${esc(r.industria)}</span>`
-      : `<span style="font-size:10px; color:#d1d5db; font-style:italic;">sin industria</span>`;
+    /* Industria: si la cuenta tiene UNA sola marca se edita acá mismo (antes sólo se podía
+       desde la sub-fila, que existe únicamente cuando hay varias marcas → no había forma de
+       cambiarla en cuentas de una marca). Con varias marcas la celda es de sólo lectura y la
+       edición vive en cada sub-fila, porque el dato es por marca. */
+    const indPill = (r.tiendas.length === 1)
+      ? cartIndSelect(r.tiendas[0].industria,
+          `cartSetIndustria(${JSON.stringify(r.cli).replace(/"/g, "&quot;")}, ${JSON.stringify(r.tiendas[0].tienda).replace(/"/g, "&quot;")}, this.value)`,
+          "font-size:10px; padding:2px 4px; border:1px solid #e5e7eb; border-radius:4px; max-width:150px;")
+      : (r.industria
+        ? `<span title="${r.indMixta ? "Cada marca tiene su industria: abrí la fila para verlas y editarlas" : ""}" style="font-size:10px; background:${r.indMixta ? "#FEF3C7" : "#F3F4F6"}; color:${r.indMixta ? "#92400e" : "#374151"}; border-radius:8px; padding:1px 7px;">${esc(r.industria)}</span>`
+        : `<span style="font-size:10px; color:#d1d5db; font-style:italic;">sin industria</span>`);
     const head = `<tr style="border-bottom:1px solid #f1f5f9;">
       ${td(`${exp}${esc(r.cli)}${badge} ${alerta}`, "left", "font-weight:600;")}
       ${td(indPill)}
       ${td(`${esc(r.cur)}${r.pais ? " · " + esc(r.pais) : ""}`, "left", "font-size:11px; color:#6b7280;")}
       ${td(esc(r.periodo) + cartParcialChip(r.parciales), "left", "font-size:11px; color:#6b7280; white-space:nowrap;")}
       ${td(fmtMoney(r.gmv), "right", "font-weight:600;")}
-      ${td(r.serie.length >= 2 ? cuGmvSparkSvg(r.serie, 72, 22) : "")}
+      ${td(r.serie.length >= 2 ? cartSparkMeses(r.serie, r.okMeses, 104, 22) : "")}
       ${td(r.val.toLocaleString("es-AR"), "right")}
       ${td(fmtMoney(r.tick), "right")}
       ${td((r.cancelRate * 100).toFixed(1) + "%", "right", `color:${r.cancelRate > .15 ? "#dc2626" : "#6b7280"};`)}
@@ -9148,7 +9381,7 @@ function cartRenderTabla() {
       const sm = "padding:5px 9px; font-size:11px;";
       return `<tr style="border-bottom:1px solid #f8fafc; background:#fafafa;">
         <td style="${sm} padding-left:28px; color:#374151;">↳ <a href="#" onclick="cartPopup(${ri},${ti}); return false;" style="color:#430C89; font-weight:600; text-decoration:none; border-bottom:1px dotted #430C89;" title="Ver el detalle mes a mes, los desgloses y el análisis cruzado de esta marca">${esc(s.tienda)}</a> ${al}</td>
-        <td style="${sm}"><input value="${esc(s.industria || "")}" placeholder="industria…" style="width:110px; font-size:10px; padding:2px 5px; border:1px solid #e5e7eb; border-radius:4px;" onchange="cartSetIndustria(${JSON.stringify(r.cli).replace(/"/g, "&quot;")}, ${JSON.stringify(s.tienda).replace(/"/g, "&quot;")}, this.value)"></td>
+        <td style="${sm}">${cartIndSelect(s.industria, `cartSetIndustria(${JSON.stringify(r.cli).replace(/"/g, "&quot;")}, ${JSON.stringify(s.tienda).replace(/"/g, "&quot;")}, this.value)`, "font-size:10px; padding:2px 4px; border:1px solid #e5e7eb; border-radius:4px; max-width:140px;")}</td>
         <td style="${sm} color:#6b7280;">${esc(s.cur)}</td>
         <td style="${sm} color:#6b7280; white-space:nowrap;">${esc(cartRangoTxt(s.okMeses.length ? s.okMeses : s.meses))}${cartParcialChip(s.parciales)}</td>
         <td style="${sm} text-align:right; font-variant-numeric:tabular-nums;">${fmtMoney(s.gmv)}</td>
@@ -9421,7 +9654,7 @@ function cartPopRender() {
       <div style="background:#430C89; color:#fff; padding:14px 18px; display:flex; align-items:flex-start; gap:12px;">
         <div style="flex:1;">
           <div style="font-size:16px; font-weight:800;">${esc(s.tienda)}</div>
-          <div style="font-size:11px; opacity:.85;">${esc(r.cli)}${s.industria ? " · " + esc(s.industria) : ""} · ${esc(s.cur)} · ${cartRangoTxt(s.okMeses.length ? s.okMeses : s.meses)}${s.sinFx ? ` · <span title="Meses sin cotización cargada">⚠︎ ${s.sinFx} mes${s.sinFx > 1 ? "es" : ""} sin cotización</span>` : ""}${(s.parciales || []).length ? ` · <span title="Meses incompletos, excluidos de todos los totales">◐ ${s.parciales.length} mes${s.parciales.length > 1 ? "es" : ""} incompleto${s.parciales.length > 1 ? "s" : ""}</span>` : ""}</div>
+          <div style="font-size:11px; opacity:.85;">${esc(r.cli)}${s.industria ? " · " + esc(cartIndLabel(s.industria)) : ""} · ${esc(s.cur)} · ${cartRangoTxt(s.okMeses.length ? s.okMeses : s.meses)}${s.sinFx ? ` · <span title="Meses sin cotización cargada">⚠︎ ${s.sinFx} mes${s.sinFx > 1 ? "es" : ""} sin cotización</span>` : ""}${(s.parciales || []).length ? ` · <span title="Meses incompletos, excluidos de todos los totales">◐ ${s.parciales.length} mes${s.parciales.length > 1 ? "es" : ""} incompleto${s.parciales.length > 1 ? "s" : ""}</span>` : ""}</div>
         </div>
         <button onclick="cartPopClose()" style="border:none; background:rgba(255,255,255,.16); color:#fff; width:28px; height:28px; border-radius:8px; cursor:pointer; font-size:15px; line-height:1;">✕</button>
       </div>
