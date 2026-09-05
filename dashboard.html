@@ -8186,26 +8186,52 @@ function cartRowsToModel(rows, filename) {
     seller: col("Seller Name"),
     cur: col("Currency Code", "Moneda"),
     utm: col("UtmSource"),
-    pay: col("Payment System Name")
+    pay: col("Payment System Name"),
+    // --- dimensiones nuevas (popup por marca) ---
+    prov: col("Shipping State", "State", "UF", "Provincia", "Estado (envío)", "Departamento"),
+    est: col("Status", "Estado"),
+    mot: col("Cancellation Reason", "Motivo de cancelación", "Motivo de cancelacao", "Cancellation reason"),
+    ori: col("Origin", "Sales Channel", "Origem", "Origen", "Trade Policy"),
+    prod: col("Product Name", "SKU Name", "Item Name", "Nombre del producto", "Producto"),
+    qty: col("Quantity", "Cantidad", "Qtd", "Quantidade")
   };
   if (C.order < 0 || C.total < 0) throw new Error("No encontré las columnas de pedido e importe. ¿Es el export de pedidos de VTEX?");
 
   const seen = new Map();
+  // productos: viven en la LÍNEA, no en el pedido. El dedupe de abajo los tira,
+  // así que se acumulan acá recorriendo TODAS las filas. { "YYYY-MM": { producto: unidades } }
+  const prods = {};
   for (let r = 1; r < rows.length; r++) {
     const row = rows[r];
     if (!row || row.length < 3) continue;
     const id = (row[C.order] || "").trim();
-    if (!id || seen.has(id)) continue;
+    if (!id) continue;
     const g = i => i > -1 ? (row[i] || "").trim() : "";
     const d = cartParseDate(g(C.date));
+    const mes = d ? d.toISOString().slice(0, 7) : "?";
+
+    if (C.prod > -1 && mes !== "?" && !cartIsCancelled(g(C.status), g(C.raw))) {
+      const pn = g(C.prod);
+      if (pn) {
+        const q = C.qty > -1 ? (cartNum(row[C.qty]) || 1) : 1;
+        if (!prods[mes]) prods[mes] = {};
+        prods[mes][pn] = (prods[mes][pn] || 0) + q;
+      }
+    }
+
+    if (seen.has(id)) continue;
     seen.set(id, {
       id: id,
-      month: d ? d.toISOString().slice(0, 7) : "?",
+      month: mes,
       total: cartNum(row[C.total]),
       cancelled: cartIsCancelled(g(C.status), g(C.raw)),
       utm: g(C.utm) || "Directo / sin campaña",
       pay: (g(C.pay) || "(sin dato)").split(",")[0].trim(),
       inst: (g(C.inst) || "(sin dato)").split(",")[0].trim(),
+      prov: g(C.prov) || "(sin dato)",
+      est: g(C.est) || "(sin dato)",
+      mot: g(C.mot) || "",
+      ori: g(C.ori) || "(sin dato)",
       seller: g(C.seller),
       cur: (g(C.cur) || "").toUpperCase()
     });
@@ -8219,7 +8245,7 @@ function cartRowsToModel(rows, filename) {
   const ct = {};
   orders.forEach(o => { if (o.cur) ct[o.cur] = (ct[o.cur] || 0) + 1; });
   const cur = Object.keys(ct).sort((a, b) => ct[b] - ct[a])[0] || "USD";
-  return { name: filename, label: label, cur: cur, orders: orders };
+  return { name: filename, label: label, cur: cur, orders: orders, prods: prods };
 }
 
 function cartIngestText(text, filename) {
@@ -8251,34 +8277,63 @@ async function cartReadFile(file) {
 
 /* ---------- agregación: pedidos → resumen mensual + breakdowns ----------
    Acá se descartan los pedidos crudos. Lo que sobrevive es lo que se persiste. */
-function cartTopN(obj, n) {
-  const keys = Object.keys(obj).sort((a, b) => obj[b].g - obj[a].g);
+/* Recorta un breakdown a las n categorías más grandes y manda el resto a "Otros".
+   sortBy: "g" = por importe (default) · "n" = por cantidad (productos rankean por unidades). */
+function cartTopN(obj, n, sortBy) {
+  const sk = sortBy === "n" ? "n" : "g";
+  const keys = Object.keys(obj).sort((a, b) => obj[b][sk] - obj[a][sk]);
   if (keys.length <= n) { const o = {}; keys.forEach(k => { o[k] = obj[k]; }); return o; }
   const out = {}, otros = { g: 0, n: 0 };
   keys.forEach((k, i) => {
     if (i < n) out[k] = obj[k];
     else { otros.g += obj[k].g; otros.n += obj[k].n; }
   });
-  if (otros.n) out["Otros"] = otros;
+  if (otros.n || otros.g) out["Otros"] = otros;
   return out;
 }
 
+// dimensiones del breakdown y cuántas categorías guarda cada una
+const CART_DIMS = ["pay", "inst", "utm", "prov", "ori", "est", "mot", "prod"];
+const CART_DIM_CAP = { prod: 15, pay: 10, inst: 10, utm: 10, prov: 10, ori: 10, est: 10, mot: 10 };
+// dims que se miden por cantidad de pedidos (no por importe) al mostrar shares
+const CART_DIM_BYN = { est: 1, mot: 1, prod: 1 };
+
 function cartAggregate(model) {
   const meses = {}, brk = {};
+  const mk = m => {
+    if (!brk[m]) { brk[m] = {}; CART_DIMS.forEach(d => { brk[m][d] = {}; }); }
+    return brk[m];
+  };
+  const add = (m, dim, k, g) => {
+    const b = mk(m)[dim];
+    if (!b[k]) b[k] = { g: 0, n: 0 };
+    b[k].g += g; b[k].n++;
+  };
   model.orders.forEach(o => {
     const m = o.month;
     if (!m || m === "?") return;
     if (!meses[m]) meses[m] = { gmv: 0, ped: 0, val: 0, can: 0, lost: 0, tick: 0 };
     const s = meses[m];
     s.ped++;
-    if (o.cancelled) { s.can++; s.lost += o.total; return; }
+    // Estado del pedido y motivo de cancelación se cuentan sobre TODOS los pedidos
+    // (si no, los cancelados —que son justo los que interesan acá— quedarían fuera).
+    add(m, "est", o.est || "(sin dato)", o.total);
+    if (o.cancelled) {
+      s.can++; s.lost += o.total;
+      add(m, "mot", o.mot || "(sin motivo declarado)", o.total);
+      return;
+    }
     s.val++; s.gmv += o.total;
-    if (!brk[m]) brk[m] = { pay: {}, inst: {}, utm: {} };
-    ["pay", "inst", "utm"].forEach(dim => {
-      const k = o[dim] || "(sin dato)";
-      const b = brk[m][dim];
-      if (!b[k]) b[k] = { g: 0, n: 0 };
-      b[k].g += o.total; b[k].n++;
+    ["pay", "inst", "utm", "prov", "ori"].forEach(dim => add(m, dim, o[dim] || "(sin dato)", o.total));
+  });
+  // productos: vienen del pase por líneas, se guardan en unidades
+  const prods = model.prods || {};
+  Object.keys(prods).forEach(m => {
+    if (!meses[m]) return;
+    Object.keys(prods[m]).forEach(p => {
+      const b = mk(m).prod;
+      if (!b[p]) b[p] = { g: 0, n: 0 };
+      b[p].n += prods[m][p];
     });
   });
   Object.keys(meses).forEach(m => {
@@ -8287,8 +8342,9 @@ function cartAggregate(model) {
     ["gmv", "lost", "tick"].forEach(k => { s[k] = Math.round(s[k] * 100) / 100; });
   });
   Object.keys(brk).forEach(m => {
-    ["pay", "inst", "utm"].forEach(dim => {
-      brk[m][dim] = cartTopN(brk[m][dim], CART_MAX_KEYS);
+    CART_DIMS.forEach(dim => {
+      const cap = CART_DIM_CAP[dim] || CART_MAX_KEYS;
+      brk[m][dim] = cartTopN(brk[m][dim] || {}, cap, dim === "prod" ? "n" : "g");
       Object.keys(brk[m][dim]).forEach(k => { brk[m][dim][k].g = Math.round(brk[m][dim][k].g); });
     });
   });
@@ -8314,12 +8370,37 @@ function cartVtexOf(cli) {
   // migración en lectura: formato viejo (una sola tienda plana) → tiendas["(principal)"]
   if (v.meses && typeof v.meses === "object") {
     const t = {};
-    t[CART_TIENDA_DEF] = { cur: v.cur || "USD", archivo: v.archivo || "", updated: v.updated || "", meses: v.meses, brk: v.brk || {} };
+    t[CART_TIENDA_DEF] = { cur: v.cur || "USD", archivo: v.archivo || "", updated: v.updated || "", meses: v.meses, brk: v.brk || {}, industria: v.industria || "" };
     return { updated: v.updated || "", tiendas: t };
   }
   return null;
 }
 function cartTiendasOf(cli) { const v = cartVtexOf(cli); return v ? v.tiendas : null; }
+
+/* --- industria POR MARCA, no por empresa ---
+   Vive dentro del objeto de la tienda, en paralelo a `cur`: dos marcas de un mismo grupo
+   pueden jugar en rubros distintos (Ferrex = ferretería, Sueñolar = colchones). */
+function cartIndustriaOf(cli, tienda) {
+  const ts = cartTiendasOf(cli) || {};
+  return ((ts[tienda] || {}).industria || "").trim();
+}
+function cartSetIndustria(cli, tienda, val) {
+  const prev = cartVtexOf(cli);
+  if (!prev) return;
+  const tiendas = Object.assign({}, prev.tiendas || {});
+  if (!tiendas[tienda]) return;
+  tiendas[tienda] = Object.assign({}, tiendas[tienda], { industria: String(val || "").trim() });
+  cuentasSetMeta(cli, { vtex: { updated: prev.updated || "", tiendas: tiendas } });
+  renderCartera();
+}
+// Industria a nivel cuenta: una sola si todas las marcas coinciden, "mixta · N" si difieren.
+function cartIndustriaCuenta(tiendas) {
+  const vals = Object.keys(tiendas || {}).map(n => ((tiendas[n] || {}).industria || "").trim()).filter(Boolean);
+  const uniq = Array.from(new Set(vals));
+  if (!uniq.length) return { txt: "", mixta: false, n: 0 };
+  if (uniq.length === 1) return { txt: uniq[0], mixta: false, n: 1 };
+  return { txt: "mixta · " + uniq.length, mixta: true, n: uniq.length };
+}
 
 // GMV de cuenta (gmvHist, el mismo campo que German carga a mano y que viaja a HubSpot como
 // gmv_mensual) = SUMA de sus tiendas. Si todas comparten moneda se suma en esa moneda; si hay
@@ -8346,7 +8427,7 @@ function cartRollupGmvHist(cli, tiendas) {
 // Guarda el resumen en cuentas_meta[cli].vtex.tiendas[tienda] y recalcula el gmvHist de la cuenta.
 // Merge por tienda, no reemplazo: subir un archivo de otro semestre no borra el anterior,
 // y subir OTRA marca no pisa la primera.
-function cartSaveToAccount(cli, agg, filename, tienda) {
+function cartSaveToAccount(cli, agg, filename, tienda, industria) {
   const nom = String(tienda || "").trim() || CART_TIENDA_DEF;
   const prev = cartVtexOf(cli) || { tiendas: {} };
   const tiendas = Object.assign({}, prev.tiendas || {});
@@ -8356,9 +8437,19 @@ function cartSaveToAccount(cli, agg, filename, tienda) {
   const keys = Object.keys(meses).sort();
   keys.slice(0, Math.max(0, keys.length - CART_MAX_MESES)).forEach(k => { delete meses[k]; delete brk[k]; });
   const hoy = new Date().toISOString().slice(0, 10);
-  tiendas[nom] = { cur: agg.cur || t.cur || "USD", archivo: filename || t.archivo || "", updated: hoy, meses: meses, brk: brk };
+  tiendas[nom] = { cur: agg.cur || t.cur || "USD", archivo: filename || t.archivo || "", updated: hoy, meses: meses, brk: brk, industria: (industria !== undefined && String(industria).trim()) ? String(industria).trim() : (t.industria || "") };
   cuentasSetMeta(cli, { vtex: { updated: hoy, tiendas: tiendas }, gmvHist: cartRollupGmvHist(cli, tiendas) });
   return Object.keys(agg.meses).length;
+}
+
+/* --- tamaño de lo guardado (el modelo mensual + breakdowns come localStorage) --- */
+function cartStorageBytes() {
+  let n = 0;
+  try {
+    const meta = JSON.parse(localStorage.getItem("cuentas_meta") || "{}");
+    Object.keys(meta).forEach(k => { if (meta[k] && meta[k].vtex) n += JSON.stringify(meta[k].vtex).length; });
+  } catch (e) {}
+  return n;
 }
 
 /* ---------- FX por mes (clave: el archivo trae moneda local, la comparación es en USD) ----------
@@ -8410,6 +8501,89 @@ let CART_SEL_T = "";       // tienda enfocada dentro de esa cuenta ("" = todas)
 let CART_PENDING = [];     // archivos leídos esperando que German elija cuenta + tienda
 let CART_OPEN = {};        // cuentas con las tiendas desplegadas en la tabla
 
+/* --- orden y filtro POR COLUMNA (pedido explícito de German: todas las columnas) ---
+   CART_SORT = { col, dir } · CART_FIL = { col: valor }. Los filtros de texto son "contiene";
+   los numéricos van como {min,max} y reemplazan a los presets viejos (>1M, etc.). */
+let CART_SORT = { col: "gmv", dir: -1 };
+let CART_FIL = {};
+
+// Definición de columnas: id, label, tipo (txt|num|pct|money|sel), alineación y accessor.
+const CART_COLS = [
+  { id: "cli",      lbl: "Cliente",           t: "txt",   al: "left"  },
+  { id: "industria",lbl: "Industria",         t: "sel",   al: "left"  },
+  { id: "cur",      lbl: "Moneda / país",     t: "sel",   al: "left"  },
+  { id: "periodo",  lbl: "Período comparado", t: "txt",   al: "left"  },
+  { id: "gmv",      lbl: "GMV USD",           t: "money", al: "right" },
+  { id: "spark",    lbl: "Tendencia",         t: "none",  al: "left"  },
+  { id: "ped",      lbl: "Pedidos",           t: "num",   al: "right" },
+  { id: "tick",     lbl: "Ticket USD",        t: "money", al: "right" },
+  { id: "cancelRate", lbl: "% Cancel",        t: "pct",   al: "right" },
+  { id: "opex",     lbl: "OPEX",              t: "money", al: "right" },
+  { id: "capex",    lbl: "CAPEX",             t: "money", al: "right" },
+  { id: "acv",      lbl: "ACV",               t: "money", al: "right" },
+  { id: "mesesAcv", lbl: "Meses",             t: "num",   al: "right" },
+  { id: "runrate",  lbl: "Run-rate",          t: "money", al: "right" },
+  { id: "pen",      lbl: "% del P&L",         t: "pct",   al: "right" },
+  { id: "acc",      lbl: "",                  t: "none",  al: "right" }
+];
+const CART_COL = {}; CART_COLS.forEach(c => { CART_COL[c.id] = c; });
+
+function cartSortBy(col) {
+  const c = CART_COL[col];
+  if (!c || c.t === "none") return;
+  if (CART_SORT.col === col) CART_SORT.dir = -CART_SORT.dir;
+  else CART_SORT = { col: col, dir: (c.t === "txt" || c.t === "sel") ? 1 : -1 };
+  cartRenderTabla();
+}
+function cartFilSet(col, key, val) {
+  const f = CART_FIL[col] || {};
+  const v = String(val == null ? "" : val).trim();
+  if (v === "") delete f[key]; else f[key] = v;
+  if (Object.keys(f).length) CART_FIL[col] = f; else delete CART_FIL[col];
+  cartRenderTabla();
+}
+function cartFilClear() { CART_FIL = {}; cartRenderTabla(); }
+function cartFilDrop(col) { delete CART_FIL[col]; cartRenderTabla(); }
+
+// Valores únicos de una columna enumerable, para los <select> de la fila de filtros.
+function cartFilOpts(rows, col) {
+  const s = new Set();
+  rows.forEach(r => { const v = String(r[col] == null ? "" : r[col]).trim(); if (v) s.add(v); });
+  return Array.from(s).sort();
+}
+function cartNumOk(v, f) {
+  if (v === null || v === undefined || !isFinite(v)) return !(f.min || f.max);
+  if (f.min && v < parseFloat(String(f.min).replace(",", "."))) return false;
+  if (f.max && v > parseFloat(String(f.max).replace(",", "."))) return false;
+  return true;
+}
+/* Aplica filtros + orden sobre cartRows(). Todo en memoria: no vuelve a pegarle a HubSpot. */
+function cartRowsView() {
+  let rows = cartRows();
+  Object.keys(CART_FIL).forEach(col => {
+    const f = CART_FIL[col], c = CART_COL[col];
+    if (!c) return;
+    rows = rows.filter(r => {
+      const v = r[col];
+      if (c.t === "txt") return String(v || "").toLowerCase().includes(String(f.q || "").toLowerCase());
+      if (c.t === "sel") return !f.q || String(v || "") === f.q;
+      // pct se filtra en porcentaje (el usuario escribe 2,5 y no 0.025)
+      return cartNumOk(c.t === "pct" ? (v === null ? null : v * 100) : v, f);
+    });
+  });
+  const col = CART_SORT.col, d = CART_SORT.dir, c = CART_COL[col];
+  if (c && c.t !== "none") {
+    rows.sort((a, b) => {
+      const x = a[col], y = b[col];
+      if (c.t === "txt" || c.t === "sel") return d * String(x || "").localeCompare(String(y || ""), "es");
+      const nx = (x === null || x === undefined || !isFinite(x)) ? -Infinity : x;
+      const ny = (y === null || y === undefined || !isFinite(y)) ? -Infinity : y;
+      return d * (nx - ny);
+    });
+  }
+  return rows;
+}
+
 function cliTab(which) {
   ["cuentas", "cartera"].forEach(t => {
     const pane = document.getElementById("clitab-" + t);
@@ -8432,13 +8606,39 @@ function cuFactEnMes(d, mKey) {
   if (off < 0) return 0;
   return dealMonthlyAmount(d, off);
 }
-// Facturación Innew (USD) para una company en una lista de meses.
+/* --- OPEX vs CAPEX ---
+   El GMV del cliente se compara contra lo RECURRENTE (OPEX). Una implementación one-shot
+   (IDP / IDE / Middleware) es inversión del cliente, factura 4 meses y cae: meterla en el
+   mismo saco infla la penetración y hace ver 345% donde hay 30%. La categoría sale sola de
+   PRODUCTO_TO_CATEGORIA — no hay campo nuevo en HubSpot ni tagueo manual.
+   `Servicios de Consultoría` es el único gris: va a OPEX por defecto, con override por deal. */
+function cartCapexOvAll() { try { return JSON.parse(localStorage.getItem("cartera_capex_override") || "{}"); } catch (e) { return {}; } }
+function cartCapexOvSet(dealId, val) {
+  const all = cartCapexOvAll();
+  if (val === "capex" || val === "opex") all[dealId] = val; else delete all[dealId];
+  try { localStorage.setItem("cartera_capex_override", JSON.stringify(all)); } catch (e) {}
+}
+function cartIsCapex(d) {
+  const id = d && d.id;
+  const ov = cartCapexOvAll()[id];
+  if (ov === "capex") return true;
+  if (ov === "opex") return false;
+  const prod = ((d && d.properties && d.properties.producto) || "").trim();
+  return PRODUCTO_TO_CATEGORIA[prod] === "IDP";
+}
+// Facturación Innew (USD) para una company en una lista de meses, partida en OPEX / CAPEX.
+// Devuelve null si la cuenta no tiene deals cacheados (≠ de tener 0 facturado).
 function cartFactUsd(companyId, meses) {
   const deals = (window.__cuentaDealsCache || {})[companyId];
   if (!deals || !deals.length) return null;
-  let t = 0;
-  deals.forEach(d => { meses.forEach(m => { t += cuFactEnMes(d, m); }); });
-  return t;
+  let opex = 0, capex = 0;
+  deals.forEach(d => {
+    const cap = cartIsCapex(d);
+    let t = 0;
+    meses.forEach(m => { t += cuFactEnMes(d, m); });
+    if (cap) capex += t; else opex += t;
+  });
+  return { opex: opex, capex: capex, total: opex + capex };
 }
 
 /* --- selección de meses según la ventana elegida --- */
@@ -8448,7 +8648,7 @@ function cartCalcTienda(t) {
   const keys = Object.keys((t && t.meses) || {}).sort();
   const meses = CART_PERIOD ? keys.slice(-CART_PERIOD) : keys;
   let gmv = 0, ped = 0, val = 0, can = 0, lost = 0, sinFx = 0;
-  const okMeses = [], mesUsd = {};
+  const okMeses = [], mesUsd = {}, filas = [];
   meses.forEach(m => {
     const s = t.meses[m];
     const u = cartToUsd(s.gmv, cur, m);
@@ -8456,9 +8656,22 @@ function cartCalcTienda(t) {
     okMeses.push(m); mesUsd[m] = u;
     gmv += u; ped += s.ped; val += s.val || 0; can += s.can;
     const lu = cartToUsd(s.lost, cur, m); lost += (lu === null ? 0 : lu);
+    // fila mes a mes para el popup: % potencial y Var. GMV se derivan acá, no se guardan
+    filas.push({
+      mes: m, ped: s.ped, val: s.val || 0, can: s.can,
+      cancelRate: s.ped ? s.can / s.ped : 0,
+      gmv: u, lost: (lu === null ? 0 : lu),
+      pot: (u + (lu === null ? 0 : lu)) > 0 ? (lu === null ? 0 : lu) / (u + (lu === null ? 0 : lu)) : 0,
+      tick: (s.val || 0) ? u / s.val : 0,
+      varGmv: null
+    });
   });
+  for (let i = 1; i < filas.length; i++) {
+    const prev = filas[i - 1].gmv;
+    filas[i].varGmv = prev > 0 ? (filas[i].gmv - prev) / prev : null;
+  }
   return {
-    cur: cur, meses: meses, okMeses: okMeses, mesUsd: mesUsd, sinFx: sinFx,
+    cur: cur, meses: meses, okMeses: okMeses, mesUsd: mesUsd, sinFx: sinFx, filas: filas,
     gmv: gmv, ped: ped, val: val, can: can, lost: lost,
     tick: val ? gmv / val : 0, cancelRate: ped ? can / ped : 0,
     archivo: (t && t.archivo) || "", updated: (t && t.updated) || ""
@@ -8476,7 +8689,7 @@ function cartRows() {
     const tiendas = cartTiendasOf(cli);
     if (!tiendas || !Object.keys(tiendas).length) return;
     const subs = Object.keys(tiendas).sort()
-      .map(n => Object.assign({ tienda: n }, cartCalcTienda(tiendas[n])))
+      .map(n => Object.assign({ tienda: n, industria: ((tiendas[n] || {}).industria || "").trim() }, cartCalcTienda(tiendas[n])))
       .filter(s => s.meses.length);
     if (!subs.length) return;
     let gmv = 0, ped = 0, val = 0, can = 0, lost = 0, sinFx = 0;
@@ -8491,22 +8704,50 @@ function cartRows() {
     const serie = meses.map(m => serieAcc[m] || 0);
     const curs = []; subs.forEach(s => { if (curs.indexOf(s.cur) < 0) curs.push(s.cur); });
     const fact = cartFactUsd(c.id, okMeses);
+    const opex = fact ? fact.opex : null;
+    const capex = fact ? fact.capex : null;
+    const nMes = okMeses.length;
+    const ind = cartIndustriaCuenta(tiendas);
     out.push({
       companyId: c.id, cli: cli, cur: curs.join(" / "), curs: curs,
       pais: normPais(c.properties.country),
       csm: (c.properties.csm_asignado || "").trim(),
       bcg: (c.properties.calificacion_matriz_bcg || "").trim(),
+      industria: ind.txt, indMixta: ind.mixta,
       tiendas: subs, multi: subs.length > 1,
       meses: meses, okMeses: okMeses, sinFx: sinFx, serie: serie,
+      periodo: cartRangoTxt(okMeses.length ? okMeses : meses),
       gmv: gmv, ped: ped, val: val, can: can, lost: lost,
       tick: val ? gmv / val : 0,
       cancelRate: ped ? can / ped : 0,
-      fact: fact,
-      pen: (fact !== null && gmv > 0) ? fact / gmv : null,
+      fact: fact, opex: opex, capex: capex,
+      // ACV = todo lo facturado en la ventana (OPEX + CAPEX). "mesesAcv" es el plazo que abarca,
+      // para poder comparar cuentas de distinto largo sin engañarse.
+      acv: fact ? fact.total : null,
+      mesesAcv: nMes,
+      // Run-rate anualiza SÓLO OPEX: anualizar un one-shot inventa plata que no se repite.
+      runrate: (opex !== null && nMes > 0) ? opex * 12 / nMes : null,
+      // % del P&L = OPEX ÷ GMV. El CAPEX no compite contra el GMV del cliente.
+      pen: (opex !== null && gmv > 0) ? opex / gmv : null,
       updated: subs.map(s => s.updated).sort().pop() || ""
     });
   });
   return out.sort((a, b) => b.gmv - a.gmv);
+}
+
+/* --- rango de meses legible: "abr – ago 2026" / "ago 2026" / "nov 2025 – ago 2026" --- */
+function cartMesTxt(m) {
+  const p = String(m || "").split("-");
+  if (p.length < 2) return String(m || "");
+  return CART_MES[Number(p[1]) - 1] + " " + p[0];
+}
+function cartRangoTxt(ms) {
+  if (!ms || !ms.length) return "—";
+  const a = ms[0], b = ms[ms.length - 1];
+  if (a === b) return cartMesTxt(a);
+  const ya = a.split("-")[0], yb = b.split("-")[0];
+  if (ya === yb) return CART_MES[Number(a.split("-")[1]) - 1] + " – " + CART_MES[Number(b.split("-")[1]) - 1] + " " + yb;
+  return cartMesTxt(a) + " – " + cartMesTxt(b);
 }
 
 /* --- ingesta --- */
@@ -8568,10 +8809,13 @@ function cartAssign(i) {
   if (!p) return;
   const sel = document.getElementById("cart-sel-" + i);
   const inp = document.getElementById("cart-tienda-" + i);
+  const inpInd = document.getElementById("cart-ind-" + i);
   const cli = sel ? sel.value : "";
   if (!cli) { alert("Elegí a qué cuenta corresponde el archivo."); return; }
   const nom = (inp ? inp.value : "").trim() || CART_TIENDA_DEF;
-  const n = cartSaveToAccount(cli, p.agg, p.name, nom);
+  // Industria por MARCA: si el input viene vacío, cartSaveToAccount conserva la que ya tenía la tienda.
+  const ind = (inpInd ? inpInd.value : "").trim();
+  const n = cartSaveToAccount(cli, p.agg, p.name, nom, ind);
   cartFileMapSet(p.name, cli, nom);
   CART_PENDING.splice(i, 1);
   renderCartera();
@@ -8580,12 +8824,12 @@ function cartAssign(i) {
   if (st) { st.textContent = "✓ " + cli + " › " + nom + ": " + n + " meses guardados"; st.style.color = "#059669"; }
 }
 function cartDiscard(i) { CART_PENDING.splice(i, 1); renderCartera(); }
-function cartToggleOpen(ri) { const r = cartRows()[ri]; if (!r) return; CART_OPEN[r.cli] = !CART_OPEN[r.cli]; renderCartera(); }
+function cartToggleOpen(ri) { const r = (CART_VIEW || cartRows())[ri]; if (!r) return; CART_OPEN[r.cli] = !CART_OPEN[r.cli]; cartRenderTabla(); }
 
 // Borra la cuenta entera (ti undefined) o una sola tienda. Se trabaja por índice de fila
 // para no meter nombres con comillas dentro de un onclick.
 function cartBorrar(ri, ti) {
-  const r = cartRows()[ri];
+  const r = (CART_VIEW || cartRows())[ri];
   if (!r) return;
   if (ti === undefined || ti === null) {
     if (!confirm("¿Borrar TODOS los datos de cartera de " + r.cli + " (" + r.tiendas.length + " tienda/s)? El GMV cargado a mano no se toca.")) return;
@@ -8605,7 +8849,7 @@ function cartBorrar(ri, ti) {
 }
 // Foco del pivot: "" = toda la cartera · "ri" = una cuenta · "ri.ti" = una tienda.
 function cartPivotSel(v) {
-  const rows = cartRows();
+  const rows = CART_VIEW || cartRows();
   if (!v) { CART_SEL = ""; CART_SEL_T = ""; }
   else {
     const p = String(v).split(".");
@@ -8636,6 +8880,9 @@ function cartRenderDrop() {
       <input id="cart-tienda-${i}" type="text" value="${esc(p.tiendaSug)}" placeholder="tienda / marca"
         title="Si la cuenta tiene varias tiendas o marcas, poné acá cuál es. Cada una guarda su propia historia y su propia moneda."
         style="padding:5px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12px; width:150px;">
+      <input id="cart-ind-${i}" type="text" value="" placeholder="industria"
+        title="La industria va por marca, no por empresa: un mismo grupo puede tener una marca de indumentaria y otra de deco. Se puede editar después desde la tabla."
+        style="padding:5px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12px; width:130px;">
       <button class="fc-btn" style="font-size:12px;" onclick="cartAssign(${i})">Guardar</button>
       <button class="fc-btn secondary" style="font-size:12px;" onclick="cartDiscard(${i})">Descartar</button>
     </div>`;
@@ -8692,109 +8939,461 @@ function cartRenderFx() {
   </details>`;
 }
 
+/* --- banda de color del % del P&L, CON TECHO ---
+   La versión vieja no tenía tope: 345,98% salía verde. Arriba de 15% no es "buenísimo",
+   es señal de que el denominador está corto o de que se coló un one-shot en el numerador. */
+function cartPenColor(p) {
+  if (p === null || p === undefined) return "#9ca3af";
+  if (p > 0.15) return "#dc2626";
+  if (p < 0.01) return "#dc2626";
+  if (p < 0.025) return "#d97706";
+  return "#059669";
+}
+function cartPenTxt(p, small) {
+  if (p === null || p === undefined) return `<span style="color:#9ca3af; font-style:italic; font-size:${small ? "10px" : "11px"};">sin deals</span>`;
+  const flag = p > 0.15 ? ` <span title="Penetración fuera de rango: revisá si el GMV cubre todos los meses o si quedó CAPEX en el numerador.">⚑</span>` : "";
+  return `<span style="font-weight:700; color:${cartPenColor(p)};">${(p * 100).toFixed(2)}%${flag}</span>`;
+}
+
+/* --- serie mes a mes de una CUENTA: GMV (Σ tiendas, en USD) + facturación Innew partida ---
+   Es lo que pidió German: "tener el cálculo de la facturación y el GMV mes también". */
+function cartMesesCuenta(r) {
+  const gmvM = {};
+  r.tiendas.forEach(s => { s.okMeses.forEach(m => { gmvM[m] = (gmvM[m] || 0) + (s.mesUsd[m] || 0); }); });
+  return Object.keys(gmvM).sort().map(m => {
+    const f = cartFactUsd(r.companyId, [m]);
+    const g = gmvM[m];
+    return {
+      mes: m, gmv: g,
+      opex: f ? f.opex : null, capex: f ? f.capex : null,
+      pen: (f && g > 0) ? f.opex / g : null
+    };
+  });
+}
+
 /* --- render: KPIs consolidados de cartera --- */
 function cartRenderKpis() {
   const el = document.getElementById("cart-kpis");
   if (!el) return;
-  const rows = cartRows();
+  const rows = cartRowsView();
   if (!rows.length) { el.innerHTML = ""; return; }
-  let gmv = 0, fact = 0, gmvConFact = 0, ped = 0, val = 0, can = 0, lost = 0, sinDeals = 0, nTiendas = 0;
+  let gmv = 0, opex = 0, capex = 0, gmvConFact = 0, ped = 0, val = 0, can = 0, sinDeals = 0, nTiendas = 0;
   rows.forEach(r => {
-    gmv += r.gmv; ped += r.ped; val += r.val; can += r.can; lost += r.lost; nTiendas += r.tiendas.length;
-    if (r.fact === null) sinDeals++; else { fact += r.fact; gmvConFact += r.gmv; }
+    gmv += r.gmv; ped += r.ped; val += r.val; can += r.can; nTiendas += r.tiendas.length;
+    if (r.fact === null) sinDeals++;
+    else { opex += r.opex; capex += r.capex; gmvConFact += r.gmv; }
   });
   // Σ numeradores ÷ Σ denominadores. NUNCA promedio de porcentajes mensuales (Simpson).
-  const pen = gmvConFact > 0 ? fact / gmvConFact : null;
+  // El numerador es OPEX: el CAPEX es inversión one-shot del cliente, no compite contra su GMV.
+  const pen = gmvConFact > 0 ? opex / gmvConFact : null;
   const per = CART_PERIOD ? "últ. " + CART_PERIOD + " meses" : "todo el histórico";
-  const card = (lbl, val, sub, color) => `<div class="cue-kpi"><div class="kl">${lbl}</div><div class="kv"${color ? ` style="color:${color}"` : ""}>${val}</div><div class="ks">${sub}</div></div>`;
+  const card = (lbl, v, sub, color) => `<div class="cue-kpi"><div class="kl">${lbl}</div><div class="kv"${color ? ` style="color:${color}"` : ""}>${v}</div><div class="ks">${sub}</div></div>`;
   el.innerHTML = `<div style="display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">
       <span style="font-size:11px; color:#6b7280; font-weight:600;">Ventana:</span>
       ${[[6, "6 meses"], [12, "12 meses"], [0, "Todo"]].map(p => `<button class="fc-btn${CART_PERIOD === p[0] ? "" : " secondary"}" style="font-size:11px; padding:4px 10px;" onclick="CART_PERIOD=${p[0]}; renderCartera();">${p[1]}</button>`).join("")}
       <button class="fc-btn secondary" style="font-size:11px; padding:4px 10px; margin-left:auto;" onclick="perfLoadAll(true)">⟳ Cargar facturación Innew</button>
       <span class="perf-st" style="font-size:11px; color:#9ca3af;"></span>
+      <span style="font-size:10px; color:#9ca3af;">guardado: ${(cartStorageBytes() / 1024).toFixed(0)} KB</span>
     </div>
     <div class="cue-kpis">
       ${card("GMV cartera (USD)", fmtMoney(gmv), rows.length + " cuentas" + (nTiendas > rows.length ? " · " + nTiendas + " tiendas" : "") + " · " + per)}
-      ${card("Facturación Innew (USD)", fact ? fmtMoney(fact) : "—", sinDeals ? sinDeals + " cuentas sin deals cargados" : "deals ganados en la ventana")}
-      ${card("% del P&L del cliente", pen === null ? "—" : (pen * 100).toFixed(2) + "%", "Σ facturación ÷ Σ GMV", pen === null ? "" : pen < 0.01 ? "#dc2626" : pen < 0.025 ? "#d97706" : "#059669")}
+      ${card("OPEX Innew (USD)", opex ? fmtMoney(opex) : "—", sinDeals ? sinDeals + " cuentas sin deals cargados" : "recurrente facturado en la ventana")}
+      ${card("CAPEX Innew (USD)", capex ? fmtMoney(capex) : "—", "IDP / IDE / Middleware — one-shot, fuera del % del P&L")}
+      ${card("% del P&L del cliente", pen === null ? "—" : (pen * 100).toFixed(2) + "%", "Σ OPEX ÷ Σ GMV", cartPenColor(pen))}
       ${card("Pedidos válidos", val.toLocaleString("es-AR"), "ticket " + fmtMoney(val ? gmv / val : 0) + " · " + (ped ? (can / ped * 100).toFixed(1) : "0") + "% cancelado")}
     </div>`;
 }
 
-/* --- render: tabla por cliente --- */
+/* --- render: tabla por cliente ---
+   16 columnas, TODAS ordenables y filtrables (pedido explícito de German). El orden y los
+   filtros viven en CART_SORT / CART_FIL y se aplican en cartRowsView(); acá sólo se pinta. */
+let CART_VIEW = null;   // última vista renderizada — los onclick indexan sobre ESTA lista
+
 function cartRenderTabla() {
   const el = document.getElementById("cart-tabla");
   if (!el) return;
-  const rows = cartRows();
-  if (!rows.length) {
+  const all = cartRows();
+  if (!all.length) {
+    CART_VIEW = [];
     el.innerHTML = `<div style="padding:22px; text-align:center; color:#9ca3af; font-size:13px; font-style:italic; border:1px solid #e5e7eb; border-radius:10px; background:#fff;">Todavía no cargaste ningún export. Soltá un archivo arriba para empezar.</div>`;
     return;
   }
-  const th = (t, a) => `<th style="padding:7px 9px; text-align:${a || "left"}; font-size:9px; text-transform:uppercase; color:#6b7280; border-bottom:2px solid #e5e7eb; white-space:nowrap;">${t}</th>`;
-  // Una fila por CUENTA (roll-up en USD). Si tiene varias tiendas/marcas, se despliegan
-  // como sub-filas. Facturación y % del P&L viven SOLO a nivel cuenta: el numerador sale de
-  // los deals de la company en HubSpot, que no distingue marca.
+  const rows = cartRowsView();
+  CART_VIEW = rows;
+
+  /* --- encabezado ordenable --- */
+  const th = c => {
+    const act = CART_SORT.col === c.id;
+    const ar = c.t === "none" ? "" : (act ? (CART_SORT.dir > 0 ? " ▲" : " ▼") : ` <span style="color:#d1d5db;">⇅</span>`);
+    const clic = c.t === "none" ? "" : ` onclick="cartSortBy('${c.id}')" style="cursor:pointer;"`;
+    return `<th${clic} style="padding:7px 9px; text-align:${c.al}; font-size:9px; text-transform:uppercase; color:${act ? "#430C89" : "#6b7280"}; border-bottom:2px solid #e5e7eb; white-space:nowrap; ${c.t === "none" ? "" : "cursor:pointer;"}">${c.lbl}${ar}</th>`;
+  };
+  /* --- fila de filtros, tipada por columna --- */
+  const fcell = c => {
+    const f = CART_FIL[c.id] || {};
+    const st = `width:100%; box-sizing:border-box; font-size:10px; padding:2px 4px; border:1px solid #e5e7eb; border-radius:4px; background:#fff;`;
+    let inner = "";
+    if (c.t === "txt") {
+      inner = `<input value="${esc(f.q || "")}" placeholder="contiene…" style="${st}" onchange="cartFilSet('${c.id}','q',this.value)">`;
+    } else if (c.t === "sel") {
+      const opts = cartFilOpts(all, c.id);
+      inner = `<select style="${st}" onchange="cartFilSet('${c.id}','q',this.value)"><option value="">— todas —</option>${opts.map(o => `<option value="${esc(o)}"${f.q === o ? " selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
+    } else if (c.t !== "none") {
+      const ph = c.t === "pct" ? ["mín %", "máx %"] : ["mín", "máx"];
+      inner = `<div style="display:flex; gap:3px;">
+        <input value="${esc(f.min || "")}" placeholder="${ph[0]}" style="${st}" onchange="cartFilSet('${c.id}','min',this.value)">
+        <input value="${esc(f.max || "")}" placeholder="${ph[1]}" style="${st}" onchange="cartFilSet('${c.id}','max',this.value)">
+      </div>`;
+    }
+    return `<td style="padding:4px 6px; border-bottom:1px solid #e5e7eb; background:#fafafa; vertical-align:top;">${inner}</td>`;
+  };
+  /* --- chips de filtros activos --- */
+  const chips = Object.keys(CART_FIL).map(col => {
+    const f = CART_FIL[col], c = CART_COL[col];
+    const txt = f.q !== undefined ? `“${f.q}”` : [f.min ? "≥ " + f.min : "", f.max ? "≤ " + f.max : ""].filter(Boolean).join(" · ");
+    return `<span style="font-size:10px; background:#EDE9FE; color:#430C89; border-radius:10px; padding:2px 8px; font-weight:600;">${esc(c.lbl)}: ${esc(txt)} <a href="#" onclick="cartFilDrop('${col}'); return false;" style="color:#7c3aed; text-decoration:none;">×</a></span>`;
+  }).join(" ");
+  const barra = (chips || rows.length !== all.length)
+    ? `<div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
+        <span style="font-size:11px; color:#6b7280; font-weight:600;">${rows.length} de ${all.length} cuentas</span>
+        ${chips}
+        ${chips ? `<a href="#" onclick="cartFilClear(); return false;" style="font-size:10px; color:#dc2626;">limpiar filtros</a>` : ""}
+      </div>` : "";
+
+  const money = (v, s) => v === null || v === undefined ? `<span style="color:#9ca3af;">—</span>` : fmtMoney(v);
+  const td = (html, a, extra) => `<td style="padding:7px 9px; text-align:${a || "left"}; ${a === "right" ? "font-variant-numeric:tabular-nums;" : ""} ${extra || ""}">${html}</td>`;
+
   const body = rows.map((r, ri) => {
-    const penTxt = r.pen === null ? `<span style="color:#9ca3af; font-style:italic;">sin deals</span>`
-      : `<span style="font-weight:700; color:${r.pen < 0.01 ? "#dc2626" : r.pen < 0.025 ? "#d97706" : "#059669"};">${(r.pen * 100).toFixed(2)}%</span>`;
     const alerta = r.sinFx ? `<span title="${r.sinFx} mes(es) sin cotización cargada" style="color:#d97706;">⚠︎</span>` : "";
     const abierto = !!CART_OPEN[r.cli];
-    const exp = r.multi
-      ? `<a href="#" onclick="cartToggleOpen(${ri}); return false;" title="Ver las ${r.tiendas.length} tiendas" style="text-decoration:none; color:#6b7280; margin-right:5px;">${abierto ? "▾" : "▸"}</a>`
-      : `<span style="display:inline-block; width:13px;"></span>`;
+    const exp = `<a href="#" onclick="cartToggleOpen(${ri}); return false;" title="Ver mes a mes${r.multi ? " y las " + r.tiendas.length + " tiendas" : ""}" style="text-decoration:none; color:#6b7280; margin-right:5px;">${abierto ? "▾" : "▸"}</a>`;
     const badge = r.multi ? ` <span title="${r.tiendas.length} tiendas / marcas" style="font-size:9px; background:#EDE9FE; color:#430C89; border-radius:8px; padding:1px 6px; font-weight:700;">${r.tiendas.length} tiendas</span>` : "";
+    const indPill = r.industria
+      ? `<span style="font-size:10px; background:${r.indMixta ? "#FEF3C7" : "#F3F4F6"}; color:${r.indMixta ? "#92400e" : "#374151"}; border-radius:8px; padding:1px 7px;">${esc(r.industria)}</span>`
+      : `<span style="font-size:10px; color:#d1d5db; font-style:italic;">sin industria</span>`;
     const head = `<tr style="border-bottom:1px solid #f1f5f9;">
-      <td style="padding:7px 9px; font-weight:600;">${exp}${esc(r.cli)}${badge} ${alerta}</td>
-      <td style="padding:7px 9px; font-size:11px; color:#6b7280;">${esc(r.cur)}${r.pais ? " · " + esc(r.pais) : ""}</td>
-      <td style="padding:7px 9px; font-size:11px; color:#6b7280;">${r.okMeses.length}</td>
-      <td style="padding:7px 9px; text-align:right; font-variant-numeric:tabular-nums; font-weight:600;">${fmtMoney(r.gmv)}</td>
-      <td style="padding:7px 9px; text-align:right; font-variant-numeric:tabular-nums;">${r.val.toLocaleString("es-AR")}</td>
-      <td style="padding:7px 9px; text-align:right; font-variant-numeric:tabular-nums;">${fmtMoney(r.tick)}</td>
-      <td style="padding:7px 9px; text-align:right; font-variant-numeric:tabular-nums; color:${r.cancelRate > .15 ? "#dc2626" : "#6b7280"};">${(r.cancelRate * 100).toFixed(1)}%</td>
-      <td style="padding:7px 9px; text-align:right; font-variant-numeric:tabular-nums;">${r.fact === null ? "—" : fmtMoney(r.fact)}</td>
-      <td style="padding:7px 9px; text-align:right;">${penTxt}</td>
-      <td style="padding:7px 9px;">${r.serie.length >= 2 ? cuGmvSparkSvg(r.serie, 80, 24) : ""}</td>
-      <td style="padding:7px 9px; text-align:right; white-space:nowrap;">
-        <a href="#" onclick="cartPivotSel('${ri}'); return false;" style="font-size:11px; color:#4030C8;">pivot</a>
-        <a href="#" onclick="cartBorrar(${ri}); return false;" style="font-size:11px; color:#dc2626; margin-left:8px;">borrar</a>
-      </td>
+      ${td(`${exp}${esc(r.cli)}${badge} ${alerta}`, "left", "font-weight:600;")}
+      ${td(indPill)}
+      ${td(`${esc(r.cur)}${r.pais ? " · " + esc(r.pais) : ""}`, "left", "font-size:11px; color:#6b7280;")}
+      ${td(esc(r.periodo), "left", "font-size:11px; color:#6b7280; white-space:nowrap;")}
+      ${td(fmtMoney(r.gmv), "right", "font-weight:600;")}
+      ${td(r.serie.length >= 2 ? cuGmvSparkSvg(r.serie, 72, 22) : "")}
+      ${td(r.val.toLocaleString("es-AR"), "right")}
+      ${td(fmtMoney(r.tick), "right")}
+      ${td((r.cancelRate * 100).toFixed(1) + "%", "right", `color:${r.cancelRate > .15 ? "#dc2626" : "#6b7280"};`)}
+      ${td(money(r.opex), "right", "font-weight:600;")}
+      ${td(money(r.capex), "right", "color:#6b7280;")}
+      ${td(money(r.acv), "right")}
+      ${td(r.mesesAcv || "—", "right", "font-size:11px; color:#6b7280;")}
+      ${td(money(r.runrate), "right", "font-size:11px; color:#6b7280;")}
+      ${td(cartPenTxt(r.pen), "right")}
+      ${td(`<a href="#" onclick="cartPivotSel('${ri}'); return false;" style="font-size:11px; color:#4030C8;">pivot</a>
+            <a href="#" onclick="cartBorrar(${ri}); return false;" style="font-size:11px; color:#dc2626; margin-left:8px;">borrar</a>`, "right", "white-space:nowrap;")}
     </tr>`;
-    if (!r.multi || !abierto) return head;
-    const subs = r.tiendas.map((s, ti) => {
+    if (!abierto) return head;
+
+    /* --- sub-filas por marca: industria editable + click para abrir el popup --- */
+    const subs = r.multi ? r.tiendas.map((s, ti) => {
       const al = s.sinFx ? `<span title="${s.sinFx} mes(es) sin cotización cargada" style="color:#d97706;">⚠︎</span>` : "";
+      const sm = "padding:5px 9px; font-size:11px;";
       return `<tr style="border-bottom:1px solid #f8fafc; background:#fafafa;">
-        <td style="padding:5px 9px 5px 28px; font-size:11px; color:#374151;">↳ ${esc(s.tienda)} ${al}</td>
-        <td style="padding:5px 9px; font-size:11px; color:#6b7280;">${esc(s.cur)}</td>
-        <td style="padding:5px 9px; font-size:11px; color:#6b7280;">${s.okMeses.length}</td>
-        <td style="padding:5px 9px; text-align:right; font-variant-numeric:tabular-nums; font-size:11px;">${fmtMoney(s.gmv)}</td>
-        <td style="padding:5px 9px; text-align:right; font-variant-numeric:tabular-nums; font-size:11px;">${s.val.toLocaleString("es-AR")}</td>
-        <td style="padding:5px 9px; text-align:right; font-variant-numeric:tabular-nums; font-size:11px;">${fmtMoney(s.tick)}</td>
-        <td style="padding:5px 9px; text-align:right; font-variant-numeric:tabular-nums; font-size:11px; color:${s.cancelRate > .15 ? "#dc2626" : "#6b7280"};">${(s.cancelRate * 100).toFixed(1)}%</td>
-        <td style="padding:5px 9px; text-align:right; font-size:10px; color:#9ca3af; font-style:italic;">—</td>
-        <td style="padding:5px 9px; text-align:right; font-size:10px; color:#9ca3af; font-style:italic;">a nivel cuenta</td>
-        <td style="padding:5px 9px; font-size:10px; color:#9ca3af;">${esc(s.archivo || "")}</td>
-        <td style="padding:5px 9px; text-align:right; white-space:nowrap;">
-          <a href="#" onclick="cartPivotSel('${ri}.${ti}'); return false;" style="font-size:11px; color:#4030C8;">pivot</a>
+        <td style="${sm} padding-left:28px; color:#374151;">↳ <a href="#" onclick="cartPopup(${ri},${ti}); return false;" style="color:#430C89; font-weight:600; text-decoration:none; border-bottom:1px dotted #430C89;" title="Ver el detalle mes a mes, los desgloses y el análisis cruzado de esta marca">${esc(s.tienda)}</a> ${al}</td>
+        <td style="${sm}"><input value="${esc(s.industria || "")}" placeholder="industria…" style="width:110px; font-size:10px; padding:2px 5px; border:1px solid #e5e7eb; border-radius:4px;" onchange="cartSetIndustria(${JSON.stringify(r.cli).replace(/"/g, "&quot;")}, ${JSON.stringify(s.tienda).replace(/"/g, "&quot;")}, this.value)"></td>
+        <td style="${sm} color:#6b7280;">${esc(s.cur)}</td>
+        <td style="${sm} color:#6b7280; white-space:nowrap;">${esc(cartRangoTxt(s.okMeses.length ? s.okMeses : s.meses))}</td>
+        <td style="${sm} text-align:right; font-variant-numeric:tabular-nums;">${fmtMoney(s.gmv)}</td>
+        <td style="${sm}"></td>
+        <td style="${sm} text-align:right; font-variant-numeric:tabular-nums;">${s.val.toLocaleString("es-AR")}</td>
+        <td style="${sm} text-align:right; font-variant-numeric:tabular-nums;">${fmtMoney(s.tick)}</td>
+        <td style="${sm} text-align:right; font-variant-numeric:tabular-nums; color:${s.cancelRate > .15 ? "#dc2626" : "#6b7280"};">${(s.cancelRate * 100).toFixed(1)}%</td>
+        <td colspan="5" style="${sm} text-align:center; color:#9ca3af; font-style:italic; font-size:10px;">la facturación Innew es por cuenta, no por marca</td>
+        <td style="${sm} text-align:right; color:#9ca3af; font-style:italic; font-size:10px;">a nivel cuenta</td>
+        <td style="${sm} text-align:right; white-space:nowrap;">
+          <a href="#" onclick="cartPopup(${ri},${ti}); return false;" style="font-size:11px; color:#4030C8;">ver</a>
           <a href="#" onclick="cartBorrar(${ri}, ${ti}); return false;" style="font-size:11px; color:#dc2626; margin-left:8px;">borrar</a>
         </td>
       </tr>`;
-    }).join("");
-    return head + subs;
+    }).join("") : "";
+
+    /* --- detalle mes a mes de la CUENTA: GMV vs OPEX/CAPEX del mismo mes --- */
+    const ms = cartMesesCuenta(r);
+    let sG = 0, sO = 0, sC = 0, gViva = 0, oViva = 0;
+    ms.forEach(m => {
+      sG += m.gmv; sO += (m.opex || 0); sC += (m.capex || 0);
+      if (m.opex) { gViva += m.gmv; oViva += m.opex; }
+    });
+    const mrows = ms.map(m => `<tr>
+        <td style="padding:3px 8px; color:#6b7280;">${cartMesTxt(m.mes)}</td>
+        <td style="padding:3px 8px; text-align:right; font-variant-numeric:tabular-nums;">${fmtMoney(m.gmv)}</td>
+        <td style="padding:3px 8px; text-align:right; font-variant-numeric:tabular-nums;">${m.opex === null ? "—" : fmtMoney(m.opex)}</td>
+        <td style="padding:3px 8px; text-align:right; font-variant-numeric:tabular-nums; color:#9ca3af;">${m.capex === null ? "—" : fmtMoney(m.capex)}</td>
+        <td style="padding:3px 8px; text-align:right;">${cartPenTxt(m.pen, true)}</td>
+      </tr>`).join("");
+    const foot = `
+      <tr style="border-top:1px solid #e5e7eb; font-weight:700;">
+        <td style="padding:4px 8px;">Total ventana</td>
+        <td style="padding:4px 8px; text-align:right; font-variant-numeric:tabular-nums;">${fmtMoney(sG)}</td>
+        <td style="padding:4px 8px; text-align:right; font-variant-numeric:tabular-nums;">${fmtMoney(sO)}</td>
+        <td style="padding:4px 8px; text-align:right; font-variant-numeric:tabular-nums; color:#9ca3af;">${fmtMoney(sC)}</td>
+        <td style="padding:4px 8px; text-align:right;">${cartPenTxt(sG > 0 ? sO / sG : null)}</td>
+      </tr>
+      <tr style="color:#6b7280;">
+        <td style="padding:3px 8px;" title="Sólo los meses en que hubo OPEX facturado">Relación viva</td>
+        <td style="padding:3px 8px; text-align:right; font-variant-numeric:tabular-nums;">${fmtMoney(gViva)}</td>
+        <td style="padding:3px 8px; text-align:right; font-variant-numeric:tabular-nums;">${fmtMoney(oViva)}</td>
+        <td style="padding:3px 8px; text-align:right; color:#d1d5db;">—</td>
+        <td style="padding:3px 8px; text-align:right;">${cartPenTxt(gViva > 0 ? oViva / gViva : null)}</td>
+      </tr>
+      <tr style="color:#c4c4c4; font-size:10px;">
+        <td style="padding:3px 8px;">Todo junto, como antes <i>(ya no se usa)</i></td>
+        <td style="padding:3px 8px; text-align:right;">${fmtMoney(sG)}</td>
+        <td colspan="2" style="padding:3px 8px; text-align:right;">${fmtMoney(sO + sC)}</td>
+        <td style="padding:3px 8px; text-align:right;">${sG > 0 ? ((sO + sC) / sG * 100).toFixed(2) + "%" : "—"}</td>
+      </tr>`;
+    const detalle = `<tr style="background:#fcfcfd;"><td colspan="16" style="padding:8px 9px 12px 30px;">
+      <div style="font-size:10px; text-transform:uppercase; color:#6b7280; font-weight:700; margin-bottom:5px;">Mes a mes — GMV del cliente vs. lo que Innew le facturó ese mismo mes</div>
+      <table style="border-collapse:collapse; font-size:11px; min-width:520px;">
+        <thead><tr style="color:#9ca3af; font-size:9px; text-transform:uppercase;">
+          <th style="padding:3px 8px; text-align:left;">Mes</th><th style="padding:3px 8px; text-align:right;">GMV USD</th>
+          <th style="padding:3px 8px; text-align:right;">OPEX</th><th style="padding:3px 8px; text-align:right;">CAPEX</th>
+          <th style="padding:3px 8px; text-align:right;">% del P&L</th>
+        </tr></thead>
+        <tbody>${mrows}${foot}</tbody>
+      </table>
+    </td></tr>`;
+    return head + subs + detalle;
   }).join("");
-  el.innerHTML = `<div style="overflow-x:auto; border:1px solid #e5e7eb; border-radius:10px; background:#fff; margin-bottom:14px;">
+
+  el.innerHTML = `${barra}
+  <div style="overflow-x:auto; border:1px solid #e5e7eb; border-radius:10px; background:#fff; margin-bottom:14px;">
     <table style="width:100%; border-collapse:collapse; font-size:12px;">
-      <thead><tr>${th("Cliente")}${th("Moneda / país")}${th("Meses")}${th("GMV USD", "right")}${th("Pedidos", "right")}${th("Ticket USD", "right")}${th("% Cancel", "right")}${th("Facturación Innew", "right")}${th("% del P&L", "right")}${th("Tendencia")}${th("", "right")}</tr></thead>
+      <thead>
+        <tr>${CART_COLS.map(th).join("")}</tr>
+        <tr class="fil">${CART_COLS.map(fcell).join("")}</tr>
+      </thead>
       <tbody>${body}</tbody>
     </table>
   </div>
-  <div class="small" style="font-style:italic; color:#888; margin-bottom:16px;">GMV = pedidos NO cancelados, deduplicados por número de pedido (el export de VTEX repite el total en cada línea de producto). <b>% del P&amp;L</b> = facturación Innew ÷ GMV del cliente, ambos en USD y sumados antes de dividir. Las bandas de color (&lt;1% rojo · 1–2,5% ámbar · &gt;2,5% verde) son una <b>hipótesis inicial</b>: conviene calibrarlas contra 8–10 cuentas reales antes de tomarlas como benchmark.</div>`;
+  <div class="small" style="font-style:italic; color:#888; margin-bottom:16px;">GMV = pedidos NO cancelados, deduplicados por número de pedido (el export de VTEX repite el total en cada línea de producto). <b>Período comparado</b> = los meses que tienen dato Y cotización; la facturación Innew se mide sobre <b>esos mismos meses</b>. <b>OPEX</b> = recurrente · <b>CAPEX</b> = one-shot (IDP / IDE / Middleware). <b>ACV</b> = OPEX + CAPEX de la ventana, con los meses que abarca al lado. <b>Run-rate</b> anualiza sólo el OPEX. <b>% del P&amp;L</b> = OPEX ÷ GMV. Bandas de color: &lt;1% rojo · 1–2,5% ámbar · 2,5–15% verde · &gt;15% ⚑ rojo (arriba de 15% casi siempre es un problema de datos, no una cuenta espectacular). Son una <b>hipótesis inicial</b>: conviene calibrarlas contra 8–10 cuentas reales.</div>`;
+}
+
+/* ===================== POPUP POR MARCA =====================
+   Pedido textual de German: "poder clicear la marca y poder ver la info que dejo en imagen,
+   que se abra tipo un popup". Tres solapas: Detalle mensual · Desgloses · Análisis cruzado.
+   TODO se deriva al vuelo de lo que ya está guardado (s.filas + brk de la tienda).
+   No pega a HubSpot, no pega a red, no guarda nada nuevo. */
+let CART_POP = null;   // { ri, ti, tab, dim, met }
+
+const CART_DIM_LBL = {
+  prod: "Productos más vendidos", ori: "Origen del pedido", pay: "Medio de pago",
+  prov: "Provincia", est: "Estado del pedido", mot: "Motivo de cancelación",
+  inst: "Cuotas", utm: "Campaña / origen"
+};
+// las 6 tarjetas del tab Desgloses, en el orden del mockup aprobado
+const CART_POP_CARDS = ["prod", "ori", "pay", "prov", "est", "mot"];
+
+/* Métricas válidas por dimensión. Para productos la ÚNICA métrica honesta es unidades:
+   el importe no se puede atribuir a la línea de producto (el export repite el total del pedido). */
+function cartPopMetOpts(dim) {
+  if (dim === "prod") return [["n", "Unidades vendidas"]];
+  return [["gmv", "GMV USD"], ["n", "Volumen (pedidos)"], ["tick", "Ticket promedio"]];
+}
+
+function cartPopup(ri, ti) {
+  CART_POP = { ri: ri, ti: ti, tab: "meses", dim: "pay", met: "gmv" };
+  cartPopRender();
+}
+function cartPopClose() { CART_POP = null; cartPopRender(); }
+function cartPopSet(k, v) {
+  if (!CART_POP) return;
+  CART_POP[k] = v;
+  if (k === "dim") {
+    const ok = cartPopMetOpts(v).map(o => o[0]);
+    if (ok.indexOf(CART_POP.met) < 0) CART_POP.met = ok[0];
+  }
+  cartPopRender();
+}
+
+// { r, s, brk } de la marca abierta, o null si se cerró / cambió el filtro y el índice ya no existe
+function cartPopData() {
+  if (!CART_POP) return null;
+  const rows = CART_VIEW || cartRows();
+  const r = rows[CART_POP.ri]; if (!r) return null;
+  const s = r.tiendas[CART_POP.ti]; if (!s) return null;
+  const brk = ((cartTiendasOf(r.cli) || {})[s.tienda] || {}).brk || {};
+  return { r: r, s: s, brk: brk };
+}
+
+/* Suma un breakdown a lo largo de los meses con cotización, convertido a USD mes a mes. */
+function cartPopAgg(d, dim) {
+  const acc = {};
+  d.s.okMeses.forEach(m => {
+    const b = d.brk[m] && d.brk[m][dim];
+    if (!b) return;
+    Object.keys(b).forEach(k => {
+      const u = cartToUsd(b[k].g, d.s.cur, m);
+      if (!acc[k]) acc[k] = { g: 0, n: 0 };
+      acc[k].g += (u === null ? 0 : u); acc[k].n += b[k].n;
+    });
+  });
+  return acc;
+}
+
+/* Una tarjeta de desglose con barras horizontales. est/mot/prod se miden por cantidad
+   (CART_DIM_BYN); el resto por importe. */
+function cartPopCard(d, dim) {
+  const acc = cartPopAgg(d, dim);
+  const byN = !!CART_DIM_BYN[dim];
+  const keys = Object.keys(acc).sort((a, b) => byN ? (acc[b].n - acc[a].n) : (acc[b].g - acc[a].g));
+  const tot = keys.reduce((s, k) => s + (byN ? acc[k].n : acc[k].g), 0);
+  const uni = dim === "prod" ? " u." : (byN ? " ped." : "");
+  const filas = keys.slice(0, 8).map(k => {
+    const v = byN ? acc[k].n : acc[k].g;
+    const p = tot ? v / tot : 0;
+    return `<div style="margin-bottom:7px;">
+      <div style="display:flex; justify-content:space-between; gap:10px; font-size:11px; margin-bottom:3px;">
+        <span style="color:#374151; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${esc(k)}">${esc(k)}</span>
+        <span style="color:#111827; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap;">${byN ? v.toLocaleString("es-AR") + uni : fmtMoney(v)} · ${(p * 100).toFixed(1)}%</span>
+      </div>
+      <div style="background:#f1f5f9; border-radius:3px; height:6px;"><div style="background:#430C89; height:6px; border-radius:3px; width:${(p * 100).toFixed(1)}%;"></div></div>
+    </div>`;
+  }).join("");
+  return `<div style="border:1px solid #e5e7eb; border-radius:10px; padding:11px 13px; background:#fff;">
+    <div style="font-size:11px; font-weight:700; color:#111827; margin-bottom:9px;">${CART_DIM_LBL[dim]}<span style="font-weight:400; color:#9ca3af;"> · ${byN ? (dim === "prod" ? "unidades" : "pedidos") : "GMV"}</span></div>
+    ${filas || `<div style="color:#9ca3af; font-style:italic; font-size:11px;">Sin datos para esta dimensión.</div>`}
+  </div>`;
+}
+
+/* Tab 3: dimensión × métrica, meses en columnas + Total. */
+function cartPopPivot(d) {
+  const dim = CART_POP.dim, met = CART_POP.met, meses = d.s.okMeses;
+  const acc = {};
+  meses.forEach(m => {
+    const b = d.brk[m] && d.brk[m][dim];
+    if (!b) return;
+    Object.keys(b).forEach(k => {
+      if (!acc[k]) acc[k] = { tot: { g: 0, n: 0 }, m: {} };
+      const u = cartToUsd(b[k].g, d.s.cur, m);
+      const g = (u === null ? 0 : u);
+      acc[k].m[m] = { g: g, n: b[k].n };
+      acc[k].tot.g += g; acc[k].tot.n += b[k].n;
+    });
+  });
+  // "Sólo las filas con más de 10 pedidos" (nota al pie del mockup): abajo de eso el ticket es ruido.
+  const keys = Object.keys(acc).filter(k => acc[k].tot.n > 10)
+    .sort((a, b) => met === "gmv" ? (acc[b].tot.g - acc[a].tot.g) : (acc[b].tot.n - acc[a].tot.n));
+  const cell = o => {
+    if (!o) return `<span style="color:#d1d5db;">—</span>`;
+    if (met === "gmv") return fmtMoney(o.g);
+    if (met === "tick") return o.n ? fmtMoney(o.g / o.n) : `<span style="color:#d1d5db;">—</span>`;
+    return o.n.toLocaleString("es-AR");
+  };
+  const th = (t, al) => `<th style="padding:6px 9px; text-align:${al || "right"}; font-size:9px; text-transform:uppercase; color:#6b7280; border-bottom:2px solid #e5e7eb; white-space:nowrap;">${t}</th>`;
+  const body = keys.length ? keys.map(k => `<tr style="border-bottom:1px solid #f1f5f9;">
+      <td style="padding:5px 9px; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${esc(k)}">${esc(k)}</td>
+      ${meses.map(m => `<td style="padding:5px 9px; text-align:right; font-variant-numeric:tabular-nums;">${cell(acc[k].m[m])}</td>`).join("")}
+      <td style="padding:5px 9px; text-align:right; font-variant-numeric:tabular-nums; font-weight:700; background:#faf8ff;">${cell(acc[k].tot)}</td>
+    </tr>`).join("")
+    : `<tr><td colspan="${meses.length + 2}" style="padding:16px; color:#9ca3af; font-style:italic;">Ninguna fila supera los 10 pedidos en la ventana (o falta la cotización de los meses).</td></tr>`;
+  const metOpts = cartPopMetOpts(dim);
+  const selSty = `padding:5px 9px; border:1px solid #d1d5db; border-radius:6px; font-size:11px; background:#fff;`;
+  return `<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
+      <span style="font-size:11px; color:#6b7280; font-weight:600;">Cruzar</span>
+      <select style="${selSty}" onchange="cartPopSet('dim', this.value)">
+        ${CART_DIMS.map(x => `<option value="${x}"${dim === x ? " selected" : ""}>${CART_DIM_LBL[x] || x}</option>`).join("")}
+      </select>
+      <span style="font-size:11px; color:#6b7280; font-weight:600;">por</span>
+      <select style="${selSty}" onchange="cartPopSet('met', this.value)">
+        ${metOpts.map(o => `<option value="${o[0]}"${met === o[0] ? " selected" : ""}>${o[1]}</option>`).join("")}
+      </select>
+    </div>
+    <div style="overflow-x:auto; border:1px solid #e5e7eb; border-radius:10px; background:#fff;">
+      <table style="width:100%; border-collapse:collapse; font-size:11px;">
+        <thead><tr>${th(CART_DIM_LBL[dim] || dim, "left")}${meses.map(m => th(cartMesTxt(m))).join("")}${th("Total")}</tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+    <div class="small" style="font-style:italic; color:#888; margin-top:9px;">Volumen y GMV cuentan sólo pedidos válidos; la cancelación se calcula sobre el total. Sólo las filas con más de 10 pedidos. Los desgloses guardan las categorías más grandes de cada mes (el resto cae en <i>Otros</i>).</div>`;
+}
+
+/* Tab 1: detalle mensual — es la tabla de la primera captura de German. */
+function cartPopMeses(d) {
+  const f = d.s.filas || [];
+  const th = (t, al) => `<th style="padding:6px 9px; text-align:${al || "right"}; font-size:9px; text-transform:uppercase; color:#6b7280; border-bottom:2px solid #e5e7eb; white-space:nowrap;">${t}</th>`;
+  const num = v => `<td style="padding:5px 9px; text-align:right; font-variant-numeric:tabular-nums;">${v}</td>`;
+  const varTxt = v => v === null || v === undefined ? `<span style="color:#d1d5db;">—</span>`
+    : `<span style="color:${v >= 0 ? "#059669" : "#dc2626"}; font-weight:600;">${v >= 0 ? "▲" : "▼"} ${Math.abs(v * 100).toFixed(1)}%</span>`;
+  const body = f.map(x => `<tr style="border-bottom:1px solid #f1f5f9;">
+      <td style="padding:5px 9px; font-weight:600; white-space:nowrap;">${cartMesTxt(x.mes)}</td>
+      ${num(x.ped.toLocaleString("es-AR"))}${num(x.val.toLocaleString("es-AR"))}${num(x.can.toLocaleString("es-AR"))}
+      ${num(`<span style="color:${x.cancelRate > 0.3 ? "#dc2626" : x.cancelRate > 0.15 ? "#d97706" : "#059669"}; font-weight:600;">${(x.cancelRate * 100).toFixed(1)}%</span>`)}
+      ${num(`<b>${fmtMoney(x.gmv)}</b>`)}${num(`<span style="color:#dc2626;">${fmtMoney(x.lost)}</span>`)}
+      ${num((x.pot * 100).toFixed(1) + "%")}${num(fmtMoney(x.tick))}${num(varTxt(x.varGmv))}
+    </tr>`).join("");
+  const t = f.reduce((a, x) => ({ ped: a.ped + x.ped, val: a.val + x.val, can: a.can + x.can, gmv: a.gmv + x.gmv, lost: a.lost + x.lost }), { ped: 0, val: 0, can: 0, gmv: 0, lost: 0 });
+  const foot = f.length ? `<tr style="border-top:2px solid #e5e7eb; font-weight:700; background:#faf8ff;">
+      <td style="padding:6px 9px;">Total</td>
+      ${num(t.ped.toLocaleString("es-AR"))}${num(t.val.toLocaleString("es-AR"))}${num(t.can.toLocaleString("es-AR"))}
+      ${num(t.ped ? (t.can / t.ped * 100).toFixed(1) + "%" : "—")}
+      ${num(fmtMoney(t.gmv))}${num(fmtMoney(t.lost))}
+      ${num((t.gmv + t.lost) > 0 ? (t.lost / (t.gmv + t.lost) * 100).toFixed(1) + "%" : "—")}
+      ${num(t.val ? fmtMoney(t.gmv / t.val) : "—")}${num("")}
+    </tr>` : "";
+  return `<div style="overflow-x:auto; border:1px solid #e5e7eb; border-radius:10px; background:#fff;">
+      <table style="width:100%; border-collapse:collapse; font-size:11px;">
+        <thead><tr>${th("Mes", "left")}${th("Pedidos")}${th("Válidos")}${th("Cancelados")}${th("Cancelación")}${th("GMV neto")}${th("Perdido")}${th("% potencial")}${th("Ticket")}${th("Var. GMV")}</tr></thead>
+        <tbody>${body || `<tr><td colspan="10" style="padding:16px; color:#9ca3af; font-style:italic;">Sin meses con cotización cargada.</td></tr>`}${foot}</tbody>
+      </table>
+    </div>
+    <div class="small" style="font-style:italic; color:#888; margin-top:9px;"><b>GMV neto</b> = pedidos no cancelados · <b>Perdido</b> = importe de los cancelados · <b>% potencial</b> = perdido ÷ (GMV + perdido): cuánto crecería la marca sin cancelaciones. Todo en USD, cada mes a su propia cotización oficial.</div>`;
+}
+
+function cartPopRender() {
+  let host = document.getElementById("cart-pop-host");
+  if (!host) { host = document.createElement("div"); host.id = "cart-pop-host"; document.body.appendChild(host); }
+  const d = cartPopData();
+  if (!d) { host.innerHTML = ""; return; }
+  const s = d.s, r = d.r;
+  const kpi = (l, v, sub, col) => `<div style="flex:1; min-width:110px;">
+      <div style="font-size:9px; text-transform:uppercase; letter-spacing:.4px; color:#9ca3af; font-weight:700;">${l}</div>
+      <div style="font-size:17px; font-weight:800; color:${col || "#111827"}; font-variant-numeric:tabular-nums;">${v}</div>
+      <div style="font-size:10px; color:#9ca3af;">${sub}</div>
+    </div>`;
+  const tab = (id, l) => `<button onclick="cartPopSet('tab','${id}')" style="border:none; background:none; cursor:pointer; padding:9px 2px; margin-right:18px; font-size:12px; font-weight:${CART_POP.tab === id ? "700" : "500"}; color:${CART_POP.tab === id ? "#430C89" : "#6b7280"}; border-bottom:2px solid ${CART_POP.tab === id ? "#430C89" : "transparent"};">${l}</button>`;
+  const cuerpo = CART_POP.tab === "meses" ? cartPopMeses(d)
+    : CART_POP.tab === "brk" ? `<div style="display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:11px;">${CART_POP_CARDS.map(x => cartPopCard(d, x)).join("")}</div>`
+    : cartPopPivot(d);
+  host.innerHTML = `<div onclick="if(event.target===this) cartPopClose()" style="position:fixed; inset:0; background:rgba(17,24,39,.55); z-index:9000; display:flex; align-items:flex-start; justify-content:center; padding:32px 18px; overflow:auto;">
+    <div style="background:#f9fafb; border-radius:14px; width:100%; max-width:1080px; box-shadow:0 18px 50px rgba(0,0,0,.28); overflow:hidden;">
+      <div style="background:#430C89; color:#fff; padding:14px 18px; display:flex; align-items:flex-start; gap:12px;">
+        <div style="flex:1;">
+          <div style="font-size:16px; font-weight:800;">${esc(s.tienda)}</div>
+          <div style="font-size:11px; opacity:.85;">${esc(r.cli)}${s.industria ? " · " + esc(s.industria) : ""} · ${esc(s.cur)} · ${cartRangoTxt(s.okMeses.length ? s.okMeses : s.meses)}${s.sinFx ? ` · <span title="Meses sin cotización cargada">⚠︎ ${s.sinFx} mes${s.sinFx > 1 ? "es" : ""} sin cotización</span>` : ""}</div>
+        </div>
+        <button onclick="cartPopClose()" style="border:none; background:rgba(255,255,255,.16); color:#fff; width:28px; height:28px; border-radius:8px; cursor:pointer; font-size:15px; line-height:1;">✕</button>
+      </div>
+      <div style="background:#fff; padding:13px 18px; display:flex; gap:14px; flex-wrap:wrap; border-bottom:1px solid #e5e7eb;">
+        ${kpi("GMV neto", fmtMoney(s.gmv), s.okMeses.length + " mes" + (s.okMeses.length === 1 ? "" : "es") + " con cotización")}
+        ${kpi("Pedidos", s.ped.toLocaleString("es-AR"), s.val.toLocaleString("es-AR") + " válidos")}
+        ${kpi("Ticket", fmtMoney(s.tick), "sobre pedidos válidos")}
+        ${kpi("Cancelación", (s.cancelRate * 100).toFixed(1) + "%", s.can.toLocaleString("es-AR") + " pedidos", s.cancelRate > 0.3 ? "#dc2626" : s.cancelRate > 0.15 ? "#d97706" : "#059669")}
+        ${kpi("Perdido", fmtMoney(s.lost), "importe cancelado", "#dc2626")}
+        ${kpi("% potencial", (s.gmv + s.lost) > 0 ? (s.lost / (s.gmv + s.lost) * 100).toFixed(1) + "%" : "—", "si no se cancelara nada")}
+      </div>
+      <div style="background:#fff; padding:0 18px; border-bottom:1px solid #e5e7eb;">
+        ${tab("meses", "Detalle mensual")}${tab("brk", "Desgloses")}${tab("cruz", "Análisis cruzado")}
+      </div>
+      <div style="padding:16px 18px 20px;">${cuerpo}</div>
+    </div>
+  </div>`;
 }
 
 /* --- render: pivot por medio de pago / cuotas / campaña --- */
 function cartRenderPivot() {
   const el = document.getElementById("cart-pivot");
   if (!el) return;
-  const rows = cartRows();
+  // Respeta el filtro/orden de la tabla: si German filtró la cartera, el pivot mira lo mismo.
+  const rows = CART_VIEW || cartRows();
   if (!rows.length) { el.innerHTML = ""; return; }
   // Los breakdowns viven por TIENDA (cada una con su moneda), así que se recorre
   // cuenta → tienda → mes y se convierte con la moneda de esa tienda.
@@ -8817,14 +9416,17 @@ function cartRenderPivot() {
       });
     });
   });
-  const keys = Object.keys(acc).sort((a, b) => acc[b].g - acc[a].g);
-  const tot = keys.reduce((s, k) => s + acc[k].g, 0);
-  const dimLbl = { pay: "Medio de pago", inst: "Cuotas", utm: "Campaña / origen" };
+  // est / mot / prod se miden por CANTIDAD, no por importe: el estado y el motivo se cuentan
+  // sobre pedidos, y el producto no tiene importe atribuible (el export repite el total del pedido).
+  const byN = !!CART_DIM_BYN[CART_DIM];
+  const keys = Object.keys(acc).sort((a, b) => byN ? (acc[b].n - acc[a].n) : (acc[b].g - acc[a].g));
+  const tot = keys.reduce((s, k) => s + (byN ? acc[k].n : acc[k].g), 0);
+  const dimLbl = CART_DIM_LBL;
   const body = keys.length ? keys.map(k => {
-    const p = tot ? acc[k].g / tot : 0;
+    const p = tot ? (byN ? acc[k].n : acc[k].g) / tot : 0;
     return `<tr style="border-bottom:1px solid #f1f5f9;">
       <td style="padding:6px 9px;">${esc(k)}</td>
-      <td style="padding:6px 9px; text-align:right; font-variant-numeric:tabular-nums;">${fmtMoney(acc[k].g)}</td>
+      <td style="padding:6px 9px; text-align:right; font-variant-numeric:tabular-nums;">${byN ? `<span style="color:#d1d5db;">—</span>` : fmtMoney(acc[k].g)}</td>
       <td style="padding:6px 9px; text-align:right; font-variant-numeric:tabular-nums;">${acc[k].n.toLocaleString("es-AR")}</td>
       <td style="padding:6px 9px; width:180px;"><div style="background:#f1f5f9; border-radius:3px; height:8px;"><div style="background:#430C89; height:8px; border-radius:3px; width:${(p * 100).toFixed(1)}%;"></div></div></td>
       <td style="padding:6px 9px; text-align:right; font-variant-numeric:tabular-nums; font-weight:600;">${(p * 100).toFixed(1)}%</td>
@@ -8833,7 +9435,7 @@ function cartRenderPivot() {
   el.innerHTML = `<div style="border:1px solid #e5e7eb; border-radius:10px; background:#fff; padding:12px 14px;">
     <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
       <strong style="font-size:12px;">🔎 Composición del GMV</strong>
-      ${["pay", "inst", "utm"].map(d => `<button class="fc-btn${CART_DIM === d ? "" : " secondary"}" style="font-size:11px; padding:4px 10px;" onclick="CART_DIM='${d}'; renderCartera();">${dimLbl[d]}</button>`).join("")}
+      ${CART_DIMS.map(d => `<button class="fc-btn${CART_DIM === d ? "" : " secondary"}" style="font-size:11px; padding:4px 10px;" onclick="CART_DIM='${d}'; cartRenderPivot();">${dimLbl[d]}</button>`).join("")}
       <select onchange="cartPivotSel(this.value);" style="margin-left:auto; padding:4px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:11px;">
         <option value=""${CART_SEL ? "" : " selected"}>Toda la cartera</option>
         ${rows.map((r, ri) => {
@@ -8850,12 +9452,15 @@ function cartRenderPivot() {
       <thead><tr>
         <th style="padding:6px 9px; text-align:left; font-size:9px; text-transform:uppercase; color:#6b7280; border-bottom:2px solid #e5e7eb;">${dimLbl[CART_DIM]}</th>
         <th style="padding:6px 9px; text-align:right; font-size:9px; text-transform:uppercase; color:#6b7280; border-bottom:2px solid #e5e7eb;">GMV USD</th>
-        <th style="padding:6px 9px; text-align:right; font-size:9px; text-transform:uppercase; color:#6b7280; border-bottom:2px solid #e5e7eb;">Pedidos</th>
+        <th style="padding:6px 9px; text-align:right; font-size:9px; text-transform:uppercase; color:#6b7280; border-bottom:2px solid #e5e7eb;">${CART_DIM === "prod" ? "Unidades" : "Pedidos"}</th>
         <th style="padding:6px 9px; border-bottom:2px solid #e5e7eb;"></th>
         <th style="padding:6px 9px; text-align:right; font-size:9px; text-transform:uppercase; color:#6b7280; border-bottom:2px solid #e5e7eb;">Share</th>
       </tr></thead>
       <tbody>${body}</tbody>
     </table>
+    <div style="font-size:10px; color:#9ca3af; margin-top:8px; line-height:1.5;">
+      ${byN ? "Esta dimensión se mide por cantidad, no por importe: el share sale de los pedidos (o unidades), no del GMV. " : ""}Se guardan las categorías más grandes de cada mes; el resto cae en <em>Otros</em>. Sólo entran los meses con cotización cargada.
+    </div>
   </div>`;
 }
 
