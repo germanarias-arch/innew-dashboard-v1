@@ -7939,12 +7939,21 @@ function cuGmvSparkSvg(vals, w, h) {
   const last = pts[pts.length - 1];
   return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="display:block;"><polyline points="${pts.map(p => p.join(",")).join(" ")}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/><circle cx="${last[0]}" cy="${last[1]}" r="2.2" fill="${color}"/></svg>`;
 }
+/* Tendencia de la fila de Clientes. Si la cuenta tiene datos en Cartera GMV se dibuja EXACTAMENTE
+   la misma curva que allá (cartSparkMeses: serie en USD, meses completos, con los meses abajo).
+   Sin archivo cargado cae al sparkline viejo sobre gmvHist, que es lo único que hay.
+   cuGmvSparkSvg NO se toca: lo sigue usando el popup cuGmvDetail (320×70). */
 function cuGmvSparkCell(cli, companyId) {
+  const link = `<a href="#" onclick="cuGmvDetail('${cli.replace(/'/g, "")}','${companyId || ""}');return false;" style="font-size:10px; color:#4030C8; white-space:nowrap;">detalle ↗</a>`;
+  const cr = cartCliRow(cli);
+  if (cr && cr.serie.length >= 2) {
+    return `<div style="display:flex; align-items:center; justify-content:center; gap:6px;">${cartSparkMeses(cr.serie, cr.okMeses, 104, 22)}${link}</div>`;
+  }
   const hist = cuentasGetMeta(cli).gmvHist || {};
   const keys = Object.keys(hist).sort().slice(-6);
   if (keys.length < 2) return `<span style="font-size:10px; color:#9ca3af; font-style:italic;">sin datos aún</span>`;
   const vals = keys.map(k => hist[k]);
-  return `<div style="display:flex; align-items:center; gap:6px;">${cuGmvSparkSvg(vals, 90, 26)}<a href="#" onclick="cuGmvDetail('${cli.replace(/'/g, "")}','${companyId || ""}');return false;" style="font-size:10px; color:#4030C8; white-space:nowrap;">detalle ↗</a></div>`;
+  return `<div style="display:flex; align-items:center; gap:6px;">${cuGmvSparkSvg(vals, 90, 26)}${link}</div>`;
 }
 function closeGmvModal() { const m = document.getElementById("gmv-modal"); if (m) m.remove(); }
 function cuGmvDetail(cli, companyId) {
@@ -9012,6 +9021,48 @@ function cartRows() {
   return out.sort((a, b) => b.gmv - a.gmv);
 }
 
+/* --- puente Cartera GMV → vista Clientes -------------------------------------------------
+   La columna GMV de Clientes mostraba `gmvHist` (lo que German tipeaba a mano y lo que
+   cartRollupGmvHist vuelca al guardar un archivo). Ese rollup suma en la MONEDA NATIVA de las
+   tiendas cuando todas comparten una — por eso en pantalla aparecía "6729000", que son pesos.
+   Desde ahora, si la cuenta tiene datos en Cartera GMV, la columna muestra la MEDIA MENSUAL EN
+   USD calculada ahí (meses completos y con cotización; los parciales y los sin FX ya quedaron
+   afuera de r.gmv/r.okMeses). gmvHist sigue vivo como respaldo para las cuentas sin archivo.
+
+   Se cachea por render: cartRows() recorre todas las cuentas, y llamarlo por fila sería O(n²).
+   renderCuentas() invalida el cache al arrancar, así que nunca sirve datos viejos. */
+let CART_BY_CLI = null;
+function cartInvalidateCli() { CART_BY_CLI = null; }
+function cartByCli() {
+  if (CART_BY_CLI) return CART_BY_CLI;
+  const m = {};
+  cartRows().forEach(r => { m[r.cli] = r; });
+  CART_BY_CLI = m;
+  return m;
+}
+function cartCliRow(cli) { return cartByCli()[String(cli == null ? "" : cli).trim()] || null; }
+
+/* Media mensual de GMV en USD de la cuenta. null si no hay archivo cargado o si ningún mes
+   quedó válido (todos parciales o sin cotización) — en ese caso la vista cae al input manual. */
+function cartGmvAvgUsd(cli) {
+  const r = cartCliRow(cli);
+  if (!r || !r.okMeses.length) return null;
+  return r.gmv / r.okMeses.length;
+}
+
+/* Variación del último mes completo contra el anterior, sobre la MISMA serie que dibuja la
+   tendencia. Antes esto salía de cuGmvTrend (que comparaba las dos últimas claves de gmvHist,
+   sin distinguir mes parcial): un septiembre a medio cargar daba "▼ -100%". */
+function cartSerieTrend(serie) {
+  if (!serie || serie.length < 2) return null;
+  const cur = serie[serie.length - 1], prev = serie[serie.length - 2];
+  if (prev == null || cur == null || prev === 0) return null;
+  const pct = Math.round((cur - prev) / prev * 100);
+  if (pct > 0) return { arrow: "▲", color: "#059669", pct: "+" + pct + "%" };
+  if (pct < 0) return { arrow: "▼", color: "#dc2626", pct: pct + "%" };
+  return { arrow: "→", color: "#6b7280", pct: "0%" };
+}
+
 /* --- rango de meses legible: "abr – ago 2026" / "ago 2026" / "nov 2025 – ago 2026" --- */
 function cartMesTxt(m) {
   const p = String(m || "").split("-");
@@ -9901,6 +9952,9 @@ async function renderCuentas() {
   }
   if (!window.__cuentasData) { if (cont) cont.innerHTML = `<div class="cue-alert" style="background:#FEF2F2; border-color:#FECACA; color:#b91c1c;">No se pudieron cargar las cuentas de HubSpot. <button class="fc-btn secondary" onclick="reloadCuentas()" style="font-size:12px;">↻ Reintentar</button></div>`; return; }
   if (window.__cuentasData && !window.__cuentasData.__finHyd) { try { cuFinHydrateFromHS(window.__cuentasData); } catch (e) {} window.__cuentasData.__finHyd = 1; }
+  // La columna GMV y la tendencia salen de Cartera GMV: se recalcula una vez por render
+  // (cartRows() recorre todas las cuentas; llamarlo por fila sería O(n²)).
+  cartInvalidateCli();
   const accounts = window.__cuentasData.map(c => ({
     id: c.id, cli: (c.properties.name || "(sin nombre)").trim(), csm: (c.properties.csm_asignado || "").trim(),
     pais: normPais(c.properties.country), sgh: c.properties.horas_de_sg_contratadas ? parseFloat(c.properties.horas_de_sg_contratadas) : null,
@@ -9974,7 +10028,7 @@ async function renderCuentas() {
     <th style="position:sticky; left:0; z-index:3; background:#fafafa; width:200px; min-width:200px; max-width:200px;">Cliente</th><th>CSM</th><th style="text-align:center;">Matriz BCG</th><th style="text-align:center;">País</th><th style="text-align:center;">S&G h/mes</th>
     <th style="text-align:center;">Scale</th><th style="text-align:center;">Hs consumidas</th><th style="text-align:center;">Consumo</th>
     <th style="text-align:center;">Valor hora $</th><th style="text-align:center;">Valor hora u$s</th><th style="text-align:center;">Monto mensual u$s</th>
-    <th style="text-align:center;">Tipo plan</th><th style="text-align:center;">Fin acuerdo</th><th style="text-align:center;">Semáforo</th><th style="text-align:center;">Facturación</th><th style="text-align:center;">GMV mensual</th><th style="text-align:center;">GMV últ. 6m</th>
+    <th style="text-align:center;">Tipo plan</th><th style="text-align:center;">Fin acuerdo</th><th style="text-align:center;">Semáforo</th><th style="text-align:center;">Facturación</th><th style="text-align:center;" title="Media mensual de GMV en USD, calculada en Cartera GMV sobre los meses completos con cotización. Las cuentas sin archivo cargado mantienen el input manual.">GMV medio u$s</th><th style="text-align:center;" title="Misma tendencia que la vista Cartera GMV: serie mensual en USD, sólo meses completos.">Tendencia GMV</th>
     <th style="text-align:center;">Deals</th><th>Nota</th><th style="text-align:center;">Baja</th>
   </tr><tr style="background:#fafafa;">
     <th style="position:sticky; left:0; z-index:3; background:#fafafa; width:200px; min-width:200px; max-width:200px; padding:4px 6px;"><input type="text" value="${escAttr(CF.nombre || "")}" placeholder="filtrar… (Enter)" onchange="cueColFSet('nombre',this.value)" style="width:95%; box-sizing:border-box; padding:3px 6px; border:1px solid #d1d5db; border-radius:5px; font-size:11px; font-weight:400;"></th>
@@ -10021,10 +10075,28 @@ async function renderCuentas() {
     const finBadge = dg && dg.icon ? `<div style="font-size:10px; color:${dg.fg}; font-weight:600; margin-top:2px;">${dg.icon} ${dg.txt}</div>` : "";
     const finCell = `<input type="date" value="${fin}" onchange="cuSetFin('${cliJs}','${r.id}',this.value)" style="padding:3px 5px; font-size:11px; border:1px solid; border-radius:5px; ${finStyle}">${finBadge}`;
     const semCell = cuSemaforoSelect(r.cli, r.id);
-    const gmv = cuGmvCurrent(r.cli);
-    const trend = cuGmvTrend(r.cli);
-    const trBadge = trend ? `<div style="font-size:10px; color:${trend.color}; font-weight:600; margin-top:2px;">${trend.arrow} ${trend.pct}</div>` : "";
-    const gmvCell = `<input type="number" value="${gmv}" placeholder="GMV/mes" onchange="cuSetGmv('${cliJs}','${r.id}',this.value)" style="padding:3px 6px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; width:100px; text-align:right;">${trBadge}`;
+    /* GMV: si la cuenta tiene archivo cargado en Cartera GMV, la celda es DERIVADA — media
+       mensual en USD sobre meses completos y con cotización. Deja de ser editable a propósito:
+       tipear a mano encima de un dato calculado sólo genera dos verdades. Sin archivo, sigue
+       siendo el input manual de siempre (que además escribe gmv_mensual en HubSpot). */
+    const cartR = cartCliRow(r.cli);
+    const cartAvg = (cartR && cartR.okMeses.length) ? cartR.gmv / cartR.okMeses.length : null;
+    let gmvCell;
+    if (cartAvg !== null) {
+      const ct = cartSerieTrend(cartR.serie);
+      const ctB = ct ? `<div style="font-size:10px; color:${ct.color}; font-weight:600; margin-top:1px;">${ct.arrow} ${ct.pct}</div>` : "";
+      const nm = cartR.okMeses.length;
+      const alerta = cartR.sinFx ? " · ⚠︎ " + cartR.sinFx + " mes(es) sin cotización" : "";
+      gmvCell = `<div title="Media mensual en USD calculada en Cartera GMV sobre ${nm} mes(es) completo(s): ${escAttr(cartR.periodo)}${escAttr(alerta)}" style="cursor:help;">
+        <div style="font-size:12px; font-weight:700; color:#111827;">${fmtMoneyK(cartAvg)}</div>
+        <div style="font-size:9px; color:#9ca3af;">media · ${nm}m${cartR.sinFx ? " ⚠︎" : ""}</div>${ctB}
+      </div>`;
+    } else {
+      const gmv = cuGmvCurrent(r.cli);
+      const trend = cuGmvTrend(r.cli);
+      const trBadge = trend ? `<div style="font-size:10px; color:${trend.color}; font-weight:600; margin-top:2px;">${trend.arrow} ${trend.pct}</div>` : "";
+      gmvCell = `<input type="number" value="${gmv}" placeholder="GMV/mes" onchange="cuSetGmv('${cliJs}','${r.id}',this.value)" style="padding:3px 6px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; width:100px; text-align:right;" title="Sin archivo en Cartera GMV: carga manual. Al subir el export de VTEX esta celda pasa a ser la media en USD.">${trBadge}`;
+    }
     html += `<tr>
       <td style="position:sticky; left:0; z-index:1; background:#fff; width:200px; min-width:200px; max-width:200px;"><strong><a href="${HUBSPOT_COMPANY(r.id)}" target="_blank" style="color:#4030C8;">${escAttr(r.cli)}</a></strong> <span id="hsst-${r.id}" style="font-size:10px;"></span></td>
       <td><select onchange="cuentasSetCsm('${r.id}',this.value,this)" style="padding:3px 6px; font-size:12px; border:1px solid ${r.csm ? "#d1d5db" : "#f59e0b"}; border-radius:5px; background:${r.csm ? "#fff" : "#fffbeb"}; max-width:150px;">${csmEnumOptions(r.csm)}</select> <span id="csmst-${r.id}" style="font-size:11px;"></span></td>
