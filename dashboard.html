@@ -8744,7 +8744,7 @@ let CART_OPEN = {};        // cuentas con las tiendas desplegadas en la tabla
 /* --- orden y filtro POR COLUMNA (pedido explícito de German: todas las columnas) ---
    CART_SORT = { col, dir } · CART_FIL = { col: valor }. Los filtros de texto son "contiene";
    los numéricos van como {min,max} y reemplazan a los presets viejos (>1M, etc.). */
-let CART_SORT = { col: "gmv", dir: -1 };
+let CART_SORT = { col: "gmvAvg", dir: -1 };
 let CART_FIL = {};
 
 // Definición de columnas: id, label, tipo (txt|num|pct|money|sel), alineación y accessor.
@@ -8753,7 +8753,7 @@ const CART_COLS = [
   { id: "industria",lbl: "Industria",         t: "sel",   al: "left"  },
   { id: "cur",      lbl: "Moneda / país",     t: "sel",   al: "left"  },
   { id: "periodo",  lbl: "Período comparado", t: "txt",   al: "left"  },
-  { id: "gmv",      lbl: "GMV USD",           t: "money", al: "right" },
+  { id: "gmvAvg",   lbl: "GMV medio u$s",     t: "money", al: "right" },
   { id: "spark",    lbl: "Tendencia",         t: "none",  al: "left"  },
   { id: "ped",      lbl: "Pedidos",           t: "num",   al: "right" },
   { id: "tick",     lbl: "Ticket USD",        t: "money", al: "right" },
@@ -9001,6 +9001,10 @@ function cartRows() {
       industria: ind.txt, indMixta: ind.mixta,
       tiendas: subs, multi: subs.length > 1,
       meses: meses, okMeses: okMeses, sinFx: sinFx, serie: serie,
+      // GMV medio de UN mes. `gmv` es la suma del período (la usan % del P&L y los KPIs de
+      // cartera, que sí son acumulados); lo que se muestra en la tabla es esta media, porque
+      // un total de 6 meses al lado de uno de 2 no se puede comparar ni ordenar.
+      gmvAvg: okMeses.length ? gmv / okMeses.length : null,
       parciales: Object.keys(parSet).sort(),
       periodo: cartRangoTxt(okMeses.length ? okMeses : meses),
       gmv: gmv, ped: ped, val: val, can: can, lost: lost,
@@ -9046,8 +9050,8 @@ function cartCliRow(cli) { return cartByCli()[String(cli == null ? "" : cli).tri
    quedó válido (todos parciales o sin cotización) — en ese caso la vista cae al input manual. */
 function cartGmvAvgUsd(cli) {
   const r = cartCliRow(cli);
-  if (!r || !r.okMeses.length) return null;
-  return r.gmv / r.okMeses.length;
+  if (!r) return null;
+  return r.gmvAvg;
 }
 
 /* Variación del último mes completo contra el anterior, sobre la MISMA serie que dibuja la
@@ -9303,9 +9307,12 @@ function cartRenderKpis() {
   if (!el) return;
   const rows = cartRowsView();
   if (!rows.length) { el.innerHTML = ""; return; }
-  let gmv = 0, opex = 0, capex = 0, gmvConFact = 0, ped = 0, val = 0, can = 0, sinDeals = 0, nTiendas = 0;
+  let gmv = 0, gmvMes = 0, opex = 0, capex = 0, gmvConFact = 0, ped = 0, val = 0, can = 0, sinDeals = 0, nTiendas = 0;
   rows.forEach(r => {
     gmv += r.gmv; ped += r.ped; val += r.val; can += r.can; nTiendas += r.tiendas.length;
+    // Σ de las MEDIAS mensuales: cuánto vende la cartera en un mes. Sumar los totales de cada
+    // cuenta mezcla ventanas distintas (una con 6 meses y otra con 2) y no dice nada.
+    if (r.gmvAvg !== null) gmvMes += r.gmvAvg;
     if (r.fact === null) sinDeals++;
     else { opex += r.opex; capex += r.capex; gmvConFact += r.gmv; }
   });
@@ -9322,7 +9329,7 @@ function cartRenderKpis() {
       <span style="font-size:10px; color:#9ca3af;">guardado: ${(cartStorageBytes() / 1024).toFixed(0)} KB</span>
     </div>
     <div class="cue-kpis">
-      ${card("GMV cartera (USD)", fmtMoney(gmv), rows.length + " cuentas" + (nTiendas > rows.length ? " · " + nTiendas + " tiendas" : "") + " · " + per)}
+      ${card("GMV cartera / mes (USD)", fmtMoney(gmvMes), rows.length + " cuentas" + (nTiendas > rows.length ? " · " + nTiendas + " tiendas" : "") + " · media mensual · " + per)}
       ${card("OPEX Innew (USD)", opex ? fmtMoney(opex) : "—", sinDeals ? sinDeals + " cuentas sin deals cargados" : "recurrente facturado en la ventana")}
       ${card("CAPEX Innew (USD)", capex ? fmtMoney(capex) : "—", "IDP / IDE / Middleware — one-shot, fuera del % del P&L")}
       ${card("% del P&L del cliente", pen === null ? "—" : (pen * 100).toFixed(2) + "%", "Σ OPEX ÷ Σ GMV", cartPenColor(pen))}
@@ -9410,7 +9417,7 @@ function cartRenderTabla() {
       ${td(indPill)}
       ${td(`${esc(r.cur)}${r.pais ? " · " + esc(r.pais) : ""}`, "left", "font-size:11px; color:#6b7280;")}
       ${td(esc(r.periodo) + cartParcialChip(r.parciales), "left", "font-size:11px; color:#6b7280; white-space:nowrap;")}
-      ${td(fmtMoney(r.gmv), "right", "font-weight:600;")}
+      ${td(`<div style="font-weight:600;">${r.gmvAvg === null ? "—" : fmtMoney(r.gmvAvg)}</div><div style="font-size:9px; color:#9ca3af; font-weight:400;" title="Total acumulado del período: ${escAttr(fmtMoney(r.gmv))}">media de ${r.okMeses.length}m · Σ ${fmtMoney(r.gmv)}</div>`, "right")}
       ${td(r.serie.length >= 2 ? cartSparkMeses(r.serie, r.okMeses, 104, 22) : "")}
       ${td(r.val.toLocaleString("es-AR"), "right")}
       ${td(fmtMoney(r.tick), "right")}
@@ -9435,7 +9442,7 @@ function cartRenderTabla() {
         <td style="${sm}">${cartIndSelect(s.industria, `cartSetIndustria(${JSON.stringify(r.cli).replace(/"/g, "&quot;")}, ${JSON.stringify(s.tienda).replace(/"/g, "&quot;")}, this.value)`, "font-size:10px; padding:2px 4px; border:1px solid #e5e7eb; border-radius:4px; max-width:140px;")}</td>
         <td style="${sm} color:#6b7280;">${esc(s.cur)}</td>
         <td style="${sm} color:#6b7280; white-space:nowrap;">${esc(cartRangoTxt(s.okMeses.length ? s.okMeses : s.meses))}${cartParcialChip(s.parciales)}</td>
-        <td style="${sm} text-align:right; font-variant-numeric:tabular-nums;">${fmtMoney(s.gmv)}</td>
+        <td style="${sm} text-align:right; font-variant-numeric:tabular-nums;" title="Media mensual de la marca. Total acumulado del período: ${escAttr(fmtMoney(s.gmv))}">${s.okMeses.length ? fmtMoney(s.gmv / s.okMeses.length) : "—"}</td>
         <td style="${sm}"></td>
         <td style="${sm} text-align:right; font-variant-numeric:tabular-nums;">${s.val.toLocaleString("es-AR")}</td>
         <td style="${sm} text-align:right; font-variant-numeric:tabular-nums;">${fmtMoney(s.tick)}</td>
@@ -9710,7 +9717,8 @@ function cartPopRender() {
         <button onclick="cartPopClose()" style="border:none; background:rgba(255,255,255,.16); color:#fff; width:28px; height:28px; border-radius:8px; cursor:pointer; font-size:15px; line-height:1;">✕</button>
       </div>
       <div style="background:#fff; padding:13px 18px; display:flex; gap:14px; flex-wrap:wrap; border-bottom:1px solid #e5e7eb;">
-        ${kpi("GMV neto", fmtMoney(s.gmv), s.okMeses.length + " mes" + (s.okMeses.length === 1 ? "" : "es") + " con cotización")}
+        ${kpi("GMV medio / mes", s.okMeses.length ? fmtMoney(s.gmv / s.okMeses.length) : "—", "lo que vende en un mes típico")}
+        ${kpi("GMV neto acumulado", fmtMoney(s.gmv), s.okMeses.length + " mes" + (s.okMeses.length === 1 ? "" : "es") + " con cotización")}
         ${kpi("Pedidos", s.ped.toLocaleString("es-AR"), s.val.toLocaleString("es-AR") + " válidos")}
         ${kpi("Ticket", fmtMoney(s.tick), "sobre pedidos válidos")}
         ${kpi("Cancelación", (s.cancelRate * 100).toFixed(1) + "%", s.can.toLocaleString("es-AR") + " pedidos", s.cancelRate > 0.3 ? "#dc2626" : s.cancelRate > 0.15 ? "#d97706" : "#059669")}
@@ -10080,7 +10088,7 @@ async function renderCuentas() {
        tipear a mano encima de un dato calculado sólo genera dos verdades. Sin archivo, sigue
        siendo el input manual de siempre (que además escribe gmv_mensual en HubSpot). */
     const cartR = cartCliRow(r.cli);
-    const cartAvg = (cartR && cartR.okMeses.length) ? cartR.gmv / cartR.okMeses.length : null;
+    const cartAvg = cartR ? cartR.gmvAvg : null;
     let gmvCell;
     if (cartAvg !== null) {
       const ct = cartSerieTrend(cartR.serie);
