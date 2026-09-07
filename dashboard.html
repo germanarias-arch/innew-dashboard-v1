@@ -7542,6 +7542,11 @@ function cuHsDate(v) {
   return "";
 }
 function cuNum(v) { const n = parseFloat(v); return isFinite(n) ? n : null; }
+/* Techo de plausibilidad para "Monto mensual u$s". Referencia: los planes de S&C van de
+   U$S 790 a U$S 2.100/mes y Scale ronda U$S 2.900/mes — un monto MENSUAL de seis cifras es
+   un error de orden de magnitud, casi siempre un GMV pegado en la celda equivocada.
+   No bloquea la carga (el dato es de German), sólo lo marca y lo aísla del KPI de MRR. */
+const CU_MONTO_MAX = 50000;
 function cuUsdRate() { const v = parseFloat(localStorage.getItem("cuentas_usd_rate") || ""); return isFinite(v) && v > 0 ? v : 0; }
 function cuSetUsdRate(v) { const n = parseFloat(v); if (isFinite(n) && n > 0) localStorage.setItem("cuentas_usd_rate", String(n)); else localStorage.removeItem("cuentas_usd_rate"); renderCuentas(); }
 function cuMonthKey(d) { d = d || new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); }
@@ -8753,7 +8758,7 @@ const CART_COLS = [
   { id: "industria",lbl: "Industria",         t: "sel",   al: "left"  },
   { id: "cur",      lbl: "Moneda / país",     t: "sel",   al: "left"  },
   { id: "periodo",  lbl: "Período comparado", t: "txt",   al: "left"  },
-  { id: "gmvAvg",   lbl: "GMV medio u$s",     t: "money", al: "right" },
+  { id: "gmvAvg",   lbl: "GMV cliente /mes",  t: "money", al: "right" },
   { id: "spark",    lbl: "Tendencia",         t: "none",  al: "left"  },
   { id: "ped",      lbl: "Pedidos",           t: "num",   al: "right" },
   { id: "tick",     lbl: "Ticket USD",        t: "money", al: "right" },
@@ -8763,6 +8768,9 @@ const CART_COLS = [
   { id: "acv",      lbl: "ACV",               t: "money", al: "right" },
   { id: "mesesAcv", lbl: "Meses",             t: "num",   al: "right" },
   { id: "runrate",  lbl: "Run-rate",          t: "money", al: "right" },
+  // Lo que Innew le factura en UN mes (OPEX ÷ meses de la ventana). Va pegada a % del P&L
+  // para que el cruce se lea de corrido: "GMV cliente /mes" vs "Fact. Innew /mes" vs "%".
+  { id: "factMes",  lbl: "Fact. Innew /mes",  t: "money", al: "right" },
   { id: "pen",      lbl: "% del P&L",         t: "pct",   al: "right" },
   { id: "acc",      lbl: "",                  t: "none",  al: "right" }
 ];
@@ -8960,6 +8968,17 @@ function cartCalcTienda(t) {
   };
 }
 
+/* MEDIANA de una serie mensual. Es lo que se muestra como "/mes" en toda la vista, NO el promedio.
+   Motivo (pedido de German): el promedio se lo come un pico — un mayo de Hot Sale levanta el número
+   y deja de responder "cuánto vende/factura normalmente". La mediana ignora el pico y el pozo.
+   Devuelve null con serie vacía; con cantidad par promedia los dos centrales. */
+function cartMediana(arr) {
+  const v = (arr || []).filter(x => isFinite(x)).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const m = Math.floor(v.length / 2);
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+}
+
 // Cuentas activas con datos VTEX cargados. Una fila por CUENTA, con sus tiendas adentro (r.tiendas).
 // Todo se suma en USD: nunca se mezclan monedas locales, y la penetración se calcula
 // Σ facturación ÷ Σ GMV (no promedio de porcentajes).
@@ -9001,10 +9020,12 @@ function cartRows() {
       industria: ind.txt, indMixta: ind.mixta,
       tiendas: subs, multi: subs.length > 1,
       meses: meses, okMeses: okMeses, sinFx: sinFx, serie: serie,
-      // GMV medio de UN mes. `gmv` es la suma del período (la usan % del P&L y los KPIs de
-      // cartera, que sí son acumulados); lo que se muestra en la tabla es esta media, porque
-      // un total de 6 meses al lado de uno de 2 no se puede comparar ni ordenar.
-      gmvAvg: okMeses.length ? gmv / okMeses.length : null,
+      // GMV de UN mes típico = MEDIANA de la serie mensual (no promedio: un Hot Sale distorsiona
+      // el promedio y deja de responder "cuánto vende normalmente"). `gmv` sigue siendo la suma
+      // del período — la usan % del P&L y los KPIs acumulados. `gmvProm` queda para el tooltip,
+      // porque la diferencia mediana-vs-promedio es justamente la medida de cuánto pesan los picos.
+      gmvAvg: cartMediana(serie),
+      gmvProm: okMeses.length ? gmv / okMeses.length : null,
       parciales: Object.keys(parSet).sort(),
       periodo: cartRangoTxt(okMeses.length ? okMeses : meses),
       gmv: gmv, ped: ped, val: val, can: can, lost: lost,
@@ -9017,6 +9038,11 @@ function cartRows() {
       mesesAcv: nMes,
       // Run-rate anualiza SÓLO OPEX: anualizar un one-shot inventa plata que no se repite.
       runrate: (opex !== null && nMes > 0) ? opex * 12 / nMes : null,
+      // Facturación media de UN mes, del lado Innew. Mismo criterio que gmvAvg (que es la del
+      // lado del cliente): dividir el acumulado de la ventana por los meses que abarca, así
+      // una cuenta de 6 meses y otra de 2 se pueden comparar y ordenar en la misma columna.
+      // Sólo OPEX: el CAPEX es one-shot y prorratearlo como mensual inventa recurrencia.
+      factMes: (opex !== null && nMes > 0) ? opex / nMes : null,
       // % del P&L = OPEX ÷ GMV. El CAPEX no compite contra el GMV del cliente.
       pen: (opex !== null && gmv > 0) ? opex / gmv : null,
       updated: subs.map(s => s.updated).sort().pop() || ""
@@ -9307,12 +9333,15 @@ function cartRenderKpis() {
   if (!el) return;
   const rows = cartRowsView();
   if (!rows.length) { el.innerHTML = ""; return; }
-  let gmv = 0, gmvMes = 0, opex = 0, capex = 0, gmvConFact = 0, ped = 0, val = 0, can = 0, sinDeals = 0, nTiendas = 0;
+  let gmv = 0, gmvMes = 0, opex = 0, opexMes = 0, capex = 0, gmvConFact = 0, ped = 0, val = 0, can = 0, sinDeals = 0, nTiendas = 0;
   rows.forEach(r => {
     gmv += r.gmv; ped += r.ped; val += r.val; can += r.can; nTiendas += r.tiendas.length;
-    // Σ de las MEDIAS mensuales: cuánto vende la cartera en un mes. Sumar los totales de cada
-    // cuenta mezcla ventanas distintas (una con 6 meses y otra con 2) y no dice nada.
+    // Σ de las MEDIANAS mensuales: cuánto vende la cartera en un mes típico. Sumar los totales de
+    // cada cuenta mezcla ventanas distintas (una con 6 meses y otra con 2) y no dice nada; y usar
+    // promedios en vez de medianas deja que un Hot Sale de una sola cuenta infle toda la cartera.
     if (r.gmvAvg !== null) gmvMes += r.gmvAvg;
+    // Del lado Innew el OPEX es recurrente plano, así que la media mensual ya es el mes típico.
+    if (r.factMes !== null) opexMes += r.factMes;
     if (r.fact === null) sinDeals++;
     else { opex += r.opex; capex += r.capex; gmvConFact += r.gmv; }
   });
@@ -9329,8 +9358,8 @@ function cartRenderKpis() {
       <span style="font-size:10px; color:#9ca3af;">guardado: ${(cartStorageBytes() / 1024).toFixed(0)} KB</span>
     </div>
     <div class="cue-kpis">
-      ${card("GMV cartera / mes (USD)", fmtMoney(gmvMes), rows.length + " cuentas" + (nTiendas > rows.length ? " · " + nTiendas + " tiendas" : "") + " · media mensual · " + per)}
-      ${card("OPEX Innew (USD)", opex ? fmtMoney(opex) : "—", sinDeals ? sinDeals + " cuentas sin deals cargados" : "recurrente facturado en la ventana")}
+      ${card("GMV cartera / mes (USD)", fmtMoney(gmvMes), rows.length + " cuentas" + (nTiendas > rows.length ? " · " + nTiendas + " tiendas" : "") + " · mediana mensual · " + per)}
+      ${card("Fact. Innew / mes (USD)", opexMes ? fmtMoney(opexMes) : "—", "media mensual de OPEX · Σ ventana " + (opex ? fmtMoney(opex) : "—") + (sinDeals ? " · " + sinDeals + " cuentas sin deals" : ""))}
       ${card("CAPEX Innew (USD)", capex ? fmtMoney(capex) : "—", "IDP / IDE / Middleware — one-shot, fuera del % del P&L")}
       ${card("% del P&L del cliente", pen === null ? "—" : (pen * 100).toFixed(2) + "%", "Σ OPEX ÷ Σ GMV", cartPenColor(pen))}
       ${card("Pedidos válidos", val.toLocaleString("es-AR"), "ticket " + fmtMoney(val ? gmv / val : 0) + " · " + (ped ? (can / ped * 100).toFixed(1) : "0") + "% cancelado")}
@@ -9338,7 +9367,7 @@ function cartRenderKpis() {
 }
 
 /* --- render: tabla por cliente ---
-   16 columnas, TODAS ordenables y filtrables (pedido explícito de German). El orden y los
+   17 columnas, TODAS ordenables y filtrables (pedido explícito de German). El orden y los
    filtros viven en CART_SORT / CART_FIL y se aplican en cartRowsView(); acá sólo se pinta. */
 let CART_VIEW = null;   // última vista renderizada — los onclick indexan sobre ESTA lista
 
@@ -9417,7 +9446,7 @@ function cartRenderTabla() {
       ${td(indPill)}
       ${td(`${esc(r.cur)}${r.pais ? " · " + esc(r.pais) : ""}`, "left", "font-size:11px; color:#6b7280;")}
       ${td(esc(r.periodo) + cartParcialChip(r.parciales), "left", "font-size:11px; color:#6b7280; white-space:nowrap;")}
-      ${td(`<div style="font-weight:600;">${r.gmvAvg === null ? "—" : fmtMoney(r.gmvAvg)}</div><div style="font-size:9px; color:#9ca3af; font-weight:400;" title="Total acumulado del período: ${escAttr(fmtMoney(r.gmv))}">media de ${r.okMeses.length}m · Σ ${fmtMoney(r.gmv)}</div>`, "right")}
+      ${td(`<div style="font-weight:600;">${r.gmvAvg === null ? "—" : fmtMoney(r.gmvAvg)}</div><div style="font-size:9px; color:#9ca3af; font-weight:400;" title="Mediana de los ${r.okMeses.length} meses completos: el mes típico, sin que lo distorsione un pico (Hot Sale, Black Friday).&#10;Promedio del período: ${escAttr(r.gmvProm === null ? "—" : fmtMoney(r.gmvProm))}&#10;Total acumulado: ${escAttr(fmtMoney(r.gmv))}">mediana de ${r.okMeses.length}m · Σ ${fmtMoney(r.gmv)}</div>`, "right")}
       ${td(r.serie.length >= 2 ? cartSparkMeses(r.serie, r.okMeses, 104, 22) : "")}
       ${td(r.val.toLocaleString("es-AR"), "right")}
       ${td(fmtMoney(r.tick), "right")}
@@ -9427,6 +9456,7 @@ function cartRenderTabla() {
       ${td(money(r.acv), "right")}
       ${td(r.mesesAcv || "—", "right", "font-size:11px; color:#6b7280;")}
       ${td(money(r.runrate), "right", "font-size:11px; color:#6b7280;")}
+      ${td(r.factMes === null ? "—" : `<div style="font-weight:600;">${fmtMoney(r.factMes)}</div><div style="font-size:9px; color:#9ca3af; font-weight:400;" title="OPEX acumulado de la ventana: ${escAttr(money(r.opex))}">media de ${r.mesesAcv}m · sólo OPEX</div>`, "right")}
       ${td(cartPenTxt(r.pen), "right")}
       ${td(`<a href="#" onclick="cartPivotSel('${ri}'); return false;" style="font-size:11px; color:#4030C8;">pivot</a>
             <a href="#" onclick="cartBorrar(${ri}); return false;" style="font-size:11px; color:#dc2626; margin-left:8px;">borrar</a>`, "right", "white-space:nowrap;")}
@@ -9442,12 +9472,12 @@ function cartRenderTabla() {
         <td style="${sm}">${cartIndSelect(s.industria, `cartSetIndustria(${JSON.stringify(r.cli).replace(/"/g, "&quot;")}, ${JSON.stringify(s.tienda).replace(/"/g, "&quot;")}, this.value)`, "font-size:10px; padding:2px 4px; border:1px solid #e5e7eb; border-radius:4px; max-width:140px;")}</td>
         <td style="${sm} color:#6b7280;">${esc(s.cur)}</td>
         <td style="${sm} color:#6b7280; white-space:nowrap;">${esc(cartRangoTxt(s.okMeses.length ? s.okMeses : s.meses))}${cartParcialChip(s.parciales)}</td>
-        <td style="${sm} text-align:right; font-variant-numeric:tabular-nums;" title="Media mensual de la marca. Total acumulado del período: ${escAttr(fmtMoney(s.gmv))}">${s.okMeses.length ? fmtMoney(s.gmv / s.okMeses.length) : "—"}</td>
+        <td style="${sm} text-align:right; font-variant-numeric:tabular-nums;" title="Mediana mensual de la marca (mes típico, sin picos). Promedio: ${escAttr(s.okMeses.length ? fmtMoney(s.gmv / s.okMeses.length) : "—")}&#10;Total acumulado del período: ${escAttr(fmtMoney(s.gmv))}">${(() => { const md = cartMediana(s.okMeses.map(m => s.mesUsd[m] || 0)); return md === null ? "—" : fmtMoney(md); })()}</td>
         <td style="${sm}"></td>
         <td style="${sm} text-align:right; font-variant-numeric:tabular-nums;">${s.val.toLocaleString("es-AR")}</td>
         <td style="${sm} text-align:right; font-variant-numeric:tabular-nums;">${fmtMoney(s.tick)}</td>
         <td style="${sm} text-align:right; font-variant-numeric:tabular-nums; color:${s.cancelRate > .15 ? "#dc2626" : "#6b7280"};">${(s.cancelRate * 100).toFixed(1)}%</td>
-        <td colspan="5" style="${sm} text-align:center; color:#9ca3af; font-style:italic; font-size:10px;">la facturación Innew es por cuenta, no por marca</td>
+        <td colspan="6" style="${sm} text-align:center; color:#9ca3af; font-style:italic; font-size:10px;">la facturación Innew es por cuenta, no por marca</td>
         <td style="${sm} text-align:right; color:#9ca3af; font-style:italic; font-size:10px;">a nivel cuenta</td>
         <td style="${sm} text-align:right; white-space:nowrap;">
           <a href="#" onclick="cartPopup(${ri},${ti}); return false;" style="font-size:11px; color:#4030C8;">ver</a>
@@ -9491,7 +9521,7 @@ function cartRenderTabla() {
         <td colspan="2" style="padding:3px 8px; text-align:right;">${fmtMoney(sO + sC)}</td>
         <td style="padding:3px 8px; text-align:right;">${sG > 0 ? ((sO + sC) / sG * 100).toFixed(2) + "%" : "—"}</td>
       </tr>`;
-    const detalle = `<tr style="background:#fcfcfd;"><td colspan="16" style="padding:8px 9px 12px 30px;">
+    const detalle = `<tr style="background:#fcfcfd;"><td colspan="17" style="padding:8px 9px 12px 30px;">
       <div style="font-size:10px; text-transform:uppercase; color:#6b7280; font-weight:700; margin-bottom:5px;">Mes a mes — GMV del cliente vs. lo que Innew le facturó ese mismo mes</div>
       <table style="border-collapse:collapse; font-size:11px; min-width:520px;">
         <thead><tr style="color:#9ca3af; font-size:9px; text-transform:uppercase;">
@@ -10015,13 +10045,27 @@ async function renderCuentas() {
   const totalH = rows.reduce((s, a) => s + (a.sgh || 0), 0);
   const conCsm = accounts.filter(a => a.csm).length;
   const usdRate = cuUsdRate();
-  let totalMrrUsd = 0;
-  rows.forEach(r => { const m = cuMontoEff(r.cli, r.pais === "AR", r.sgh); if (m) totalMrrUsd += m; });
+  /* MRR de cartera. Un monto por encima de CU_MONTO_MAX no se suma —un solo GMV mal pegado
+     (ej. 5.667.200) convertía este KPI en un número absurdo— pero tampoco se esconde: se cuenta
+     aparte y se avisa en el subtexto, con el nombre de la cuenta en el tooltip. */
+  let totalMrrUsd = 0, mrrRaros = [];
+  rows.forEach(r => {
+    const m = cuMontoEff(r.cli, r.pais === "AR", r.sgh);
+    if (!m) return;
+    if (m > CU_MONTO_MAX) mrrRaros.push(r.cli + " (U$S " + Math.round(m).toLocaleString("es-AR") + ")");
+    else totalMrrUsd += m;
+  });
+  const mrrTxt = totalMrrUsd ? "U$S " + Math.round(totalMrrUsd).toLocaleString("es-AR") : "";
+  // El KPI se desbordaba de la card con montos largos: bajamos el cuerpo según el largo del string.
+  const mrrFs = mrrTxt.length > 12 ? "18px" : (mrrTxt.length > 9 ? "21px" : "");
+  const mrrSub = mrrRaros.length
+    ? `<span class="ks" style="color:#b91c1c; font-weight:700;" title="${escAttr("Excluidas del MRR por estar fuera de rango (> U$S " + CU_MONTO_MAX.toLocaleString("es-AR") + "/mes): " + mrrRaros.join(" · "))}"> ⚠ ${mrrRaros.length} fuera de rango</span>`
+    : "";
   document.getElementById("cue-kpis").innerHTML = `
     <div class="cue-kpi"><div class="kl">${cur === "all" ? "Cuentas activas" : "Mis cuentas"}</div><div class="kv">${rows.length}</div></div>
     <div class="cue-kpi"><div class="kl">Horas S&G/mes</div><div class="kv">${totalH ? Math.round(totalH) + " h" : "—"}</div></div>
     <div class="cue-kpi"><div class="kl">Con CSM asignado</div><div class="kv">${conCsm}<span class="ks"> / ${accounts.length}</span></div></div>
-    <div class="cue-kpi"><div class="kl">MRR cartera u$s</div><div class="kv">${totalMrrUsd ? "U$S " + Math.round(totalMrrUsd).toLocaleString("es-AR") : '<span style="color:#9ca3af; font-size:15px;">cargá valor hora</span>'}</div></div>`;
+    <div class="cue-kpi"><div class="kl">MRR cartera u$s</div><div class="kv" style="${mrrFs ? "font-size:" + mrrFs + ";" : ""} white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${mrrTxt ? escAttr(mrrTxt) : '<span style="color:#9ca3af; font-size:15px;">cargá valor hora</span>'}${mrrSub}</div></div>`;
 
   const cotBar = `<div style="display:flex; gap:10px; align-items:center; margin-bottom:10px; padding:8px 12px; background:#F1EFFF; border:1px solid #C7BDFF; border-radius:8px; flex-wrap:wrap;">
     <span style="font-size:12px; color:#4030C8; font-weight:600;">💵 Cotización dólar (manual)</span>
@@ -10036,7 +10080,7 @@ async function renderCuentas() {
     <th style="position:sticky; left:0; z-index:3; background:#fafafa; width:200px; min-width:200px; max-width:200px;">Cliente</th><th>CSM</th><th style="text-align:center;">Matriz BCG</th><th style="text-align:center;">País</th><th style="text-align:center;">S&G h/mes</th>
     <th style="text-align:center;">Scale</th><th style="text-align:center;">Hs consumidas</th><th style="text-align:center;">Consumo</th>
     <th style="text-align:center;">Valor hora $</th><th style="text-align:center;">Valor hora u$s</th><th style="text-align:center;">Monto mensual u$s</th>
-    <th style="text-align:center;">Tipo plan</th><th style="text-align:center;">Fin acuerdo</th><th style="text-align:center;">Semáforo</th><th style="text-align:center;">Facturación</th><th style="text-align:center;" title="Media mensual de GMV en USD, calculada en Cartera GMV sobre los meses completos con cotización. Las cuentas sin archivo cargado mantienen el input manual.">GMV medio u$s</th><th style="text-align:center;" title="Misma tendencia que la vista Cartera GMV: serie mensual en USD, sólo meses completos.">Tendencia GMV</th>
+    <th style="text-align:center;">Tipo plan</th><th style="text-align:center;">Fin acuerdo</th><th style="text-align:center;">Semáforo</th><th style="text-align:center;">Facturación</th><th style="text-align:center;" title="GMV de un mes típico del cliente, en USD: MEDIANA de la serie mensual calculada en Cartera GMV sobre los meses completos con cotización. Se usa mediana y no promedio para que un pico (Hot Sale, Black Friday) no infle el número. Las cuentas sin archivo cargado mantienen el input manual.">GMV cliente /mes</th><th style="text-align:center;" title="Misma tendencia que la vista Cartera GMV: serie mensual en USD, sólo meses completos.">Tendencia GMV</th>
     <th style="text-align:center;">Deals</th><th>Nota</th><th style="text-align:center;">Baja</th>
   </tr><tr style="background:#fafafa;">
     <th style="position:sticky; left:0; z-index:3; background:#fafafa; width:200px; min-width:200px; max-width:200px; padding:4px 6px;"><input type="text" value="${escAttr(CF.nombre || "")}" placeholder="filtrar… (Enter)" onchange="cueColFSet('nombre',this.value)" style="width:95%; box-sizing:border-box; padding:3px 6px; border:1px solid #d1d5db; border-radius:5px; font-size:11px; font-weight:400;"></th>
@@ -10074,7 +10118,14 @@ async function renderCuentas() {
     const montoAuto = (vhUsd !== null && r.sgh) ? vhUsd * r.sgh : null;
     const montoMan = cuNum(meta.montoUsd);
     const montoPh = montoAuto !== null ? "auto " + Math.round(montoAuto).toLocaleString("es-AR") : "u$s/mes";
-    const montoCell = `<input type="number" value="${montoMan !== null ? montoMan : ""}" placeholder="${montoPh}" onchange="cuSetMonto('${cliJs}','${r.id}',this.value)" style="padding:3px 6px; font-size:12px; border:1px solid ${montoMan !== null ? "#6EE7B7" : "#d1d5db"}; border-radius:5px; width:110px; text-align:right; color:#047857; font-weight:600; background:${montoMan !== null ? "#ECFDF5" : "#fff"};">`;
+    /* El input sigue siendo type="number" a propósito: parsear "1.500" vs "1.5" con separadores
+       de miles es ambiguo y un valor hora de 32,5 se convertiría en silencio en 325. Se corrige la
+       legibilidad con una línea formateada DEBAJO del input, no cambiando el tipo de campo. */
+    const montoEff = montoMan !== null ? montoMan : montoAuto;
+    const montoRaro = montoEff !== null && montoEff > CU_MONTO_MAX;
+    const montoLeer = montoEff === null ? "" :
+      `<div style="font-size:10px; margin-top:2px; font-variant-numeric:tabular-nums; color:${montoRaro ? "#b91c1c" : "#6b7280"}; font-weight:${montoRaro ? "700" : "400"};" title="${montoRaro ? escAttr("Monto mensual fuera de rango (> U$S " + CU_MONTO_MAX.toLocaleString("es-AR") + "). Los planes de S&C van de U$S 790 a 2.100/mes y Scale ronda U$S 2.900/mes: un número de este tamaño suele ser un GMV cargado en la celda equivocada. Queda fuera del KPI de MRR hasta que se corrija.") : "Monto mensual formateado"}">U$S ${Math.round(montoEff).toLocaleString("es-AR")}${montoRaro ? " ⚠" : ""}</div>${montoRaro ? `<div style="font-size:9px; color:#b91c1c; line-height:1.2;">revisá: parece un GMV,<br>no un monto mensual</div>` : ""}`;
+    const montoCell = `<input type="number" value="${montoMan !== null ? montoMan : ""}" placeholder="${montoPh}" onchange="cuSetMonto('${cliJs}','${r.id}',this.value)" style="padding:3px 6px; font-size:12px; border:1px solid ${montoRaro ? "#FCA5A5" : (montoMan !== null ? "#6EE7B7" : "#d1d5db")}; border-radius:5px; width:110px; text-align:right; color:${montoRaro ? "#b91c1c" : "#047857"}; font-weight:600; background:${montoRaro ? "#FEF2F2" : (montoMan !== null ? "#ECFDF5" : "#fff")};">${montoLeer}`;
     const planSel = meta.plan || "";
     const planCell = `<select onchange="cuSetPlan('${cliJs}','${r.id}',this.value)" style="font-size:11px; padding:2px 5px; border:1px solid #d1d5db; border-radius:5px; background:#fff;"><option value="">—</option>${CUENTAS_PLANES.map(p => `<option value="${p}" ${planSel === p ? "selected" : ""}>${p}</option>`).join("")}</select>`;
     const fin = meta.finAcuerdo || "";
@@ -10095,9 +10146,10 @@ async function renderCuentas() {
       const ctB = ct ? `<div style="font-size:10px; color:${ct.color}; font-weight:600; margin-top:1px;">${ct.arrow} ${ct.pct}</div>` : "";
       const nm = cartR.okMeses.length;
       const alerta = cartR.sinFx ? " · ⚠︎ " + cartR.sinFx + " mes(es) sin cotización" : "";
-      gmvCell = `<div title="Media mensual en USD calculada en Cartera GMV sobre ${nm} mes(es) completo(s): ${escAttr(cartR.periodo)}${escAttr(alerta)}" style="cursor:help;">
+      const prom = cartR.gmvProm;
+      gmvCell = `<div title="Mes típico: MEDIANA en USD de los ${nm} mes(es) completo(s) cargados en Cartera GMV (${escAttr(cartR.periodo)}). Mediana y no promedio para que un pico tipo Hot Sale no distorsione.&#10;Promedio del período: ${escAttr(prom == null ? "—" : fmtMoney(prom))}${escAttr(alerta)}" style="cursor:help;">
         <div style="font-size:12px; font-weight:700; color:#111827;">${fmtMoneyK(cartAvg)}</div>
-        <div style="font-size:9px; color:#9ca3af;">media · ${nm}m${cartR.sinFx ? " ⚠︎" : ""}</div>${ctB}
+        <div style="font-size:9px; color:#9ca3af;">mediana · ${nm}m${cartR.sinFx ? " ⚠︎" : ""}</div>${ctB}
       </div>`;
     } else {
       const gmv = cuGmvCurrent(r.cli);
