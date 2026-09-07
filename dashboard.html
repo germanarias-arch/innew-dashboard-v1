@@ -786,13 +786,23 @@ table.std tr:hover td { background: #fafafa; }
 
   <!-- ===================== CLIENTES (tabla en vivo) ===================== -->
   <div id="view-clientes" style="display:none">
-    <div style="display:flex; gap:6px; margin-bottom:12px; border-bottom:2px solid #e5e7eb;">
-      <button id="clitab-btn-cuentas" class="clitab active" onclick="cliTab('cuentas')">🏬 Cuentas activas</button>
-      <button id="clitab-btn-cartera" class="clitab" onclick="cliTab('cartera')">🩺 Salud cliente</button>
-    </div>
-
     <div id="clitab-cuentas">
-      <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">🏬 Cuentas activas en vivo desde HubSpot (customer): CSM, horas S&G, país y deals reales. Clic en la celda <b>Deals</b> de una cuenta para ver y editar sus deals asociados. El financiero (MRR, GMV, vencimiento, LTV, % penetración) se suma al conectar el Sheet maestro.</div>
+      <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">🏬 Clientes en vivo desde HubSpot (customer) — <b>una fila por cuenta</b>. Todo el detalle y toda la edición viven en la <b>ficha</b>: contrato, consumo de horas, salud del cliente y deals. Abrila con <b>Ficha ↗</b>.</div>
+
+      <!-- Cajón de ingesta: cargar exports de pedidos es una TAREA, no una vista. Vive plegado
+           arriba de la lista para no competir con ella. Contiene el drop, las cotizaciones,
+           los KPIs de cartera y el pivot. La tabla ancha de Salud cliente ya no existe: su
+           contenido se reparte entre la lista maestra y la ficha. -->
+      <div id="cli-ingesta-head" onclick="cliToggleIngesta()" style="cursor:pointer; border:1px dashed #C7BDFF; background:#fbfaff; border-radius:9px; padding:9px 14px; font-size:12.5px; color:#4030C8; margin-bottom:12px; display:flex; align-items:center; gap:8px;">
+        <span id="cli-ingesta-caret">▸</span><b>📥 Cargar exports de pedidos</b>
+        <span id="cli-ingesta-sub" style="color:#9ca3af; font-size:11px;"></span>
+      </div>
+      <div id="cli-ingesta" style="display:none; margin-bottom:14px;">
+        <div id="cart-drop"></div>
+        <div id="cart-fx"></div>
+        <div id="cart-kpis"></div>
+        <div id="cart-pivot"></div>
+      </div>
       <div style="margin-bottom:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;"><input type="text" id="cue-search" oninput="onCuentasSearch()" placeholder="🔎 Buscar cuenta por nombre… (muestra su CSM)" style="padding:7px 11px; border:1px solid #d1d5db; border-radius:8px; font-size:13px; width:320px; max-width:100%;"><button class="fc-btn" onclick="toggleNewAccount()">➕ Nueva cuenta</button></div>
       <div id="cue-new-form" style="display:none; margin-bottom:12px;"></div>
       <div id="cue-csm" style="margin-bottom:12px;"></div>
@@ -800,18 +810,13 @@ table.std tr:hover td { background: #fafafa; }
       <div id="cue-tabla"></div>
       <div class="cue-foco-grid" id="cue-focos"></div>
       <div class="small" style="margin-top:12px; font-style:italic; color:#888;">
-        % Penetración = facturación Innew ÷ GMV del cliente (baja = más techo para crecer). Antigüedad y LTV se calculan; servicios y deals salen de HubSpot; el GMV se carga a mano o subiendo el export de pedidos en la pestaña <b>Salud cliente</b>.
+        % del P&amp;L = facturación Innew ÷ GMV del cliente (baja = más techo para crecer). El GMV sale del export de pedidos que cargás en <b>📥 Cargar exports</b>; sin export, se carga a mano en la ficha. Servicios y deals salen de HubSpot.
       </div>
     </div>
 
-    <div id="clitab-cartera" style="display:none">
-      <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">🩺 Salud cliente — cuánto venden nuestros clientes y qué parte de ese P&amp;L somos nosotros. Soltá el export de pedidos de VTEX (CSV, ZIP o XLSX) y elegí la cuenta. <b>El archivo se procesa en tu navegador: no se sube a ningún lado</b>; sólo se guarda el resumen mensual.</div>
-      <div id="cart-drop"></div>
-      <div id="cart-fx"></div>
-      <div id="cart-kpis"></div>
-      <div id="cart-tabla"></div>
-      <div id="cart-pivot"></div>
-    </div>
+    <!-- Panel lateral de la ficha del cliente. Vive fuera de la tabla y por debajo del popup
+         por marca (z-index 8000 vs 9000) para que ese popup se abra POR ENCIMA de la ficha. -->
+    <div id="cli-ficha-host"></div>
   </div><!-- /view-clientes -->
 
   <!-- ===================== MARCADORES (repositorio de links) ===================== -->
@@ -5628,9 +5633,12 @@ async function perfLoadAll(force) {
   window.__perfLoaded = true;
   say(`✓ ${total} cuentas · actualizado`, "#059669");
   renderClientePerf();
-  // Si la pestaña Cartera GMV está abierta, refrescar el numerador (facturación Innew).
-  const cartPane = document.getElementById("clitab-cartera");
-  if (cartPane && cartPane.style.display !== "none" && typeof renderCartera === "function") renderCartera();
+  /* Refrescar el numerador (facturación Innew) donde se muestre. Desde la ficha del cliente
+     (2026-09-07) ya no hay pestaña Cartera: la lista maestra y la ficha abierta usan el mismo
+     dato, así que se repintan las dos. */
+  if (typeof renderCartera === "function") renderCartera();
+  // renderCuentas ya repinta la ficha abierta al final: no hace falta llamarla dos veces.
+  if (document.getElementById("cue-tabla") && typeof renderCuentas === "function") renderCuentas();
 }
 
 // Agrega por cuenta desde el cache de deals.
@@ -7348,7 +7356,7 @@ function setView(v) {
   if (v === "target") renderTarget();
   if (v === "ritmo") { if (!window.__tareasLoaded) loadTareas().then(() => { try { renderRitmo(); } catch (e) {} }); renderRitmo(); }
   if (v === "nurt") renderNurturing();
-  if (v === "clientes") renderCuentas();
+  if (v === "clientes") { renderCuentas(); try { renderCartera(); } catch (e) {} }
   if (v === "cue") { if (window.__cuentasData) renderClientes(); else renderCuentas(); }
   // Franja de metas: solo en Foco
   const gsEl = document.getElementById("goal-strip");
@@ -7584,9 +7592,274 @@ function cuentasRevertirBaja(cli) {
   cuentasSetMeta(cli, { baja: null });
   reloadCuentas();
 }
+
+/* ==========================================================================================
+   FICHA DEL CLIENTE (2026-09-07) — panel lateral deslizante
+   ------------------------------------------------------------------------------------------
+   Reemplaza las dos pestañas de Clientes, que se pisaban en 7 columnas. La lista maestra es
+   de sólo lectura; ACÁ se edita todo. Reutiliza los mismos setters de siempre (cuSetModelo,
+   cuSetMonto, cuentasSetCsm, …), así que cualquier cambio sigue escribiendo en HubSpot y en
+   la meta local exactamente igual que antes — sólo cambió dónde está el input.
+
+   z-index: panel 8000, backdrop 7990. El popup por marca (cart-pop-host) usa 9000, así que
+   se abre POR ENCIMA de la ficha y al cerrarlo la ficha sigue ahí. Eso fue pedido explícito.
+   ========================================================================================== */
+let CLI_FICHA = null;   // { cli, id }
+
+/* Índice de la cuenta dentro de CART_VIEW, que es sobre lo que indexan cartPopup y cartBorrar.
+   Si no aparece (filtro viejo o vista sin construir) se reconstruye desde cartRows() y se
+   reasigna CART_VIEW, para que el índice que devolvemos sea válido cuando el popup lo use. */
+function cliCartIdx(cli) {
+  const t = String(cli == null ? "" : cli).trim();
+  const find = arr => { for (let i = 0; i < (arr || []).length; i++) if (String(arr[i].cli || "").trim() === t) return i; return -1; };
+  let i = find(CART_VIEW);
+  if (i >= 0) return i;
+  /* Se reconstruye con cartRowsView() y NO con cartRows(): renderCartera usa esa misma función,
+     y si acá usáramos el orden crudo el índice apuntaría a otra cuenta en cuanto algo repinte
+     la cartera. Un índice desfasado en cartBorrar borra la marca equivocada. */
+  try { CART_VIEW = cartRowsView(); } catch (e) { CART_VIEW = []; }
+  return find(CART_VIEW);
+}
+
+/* Los dos accesos por marca desde la ficha resuelven el índice EN EL MOMENTO DEL CLIC, no al
+   renderizar. Antes el `ri` quedaba horneado en el onclick y cualquier repintado posterior de
+   la cartera lo dejaba apuntando a otra cuenta — en el caso de "borrar", a borrar la marca de
+   otro cliente. Acá se busca por nombre, que es estable. */
+function cliVerMarca(cli, tienda) {
+  const ri = cliCartIdx(cli);
+  const r = ri >= 0 ? CART_VIEW[ri] : null;
+  const ti = r ? r.tiendas.findIndex(s => String(s.tienda) === String(tienda)) : -1;
+  if (ri < 0 || ti < 0) { alert("No pude ubicar la marca “" + tienda + "” en la cartera. Recargá la vista Clientes."); return; }
+  cartPopup(ri, ti);
+}
+function cliBorrarMarca(cli, tienda) {
+  const ri = cliCartIdx(cli);
+  const r = ri >= 0 ? CART_VIEW[ri] : null;
+  const ti = r ? r.tiendas.findIndex(s => String(s.tienda) === String(tienda)) : -1;
+  if (ri < 0 || ti < 0) { alert("No pude ubicar la marca “" + tienda + "” en la cartera. Recargá la vista Clientes."); return; }
+  cartBorrar(ri, ti);
+}
+
+/* Motor de alertas: la única columna opinada de la lista. Convierte contrato + consumo +
+   salud en una acción, ordenado por gravedad. Lo usan la lista maestra y la ficha. */
+function cliAlertas(r, cartR) {
+  const meta = cuentasGetMeta(r.cli);
+  const mdef = cuModeloDef(cuModelo(r.cli));
+  const isArg = r.pais === "AR";
+  const out = [];
+  // 1) Sobreconsumo de horas — sólo donde hay bolsa (Scale/Bajo Demanda/En IDP no la tienen)
+  const pct = cuHorasPct(cuNum(cuHorasCurrent(r.cli)), r.sgh);
+  if (mdef.cupo && pct !== null && pct > 110) out.push({ ic: "🔥", txt: "consumo " + pct + "%", tone: "bad", d: "Consumió " + pct + "% de la bolsa de horas del mes: estás poniendo más horas de las que cobrás." });
+  // 2) Vencimiento del acuerdo
+  const dg = cuFinDanger(meta.finAcuerdo || "");
+  if (dg && dg.icon) out.push({ ic: dg.icon, txt: dg.txt === "vencido" ? "acuerdo vencido" : "vence en " + dg.txt, tone: dg.days < 0 || dg.days <= 30 ? "bad" : "warn", d: "Fin de acuerdo: " + (meta.finAcuerdo || "—") + (dg.days < 0 ? " (ya venció)" : " (faltan " + dg.days + " días)") });
+  // 3) GMV del cliente cayendo
+  if (cartR) {
+    const ct = cartSerieTrend(cartR.serie);
+    if (ct && String(ct.pct).indexOf("-") === 0) {
+      const n = Math.abs(parseFloat(String(ct.pct).replace(/[^\d.-]/g, "")) || 0);
+      if (n >= 10) out.push({ ic: "📉", txt: "GMV " + ct.pct, tone: n >= 20 ? "bad" : "warn", d: "El GMV del cliente viene cayendo " + ct.pct + " contra el mes anterior. Si además pesás mucho en su P&L, es conversación de retención, no de upsell." });
+    }
+  }
+  // 4) Peso alto en el P&L del cliente: cuanto más pesás, más te mira el CFO
+  const pen = cartR ? cartR.pen : null;
+  if (pen !== null && pen >= 0.025) out.push({ ic: "⚖️", txt: "pesás " + (pen * 100).toFixed(1) + "%", tone: pen >= 0.04 ? "bad" : "warn", d: "Innew representa el " + (pen * 100).toFixed(2) + "% del GMV del cliente. Por encima del 2,5% el gasto entra en el radar del CFO: hay que poder defender el ROI." });
+  // 5) Δ facturado vs contratado
+  const contratado = cuMontoEff(r.cli, isArg, r.sgh);
+  const fact = cartR ? cartR.factMes : null;
+  if (contratado !== null && fact !== null && contratado > 0) {
+    const d = fact - contratado, p = Math.round(d / contratado * 100);
+    if (p >= 40) out.push({ ic: "💰", txt: "facturás +" + p + "%", tone: "warn", d: "Le facturás " + fmtMoneyK(fact) + "/mes contra un contrato de " + fmtMoneyK(contratado) + ". O el contrato está desactualizado en el dashboard, o hay evolutivos que conviene pasar a recurrente." });
+    else if (p <= -25) out.push({ ic: "🩸", txt: "facturás " + p + "%", tone: "bad", d: "Le facturás " + fmtMoneyK(fact) + "/mes contra un contrato de " + fmtMoneyK(contratado) + ": estás cobrando menos de lo firmado." });
+  }
+  // 6) Cuenta sin contrato cargado pero con facturación real
+  if (contratado === null && fact !== null && mdef.monto) out.push({ ic: "📄", txt: "sin contrato", tone: "warn", d: "Factura " + fmtMoneyK(fact) + "/mes pero no tiene monto contratado cargado. Cargalo en el bloque Contrato de la ficha." });
+  // 7) Datos que faltan
+  if (!cartR) out.push({ ic: "📥", txt: "sin export", tone: "info", d: "No hay export de pedidos cargado: sin eso no se puede calcular el GMV real ni el % del P&L. Cargalo en 📥 Cargar exports." });
+  if (!r.csm) out.push({ ic: "👤", txt: "sin CSM", tone: "info", d: "La cuenta no tiene CSM asignado en HubSpot." });
+  const ordr = { bad: 0, warn: 1, info: 2 };
+  return out.sort((a, b) => ordr[a.tone] - ordr[b.tone]);
+}
+
+function cliFichaOpen(cli, id) {
+  CLI_FICHA = { cli: String(cli), id: String(id) };
+  cliFichaRender();
+  // Los deals son la única parte que pega a la red: se cargan una vez y quedan en cache.
+  // Si ya están cacheados, cliFichaRender los pintó solo y no hace falta ir de nuevo.
+  if (!window.__cuentaDealsCache[id]) { try { cuentasReloadDeals(id); } catch (e) {} }
+}
+function cliFichaClose() { CLI_FICHA = null; cliFichaRender(); }
+
+/* El pivot se dibuja en #cart-pivot, que vive dentro del cajón de ingesta. Desde la ficha hay
+   que abrir el cajón (no togglearlo: si ya estaba abierto lo cerraría), cerrar la ficha —que
+   tapa la pantalla— y bajar hasta el pivot. */
+function cliVerPivot(cli) {
+  const ri = cliCartIdx(cli);
+  if (ri < 0) { alert("No pude ubicar “" + cli + "” en la cartera. Recargá la vista Clientes."); return; }
+  cartPivotSel(ri);
+  const b = document.getElementById("cli-ingesta"), c = document.getElementById("cli-ingesta-caret");
+  if (b) { b.style.display = "block"; if (c) c.textContent = "▾"; }
+  cliFichaClose();
+  const el = document.getElementById("cart-pivot");
+  if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function cliFichaRender() {
+  const host = document.getElementById("cli-ficha-host");
+  if (!host) return;
+  if (!CLI_FICHA) { host.innerHTML = ""; return; }
+  const cli = CLI_FICHA.cli, id = CLI_FICHA.id;
+  /* Cada setter de la ficha llama a renderCuentas, que termina llamando acá: el panel se
+     redibuja entero en cada edición. Guardamos el scroll para no volver arriba de golpe cada
+     vez que German cambia un número en el bloque de abajo. */
+  const scEl = document.getElementById("cli-ficha-scroll");
+  const scTop = scEl ? scEl.scrollTop : 0;
+  const acc = (window.__cuentasData || []).find(c => String(c.id) === String(id));
+  if (!acc) { host.innerHTML = ""; CLI_FICHA = null; return; }
+  const r = {
+    id: acc.id, cli: (acc.properties.name || cli).trim(), csm: (acc.properties.csm_asignado || "").trim(),
+    pais: normPais(acc.properties.country), sgh: acc.properties.horas_de_sg_contratadas ? parseFloat(acc.properties.horas_de_sg_contratadas) : null,
+    deals: parseInt(acc.properties.num_associated_deals || 0), bcg: (acc.properties.calificacion_matriz_bcg || "").trim()
+  };
+  const meta = cuentasGetMeta(cli);
+  const isArg = r.pais === "AR";
+  const cliJs = cliAttr(cli);
+  const modelo = cuModelo(cli), mdef = cuModeloDef(modelo);
+  const cartR = cartCliRow(cli);
+
+  const inS = "padding:4px 7px; font-size:12.5px; border:1px solid #d1d5db; border-radius:5px;";
+  /* Fila etiqueta/valor. El tooltip va en un solo atributo style — emitir dos `style` en el
+     mismo span hace que el navegador se quede con el primero y el cursor:help nunca aparezca. */
+  const kv = (l, v, tip) => `<div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding:5px 13px; border-bottom:1px solid #f6f6f9; font-size:12.5px;"><span${tip ? ` title="${escAttr(tip)}"` : ""} style="color:#6b7280; flex:0 0 auto;${tip ? " cursor:help; border-bottom:1px dotted #d1d5db;" : ""}">${l}</span><span style="text-align:right; min-width:0;">${v}</span></div>`;
+  const blk = (t, body, extra) => `<div style="border:1px solid #e5e7eb; border-radius:11px; overflow:hidden; background:#fff; ${extra || ""}"><h4 style="margin:0; font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:#430C89; background:#fafafa; padding:7px 13px; border-bottom:1px solid #e5e7eb;">${t}</h4>${body}</div>`;
+
+  /* ---------- bloque CONTRATO ---------- */
+  const vhRow = !mdef.hora
+    ? kv("Valor hora", `<span style="font-size:11px; color:#9ca3af;">n/a · ${escAttr(mdef.l)}</span>`, mdef.l + ": " + mdef.d)
+    : (isArg
+      ? kv("Valor hora $", `<input type="number" value="${meta.vhPeso != null ? meta.vhPeso : ""}" placeholder="$/h" onchange="cuSetVhPeso('${cliJs}','${r.id}',this.value)" style="${inS} width:100px; text-align:right;">`
+          + (cuVhUsdEff(cli, isArg) !== null ? `<div style="font-size:10px; color:#075985; margin-top:2px;">= U$S ${cuVhUsdEff(cli, isArg).toFixed(1)}/h</div>` : `<div style="font-size:10px; color:#9ca3af; margin-top:2px;">cargá la cotización</div>`), "En Argentina el valor hora se carga en pesos y se convierte con la cotización manual de arriba.")
+      : kv("Valor hora u$s", `<input type="number" value="${meta.vhUsd != null ? meta.vhUsd : ""}" placeholder="u$s/h" onchange="cuSetVhUsd('${cliJs}','${r.id}',this.value)" style="${inS} width:100px; text-align:right;">`));
+  const montoMan = cuNum(meta.montoUsd);
+  const montoAuto = (mdef.hora && cuVhUsdEff(cli, isArg) !== null && r.sgh) ? cuVhUsdEff(cli, isArg) * r.sgh : null;
+  const varUsd = mdef.varb ? cuVarUsd(cli) : null;
+  const contratado = cuMontoEff(cli, isArg, r.sgh);
+  const montoRow = !mdef.monto
+    ? kv("Contratado /mes", `<span style="color:#9ca3af; font-size:11.5px;">— sin recurrente</span>`, mdef.l + ": " + mdef.d + (montoMan !== null ? " Quedó U$S " + Math.round(montoMan).toLocaleString("es-AR") + " de un modelo anterior: se conserva pero no suma al MRR." : ""))
+    : kv(mdef.varb ? "Fijo /mes u$s" : "Contratado /mes u$s", `<input type="number" value="${montoMan !== null ? montoMan : ""}" placeholder="${montoAuto !== null ? "auto " + Math.round(montoAuto).toLocaleString("es-AR") : "u$s/mes"}" onchange="cuSetMonto('${cliJs}','${r.id}',this.value)" style="${inS} width:110px; text-align:right; font-weight:600; color:#047857; background:${montoMan !== null ? "#ECFDF5" : "#fff"};">`);
+  const varRow = mdef.varb
+    ? kv("Variable /mes u$s", `<input type="number" value="${varUsd != null ? varUsd : ""}" placeholder="var u$s" onchange="cuSetVarUsd('${cliJs}','${r.id}',this.value)" style="${inS} width:110px; text-align:right; font-weight:600; color:#6d28d9; background:${varUsd != null ? "#F5F3FF" : "#fff"};">`, "Componente variable del mes en valor ABSOLUTO (u$s), no en porcentaje. Se suma al fijo para dar el MRR.")
+    : "";
+  const totalRow = contratado === null ? "" : kv("<b>Total contratado</b>", `<b style="color:#047857; font-size:14px;">${fmtMoney(contratado)}</b>${contratado > CU_MONTO_MAX ? `<div style="font-size:10px; color:#b91c1c; font-weight:700;">⚠ fuera de rango — revisá</div>` : ""}`, mdef.varb ? "Fijo + variable del mes." : "");
+  const dgF = cuFinDanger(meta.finAcuerdo || "");
+  const contratoBlk = blk("Contrato",
+    kv("Modelo", `<select onchange="cuSetModelo('${cliJs}','${r.id}',this.value)" style="${inS} font-weight:600; color:${mdef.c};">${CU_MODELOS.map(m => `<option value="${m.v}" ${modelo === m.v ? "selected" : ""}>${m.ic ? m.ic + " " : ""}${m.l}</option>`).join("")}</select>`, mdef.d)
+    + vhRow + montoRow + varRow + totalRow
+    + kv("Tipo plan", `<select onchange="cuSetPlan('${cliJs}','${r.id}',this.value)" style="${inS}"><option value="">—</option>${CUENTAS_PLANES.map(p => `<option value="${p}" ${(meta.plan || "") === p ? "selected" : ""}>${p}</option>`).join("")}</select>`, "Cadencia de cobro. No confundir con el Modelo, que es cómo se cobra.")
+    + kv("Fin de acuerdo", `<input type="date" value="${meta.finAcuerdo || ""}" onchange="cuSetFin('${cliJs}','${r.id}',this.value)" style="${inS} ${dgF && dgF.bg ? "background:" + dgF.bg + "; color:" + dgF.fg + "; border-color:" + dgF.fg + ";" : ""}">${dgF && dgF.icon ? `<div style="font-size:10px; color:${dgF.fg}; font-weight:600; margin-top:2px;">${dgF.icon} ${dgF.txt}</div>` : ""}`)
+    + kv("Semáforo", cuSemaforoSelect(cli, r.id))
+    + kv("Estado de facturación", cuFactSelect(cli, r.id)));
+
+  /* ---------- bloque CONSUMO ---------- */
+  const consumoBlk = blk("Consumo de horas",
+    kv("S&amp;G contratadas /mes", `<input type="number" value="${r.sgh != null ? r.sgh : ""}" placeholder="h/mes" onchange="cuSetSgh('${r.id}',this.value)" style="${inS} width:80px; text-align:right;">`, "Se escribe en horas_de_sg_contratadas de HubSpot.")
+    + kv("Consumidas este mes", `<input type="number" value="${cuHorasCurrent(cli)}" placeholder="hs" onchange="cuSetHorasConsumidas('${cliJs}','${r.id}',this.value)" style="${inS} width:80px; text-align:right;">`)
+    + kv("Uso", cuHorasCell(cli, r.id), mdef.cupo ? "Consumidas ÷ contratadas. Por encima de 100% estás poniendo horas que no cobrás." : mdef.l + " no tiene bolsa de horas: el sobreconsumo no se pinta en rojo.")
+    + `<div style="padding:7px 13px; font-size:11px; color:#9ca3af;">${escAttr(mdef.l)}: ${escAttr(mdef.d)}</div>`);
+
+  /* ---------- bloque SALUD ---------- */
+  let saludBody;
+  if (cartR) {
+    const ct = cartSerieTrend(cartR.serie);
+    const jsq = v => JSON.stringify(String(v)).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+    const marcas = cartR.tiendas.map(s => `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding:5px 13px; border-bottom:1px solid #f6f6f9; font-size:12px;">
+        <span style="flex:1; min-width:0;"><a href="#" onclick="cliVerMarca(${jsq(cli)},${jsq(s.tienda)}); return false;" title="Abrir el detalle mes a mes, los desgloses y el análisis cruzado de esta marca" style="color:#430C89; font-weight:600; text-decoration:none; border-bottom:1px dotted #430C89;">${esc(s.tienda)}</a>${s.sinFx ? ` <span title="${s.sinFx} mes(es) sin cotización" style="color:#d97706;">⚠︎</span>` : ""}</span>
+        ${cartIndSelect(s.industria, `cartSetIndustria(${jsq(cli)}, ${jsq(s.tienda)}, this.value)`, "font-size:10px; padding:2px 4px; border:1px solid #e5e7eb; border-radius:4px; max-width:130px;")}
+        <a href="#" onclick="cliBorrarMarca(${jsq(cli)},${jsq(s.tienda)}); return false;" title="Borrar los datos cargados de esta marca" style="font-size:10px; color:#dc2626;">borrar</a>
+      </div>`).join("");
+    const ms = cartMesesCuenta(cartR);
+    const mesesTbl = ms.length ? `<div style="max-height:190px; overflow:auto; border-top:1px solid #eef2f7;"><table style="width:100%; border-collapse:collapse; font-size:11px;">
+        <thead><tr style="background:#fafafa;"><th style="text-align:left; padding:4px 13px; color:#6b7280; font-weight:600;">Mes</th><th style="text-align:right; padding:4px 8px; color:#6b7280; font-weight:600;">GMV cliente</th><th style="text-align:right; padding:4px 8px; color:#6b7280; font-weight:600;">OPEX Innew</th><th style="text-align:right; padding:4px 13px; color:#6b7280; font-weight:600;">CAPEX</th></tr></thead>
+        <tbody>${ms.map(m => `<tr><td style="padding:3px 13px; color:#6b7280;">${cartMesTxt(m.mes)}</td><td style="padding:3px 8px; text-align:right; font-variant-numeric:tabular-nums;">${fmtMoney(m.gmv)}</td><td style="padding:3px 8px; text-align:right; font-variant-numeric:tabular-nums;">${m.opex == null ? "—" : fmtMoney(m.opex)}</td><td style="padding:3px 13px; text-align:right; font-variant-numeric:tabular-nums; color:#6b7280;">${m.capex ? fmtMoney(m.capex) : "—"}</td></tr>`).join("")}</tbody></table></div>` : "";
+    saludBody = kv("Período comparado", `<span style="font-size:11.5px;">${esc(cartR.periodo)}</span>${cartParcialChip(cartR.parciales)}`, "Meses del export usados para todos los números de este bloque. Los meses parciales (como el mes en curso) se excluyen.")
+      + kv("GMV cliente /mes", `<b style="font-size:14px;">${cartR.gmvAvg === null ? "—" : fmtMoney(cartR.gmvAvg)}</b>${ct ? `<div style="font-size:11px; color:${ct.color}; font-weight:600;">${ct.arrow} ${ct.pct}</div>` : ""}`, "MEDIANA de los " + cartR.okMeses.length + " meses completos. Mediana y no promedio para que un pico tipo Hot Sale no distorsione. Promedio del período: " + (cartR.gmvProm == null ? "—" : fmtMoney(cartR.gmvProm)))
+      + (cartR.serie.length >= 2 ? `<div style="padding:6px 13px; border-bottom:1px solid #f6f6f9;">${cartSparkMeses(cartR.serie, cartR.okMeses, 300, 44)}</div>` : "")
+      + kv("Pedidos válidos", cartR.val.toLocaleString("es-AR"))
+      + kv("Ticket promedio", fmtMoney(cartR.tick))
+      + kv("% cancelación", `<span style="color:${cartR.cancelRate > .15 ? "#dc2626" : "#374151"}; font-weight:${cartR.cancelRate > .15 ? "700" : "400"};">${(cartR.cancelRate * 100).toFixed(1)}%</span>`, "Por encima de 15% suele haber un problema de stock, pago o logística que vale la pena mirar.")
+      + kv("Facturado Innew /mes", cartR.factMes === null ? `<span style="color:#9ca3af;">—</span>` : `<b>${fmtMoney(cartR.factMes)}</b><div style="font-size:10px; color:#9ca3af;">media de ${cartR.mesesAcv}m · sólo OPEX</div>`, "OPEX de los deals ganados ÷ meses de la ventana. Es lo REALMENTE facturado, no el contrato.")
+      + kv("CAPEX del período", cartR.capex ? fmtMoney(cartR.capex) : "—", "IDP / IDE / Middleware: inversión one-shot del cliente. Queda fuera del % del P&L a propósito.")
+      + kv("ACV", cartR.acv ? fmtMoney(cartR.acv) + ` <span style="font-size:10px; color:#9ca3af;">· ${cartR.mesesAcv}m</span>` : "—", "Todo lo facturado en la ventana (OPEX + CAPEX), con la cantidad de meses al lado para poder comparar cuentas de distinto plazo.")
+      + kv("Run-rate", cartR.runrate ? fmtMoney(cartR.runrate) : "—", "ACV proyectado a 12 meses.")
+      + kv("<b>% del P&amp;L del cliente</b>", cartR.pen === null ? "—" : `<b>${cartPenTxt(cartR.pen)}</b><div style="font-size:10px; color:#9ca3af;">real · ${cartR.mesesAcv}m</div>`, "OPEX facturado ÷ GMV del período.")
+      + `<div style="padding:7px 13px; font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:#430C89; background:#fafafa; border-top:1px solid #e5e7eb; border-bottom:1px solid #e5e7eb;">Marcas / tiendas — clic para el detalle completo</div>`
+      + marcas
+      + `<div style="padding:6px 13px;"><a href="#" onclick="cliVerPivot(${jsq(cli)}); return false;" style="font-size:11px; color:#4030C8;" title="El pivot se dibuja en el cajón 📥 Cargar exports, arriba de la lista. Se abre solo y se cierra la ficha para que lo veas.">📊 Ver pivot de la cuenta</a></div>`
+      + mesesTbl;
+  } else {
+    const gmvMan = cuGmvCurrent(cli);
+    saludBody = `<div style="padding:11px 13px; font-size:12px; color:#92400e; background:#FFFBEB; border-bottom:1px solid #FDE68A;">Sin export de pedidos cargado. Sin eso no hay GMV real, ni tendencia, ni % del P&amp;L. Cargalo desde <b>📥 Cargar exports</b> arriba de la lista.</div>`
+      + kv("GMV /mes (manual)", `<input type="number" value="${gmvMan}" placeholder="GMV/mes u$s" onchange="cuSetGmv('${cliJs}','${r.id}',this.value)" style="${inS} width:120px; text-align:right;">`, "Carga a mano mientras no haya export. Al subir el export esta celda pasa a ser la mediana calculada y deja de editarse.")
+      + kv("Tendencia", cuGmvSparkCell(cli, r.id), "Se arma con el histórico de GMV manual mes a mes.");
+  }
+  const saludBlk = blk("Salud del cliente", saludBody);
+
+  /* ---------- bloque DEALS ---------- */
+  const dealsBlk = blk(`Deals de la cuenta${r.deals ? " · " + r.deals : ""}`,
+    `<div id="deals-panel-${r.id}" data-cli="${escAttr(cli)}" style="padding:9px 13px;">${r.deals ? '<div class="loading" style="padding:4px 0;">Cargando deals…</div>' : '<div style="font-size:12px; color:#9ca3af; font-style:italic;">Sin deals asociados en HubSpot.</div>'}</div>`);
+
+  /* ---------- alertas ---------- */
+  const al = cliAlertas(r, cartR);
+  const alertBox = al.length ? `<div style="margin-bottom:13px; border:1px solid ${al[0].tone === "bad" ? "#fecaca" : al[0].tone === "warn" ? "#FDE68A" : "#e5e7eb"}; background:${al[0].tone === "bad" ? "#FEF2F2" : al[0].tone === "warn" ? "#FFFBEB" : "#fafafa"}; border-radius:11px; padding:10px 14px;">
+      <div style="font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:#6b7280; font-weight:700; margin-bottom:5px;">Qué mirar acá</div>
+      ${al.map(a => `<div style="font-size:12.5px; margin-bottom:3px; color:${a.tone === "bad" ? "#b91c1c" : a.tone === "warn" ? "#92400e" : "#4b5563"};"><b>${a.ic} ${a.txt}</b> — ${escAttr(a.d)}</div>`).join("")}
+    </div>` : `<div style="margin-bottom:13px; border:1px solid #d1fae5; background:#ECFDF5; border-radius:11px; padding:10px 14px; font-size:12.5px; color:#065f46;">✓ Sin alertas: contrato vigente, consumo en rango y el cliente no viene cayendo.</div>`;
+
+  host.innerHTML = `
+    <div onclick="cliFichaClose()" style="position:fixed; inset:0; background:rgba(17,24,39,.35); z-index:7990;"></div>
+    <div style="position:fixed; top:0; right:0; bottom:0; width:min(780px, 94vw); background:#f7f7fb; z-index:8000; box-shadow:-14px 0 40px rgba(0,0,0,.2); display:flex; flex-direction:column;">
+      <div style="background:#430C89; color:#fff; padding:13px 18px; display:flex; align-items:flex-start; gap:12px;">
+        <div style="flex:1; min-width:0;">
+          <div style="font-size:17px; font-weight:800;">${escAttr(cli)}
+            <a href="${HUBSPOT_COMPANY(r.id)}" target="_blank" title="Abrir en HubSpot" style="color:#C7BDFF; font-size:12px; text-decoration:none; margin-left:6px;">HubSpot ↗</a>
+          </div>
+          <div style="font-size:11.5px; color:#C7BDFF; margin-top:2px;">${r.pais || "sin país"} · ${escAttr(mdef.l)}${cartR ? " · " + esc(cartR.periodo) : ""}</div>
+        </div>
+        <button onclick="cliFichaClose()" title="Cerrar (la lista queda como estaba)" style="background:rgba(255,255,255,.15); border:none; color:#fff; border-radius:7px; padding:4px 11px; font-size:15px; cursor:pointer; line-height:1.2;">✕</button>
+      </div>
+
+      <div id="cli-ficha-scroll" style="padding:14px 18px 26px; overflow:auto; flex:1;">
+        ${alertBox}
+
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:11px; margin-bottom:13px;">
+          ${blk("La cuenta",
+            kv("CSM", `<select onchange="cuentasSetCsm('${r.id}',this.value,this)" style="${inS} max-width:160px; ${r.csm ? "" : "border-color:#f59e0b; background:#fffbeb;"}">${csmEnumOptions(r.csm)}</select> <span id="csmst-${r.id}" style="font-size:11px;"></span>`)
+            + kv("Matriz BCG", `<select onchange="cuentasSetBcg('${r.id}',this.value,this)" style="${inS} max-width:160px;">${bcgOptions(r.bcg)}</select> <span id="bcgst-${r.id}" style="font-size:11px;"></span>`, "Escribe calificacion_matriz_bcg en HubSpot.")
+            + kv("País", r.pais || "—", "Sale de HubSpot; se edita en la ficha de la empresa.")
+            + kv("Nota", `<input type="text" value="${escAttr(meta.nota || "")}" placeholder="—" onchange="cuentasSetNota('${cliJs}',this.value)" style="${inS} width:170px;">`, "Sólo vive en el dashboard, no va a HubSpot."))}
+          ${consumoBlk}
+        </div>
+
+        <div style="margin-bottom:13px;">${contratoBlk}</div>
+        <div style="margin-bottom:13px;">${saludBlk}</div>
+        <div style="margin-bottom:13px;">${dealsBlk}</div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding-top:4px;">
+          <span style="font-size:11px; color:#9ca3af;">Todo lo que editás acá se guarda solo (HubSpot + dashboard), igual que antes.</span>
+          <button id="baja-${r.id}" onclick="cuentasDarBaja('${r.id}','${cliJs}')" title="Da de baja el cliente: saca la empresa de customer y crea el deal Reactivación en Nurturing" style="cursor:pointer; border:1px solid #fecaca; background:#fef2f2; color:#b91c1c; border-radius:7px; padding:5px 13px; font-size:12px; font-weight:600;">🚫 Dar de baja</button>
+        </div>
+      </div>
+    </div>`;
+
+  // Deals ya cacheados: pintarlos ahora, o cada edición los mandaría de vuelta a "Cargando…".
+  const dp = document.getElementById("deals-panel-" + r.id);
+  if (dp && window.__cuentaDealsCache[r.id]) { dp.dataset.loaded = "1"; dp.innerHTML = cuentaDealsHtml(r.id, window.__cuentaDealsCache[r.id]); }
+  const sc2 = document.getElementById("cli-ficha-scroll");
+  if (sc2 && scTop) sc2.scrollTop = scTop;
+}
 function cuentasEstadoSelect(cli) {
   const sel = cuentasGetMeta(cli).estado || "al_dia"; const e = CUENTAS_ESTADOS[sel];
-  return `<select onchange="cuentasSetEstado('${cli.replace(/'/g, "")}',this.value)" style="font-size:11px; padding:2px 5px; border:1px solid ${e.dot}; border-radius:5px; background:${e.bg}; color:${e.fg};">${Object.keys(CUENTAS_ESTADOS).map(k => `<option value="${k}" ${sel === k ? "selected" : ""}>${CUENTAS_ESTADOS[k].label}</option>`).join("")}</select>`;
+  return `<select onchange="cuentasSetEstado('${cliAttr(cli)}',this.value)" style="font-size:11px; padding:2px 5px; border:1px solid ${e.dot}; border-radius:5px; background:${e.bg}; color:${e.fg};">${Object.keys(CUENTAS_ESTADOS).map(k => `<option value="${k}" ${sel === k ? "selected" : ""}>${CUENTAS_ESTADOS[k].label}</option>`).join("")}</select>`;
 }
 
 // ---- Datos financieros por cuenta (localStorage = cache; HubSpot = fuente de verdad) ----
@@ -8072,7 +8345,7 @@ function cuSemaforoSelect(cli, companyId) {
   const opts = `<option value="">—</option>` + Object.keys(CUENTAS_SEMAFORO).map(k => `<option value="${k}" ${sel === k ? "selected" : ""}>${CUENTAS_SEMAFORO[k].label}</option>`).join("");
   const e = CUENTAS_SEMAFORO[sel];
   const style = e ? `border:1px solid ${e.dot}; background:${e.bg}; color:${e.fg};` : `border:1px solid #d1d5db; background:#fff; color:#6b7280;`;
-  return `<select onchange="cuSetSemaforo('${cli.replace(/'/g, "")}','${companyId || ""}',this.value)" style="font-size:11px; padding:2px 5px; border-radius:5px; ${style}">${opts}</select>`;
+  return `<select onchange="cuSetSemaforo('${cliAttr(cli)}','${companyId || ""}',this.value)" style="font-size:11px; padding:2px 5px; border-radius:5px; ${style}">${opts}</select>`;
 }
 // ---- Sparkline GMV últimos 6 meses + popup de detalle ----
 function cuMonthLabel(k) {
@@ -8098,7 +8371,7 @@ function cuGmvSparkSvg(vals, w, h) {
    Sin archivo cargado cae al sparkline viejo sobre gmvHist, que es lo único que hay.
    cuGmvSparkSvg NO se toca: lo sigue usando el popup cuGmvDetail (320×70). */
 function cuGmvSparkCell(cli, companyId) {
-  const link = `<a href="#" onclick="cuGmvDetail('${cli.replace(/'/g, "")}','${companyId || ""}');return false;" style="font-size:10px; color:#4030C8; white-space:nowrap;">detalle ↗</a>`;
+  const link = `<a href="#" onclick="cuGmvDetail('${cliAttr(cli)}','${companyId || ""}');return false;" style="font-size:10px; color:#4030C8; white-space:nowrap;">detalle ↗</a>`;
   const cr = cartCliRow(cli);
   if (cr && cr.serie.length >= 2) {
     return `<div style="display:flex; align-items:center; justify-content:center; gap:6px;">${cartSparkMeses(cr.serie, cr.okMeses, 104, 22)}${link}</div>`;
@@ -8784,6 +9057,9 @@ function cartSetIndustria(cli, tienda, val) {
   tiendas[tienda] = Object.assign({}, tiendas[tienda], { industria: String(val || "").trim() });
   cuentasSetMeta(cli, { vtex: { updated: prev.updated || "", tiendas: tiendas } });
   renderCartera();
+  // La industria alimenta la lista maestra y la ficha; renderCuentas repinta las dos.
+  if (document.getElementById("cue-tabla")) renderCuentas();
+  else if (typeof cliFichaRender === "function") cliFichaRender();
 }
 /* Industria a nivel cuenta: una sola si todas las marcas coinciden, "mixta · N" si difieren.
    Se deduplica por VALUE de HubSpot pero `txt` devuelve el LABEL: esa es la string que termina
@@ -8981,14 +9257,20 @@ function cartRowsView() {
   return rows;
 }
 
-function cliTab(which) {
-  ["cuentas", "cartera"].forEach(t => {
-    const pane = document.getElementById("clitab-" + t);
-    const btn = document.getElementById("clitab-btn-" + t);
-    if (pane) pane.style.display = (t === which) ? "block" : "none";
-    if (btn) btn.className = "clitab" + (t === which ? " active" : "");
-  });
-  if (which === "cartera") renderCartera();
+/* Las dos pestañas de Clientes ("Cuentas activas" y "Salud cliente") murieron el 2026-09-07:
+   se pisaban en 7 columnas y dos de esos pisones mostraban números DISTINTOS con el mismo
+   nombre (% del P&L estimado vs real; contrato vs facturado). Ahora hay una sola lista maestra
+   y una ficha por cliente. cliTab queda como stub por si algún link viejo lo llama. */
+function cliTab() { renderCuentas(); renderCartera(); }
+
+// Cajón de ingesta de exports: plegado por defecto, porque cargar archivos es una tarea puntual.
+function cliToggleIngesta() {
+  const b = document.getElementById("cli-ingesta"), c = document.getElementById("cli-ingesta-caret");
+  if (!b) return;
+  const show = b.style.display === "none";
+  b.style.display = show ? "block" : "none";
+  if (c) c.textContent = show ? "▾" : "▸";
+  if (show) renderCartera();
 }
 
 /* --- facturación Innew: cuota de un deal GANADO en un mes dado ---
@@ -9353,6 +9635,8 @@ function cartBorrar(ri, ti) {
     else cuentasSetMeta(r.cli, { vtex: { updated: new Date().toISOString().slice(0, 10), tiendas: tiendas }, gmvHist: cartRollupGmvHist(r.cli, tiendas) });
   }
   renderCartera();
+  // La lista maestra y la ficha muestran GMV/%P&L derivados de esto: hay que repintarlas.
+  if (document.getElementById("cue-tabla")) renderCuentas();
 }
 // Foco del pivot: "" = toda la cartera · "ri" = una cuenta · "ri.ti" = una tienda.
 function cartPivotSel(v) {
@@ -9990,11 +10274,20 @@ function cartRenderPivot() {
 
 function renderCartera() {
   if (!document.getElementById("cart-drop")) return;
+  /* CART_VIEW lo poblaba cartRenderTabla, que era la tabla ancha de Salud cliente. Esa tabla ya
+     no existe (2026-09-07: una sola lista maestra + ficha), pero cartPopup/cartBorrar siguen
+     indexando sobre CART_VIEW — así que se puebla acá, sin depender de que haya tabla. */
+  try { CART_VIEW = cartRowsView(); } catch (e) { CART_VIEW = []; }
   cartRenderDrop();
   cartRenderFx();
   cartRenderKpis();
-  cartRenderTabla();
+  cartRenderTabla();   // no-op si no está el contenedor
   cartRenderPivot();
+  const sub = document.getElementById("cli-ingesta-sub");
+  if (sub) {
+    const n = (CART_VIEW || []).length;
+    sub.textContent = n ? n + (n === 1 ? " cuenta con export cargado" : " cuentas con export cargado") + " · " + (cartStorageBytes() / 1024).toFixed(0) + " KB" : "todavía no cargaste ningún export";
+  }
 }
 
 function toggleCuentasBody() {
@@ -10236,162 +10529,128 @@ async function renderCuentas() {
     <span id="cufin-sync-st" style="font-size:11px; color:#4030C8;"></span>
   </div>`;
 
-  let html = cotBar + bcgLegendHtml() + `<div style="overflow-x:auto; border:1px solid #e5e5e5; border-radius:8px;"><table class="std"><thead><tr>
-    <th style="position:sticky; left:0; z-index:3; background:#fafafa; width:200px; min-width:200px; max-width:200px;">Cliente</th><th>CSM</th><th style="text-align:center;">Matriz BCG</th><th style="text-align:center;">País</th><th style="text-align:center;">S&G h/mes</th>
-    <th style="text-align:center;" title="Modelo de cobro. Por hora = valor hora × horas contratadas. ⚡ Scale = fijo + variable, sin valor hora. 🌱 Grow Pro = fijo puro, sin valor hora ni variable. No confundir con Tipo plan, que es la cadencia de cobro.">Modelo</th><th style="text-align:center;">Hs consumidas</th><th style="text-align:center;">Consumo</th>
-    <th style="text-align:center;">Valor hora $</th><th style="text-align:center;">Valor hora u$s</th><th style="text-align:center;" title="Scale y Grow Pro: el fijo mensual. Por hora: se autocalcula como valor hora u$s × horas, y se puede pisar a mano.">Monto mensual u$s</th>
-    <th style="text-align:center;" title="Sólo para cuentas Scale: componente VARIABLE del mes, en valor absoluto (u$s), no en porcentaje. Se suma al fijo para dar el MRR de la cuenta.">Variable u$s</th>
-    <th style="text-align:center;">Tipo plan</th><th style="text-align:center;">Fin acuerdo</th><th style="text-align:center;">Semáforo</th><th style="text-align:center;">Facturación</th><th style="text-align:center;" title="GMV de un mes típico del cliente, en USD: MEDIANA de la serie mensual calculada en Salud cliente sobre los meses completos con cotización. Se usa mediana y no promedio para que un pico (Hot Sale, Black Friday) no infle el número. Las cuentas sin archivo cargado mantienen el input manual.">GMV cliente /mes</th><th style="text-align:center;" title="Cuánto pesa Innew en el P&L del cliente: facturación mensual de Innew ÷ GMV mensual del cliente. Si la cuenta tiene facturación cargada en Salud cliente usa ese dato (OPEX ÷ GMV del período, el mismo número que muestra la vista Salud cliente). Si no, cae al Monto mensual u$s de esta tabla ÷ la mediana de GMV, y queda marcado como estimado.">% del P&L</th><th style="text-align:center;" title="Misma tendencia que la vista Salud cliente: serie mensual en USD, sólo meses completos.">Tendencia GMV</th>
-    <th style="text-align:center;">Deals</th><th>Nota</th><th style="text-align:center;">Baja</th>
+  /* ===== LISTA MAESTRA DE CLIENTES (2026-09-07) =====================================
+     Reemplaza la tabla ancha de 22 columnas. Una fila por cuenta y SÓLO LECTURA: toda la
+     edición se mudó a la ficha (cliFichaOpen), que es el único lugar donde se escribe.
+     Motivo: las dos pestañas de Clientes se pisaban en 7 columnas, y en dos de esos pisones
+     el mismo nombre mostraba números distintos (% del P&L estimado vs. real; contrato vs.
+     facturado). Acá cada dato aparece una sola vez y con su origen a la vista. */
+  const semPill = k => {
+    const s = CUENTAS_SEMAFORO[k];
+    return s ? `<span title="${escAttr(s.label)}" style="display:inline-block; font-size:10px; font-weight:600; color:${s.fg}; background:${s.bg}; border-radius:9px; padding:1px 8px; white-space:nowrap;">● ${s.label}</span>`
+             : `<span style="color:#d1d5db; font-size:11px;">—</span>`;
+  };
+  /* Filtros que quedaron activos sobre columnas que ya no se muestran: si no se avisara, German
+     vería menos cuentas de las que hay y sin ningún control visible para entender por qué. */
+  const filtOcultos = [["cu-plan", "Tipo plan"], ["cu-fact", "Estado de facturación"], ["cu-bcg", "Matriz BCG"]].filter(u => msfSel(u[0]).length);
+
+  let html = cotBar + bcgLegendHtml()
+    + (filtOcultos.length ? `<div style="margin-bottom:10px; padding:7px 12px; background:#FFFBEB; border:1px solid #FDE68A; border-radius:8px; font-size:11.5px; color:#92400e;">⚠ Hay filtros activos sobre columnas que ya no están en la lista (${filtOcultos.map(u => u[1]).join(" · ")}): estás viendo menos cuentas de las que hay. <a href="#" onclick="clearCueColFilters(); return false;" style="color:#b45309; font-weight:700;">Limpiar filtros</a></div>` : "")
+    + `<div style="overflow-x:auto; border:1px solid #e5e5e5; border-radius:8px;"><table class="std"><thead><tr>
+    <th style="position:sticky; left:0; z-index:3; background:#fafafa; width:220px; min-width:220px;">Cliente</th>
+    <th>CSM</th>
+    <th style="text-align:center;">País</th>
+    <th style="text-align:center;" title="Modelo de cobro. Por hora = valor hora × horas contratadas. ⚡ Scale = fijo + variable. 🌱 Grow Pro = fijo puro. 🧰 Bajo Demanda y 🚧 En IDP no tienen recurrente contratado.">Modelo</th>
+    <th style="text-align:center;">Semáforo</th>
+    <th style="text-align:center;" title="Lo que la cuenta tiene FIRMADO por mes (fijo + variable en Scale). Sale del contrato cargado en la ficha, no de lo facturado.">Contratado /mes</th>
+    <th style="text-align:center;" title="Lo que Innew le facturó REALMENTE por mes: OPEX de los deals ganados ÷ meses de la ventana. Necesita el export de pedidos cargado y la facturación Innew traída.">Facturado /mes</th>
+    <th style="text-align:center;" title="GMV de un mes típico del cliente en USD: MEDIANA de los meses completos del export. Mediana y no promedio para que un Hot Sale no infle el número.">GMV cliente /mes</th>
+    <th style="text-align:center;" title="Cuánto pesa Innew en el P&amp;L del cliente. Con export cargado usa lo facturado (real); sin export cae al contratado ÷ GMV y se rotula estimado.">% del P&amp;L</th>
+    <th style="text-align:center;" title="Lo que hay que mirar en esta cuenta, ordenado por gravedad. Pasá el mouse por cada chip.">Alertas</th>
+    <th style="text-align:center;"></th>
   </tr><tr style="background:#fafafa;">
-    <th style="position:sticky; left:0; z-index:3; background:#fafafa; width:200px; min-width:200px; max-width:200px; padding:4px 6px;"><input type="text" value="${escAttr(CF.nombre || "")}" placeholder="filtrar… (Enter)" onchange="cueColFSet('nombre',this.value)" style="width:95%; box-sizing:border-box; padding:3px 6px; border:1px solid #d1d5db; border-radius:5px; font-size:11px; font-weight:400;"></th>
+    <th style="position:sticky; left:0; z-index:3; background:#fafafa; padding:4px 6px;"><input type="text" value="${escAttr(CF.nombre || "")}" placeholder="filtrar… (Enter)" onchange="cueColFSet('nombre',this.value)" style="width:95%; box-sizing:border-box; padding:3px 6px; border:1px solid #d1d5db; border-radius:5px; font-size:11px; font-weight:400;"></th>
     <th style="padding:4px 6px;">${msfBtn("cu-csm", [{ v: "", l: "— sin CSM" }].concat(csms.map(c => ({ v: c, l: c }))), "renderCuentas", { live: false })}</th>
-    <th style="padding:4px 6px; text-align:center;">${msfBtn("cu-bcg", CUENTAS_BCG.map(b => ({ v: b.v, l: b.icon + " " + b.label })), "renderCuentas", { live: false })}</th>
     <th style="padding:4px 6px; text-align:center;">${msfBtn("cu-pais", [...new Set(accounts.map(a => a.pais).filter(Boolean))].sort().map(p => ({ v: p, l: p })), "renderCuentas", { live: false })}</th>
-    <th></th>
-    <th style="padding:4px 6px; text-align:center;">${msfBtn("cu-scale", CU_MODELOS.map(m => ({ v: m.v, l: (m.ic ? m.ic + " " : "— ") + m.l })), "renderCuentas", { live: false })}</th>
-    <th></th><th></th><th></th><th></th><th></th><th></th>
-    <th style="padding:4px 6px; text-align:center;">${msfBtn("cu-plan", CUENTAS_PLANES.map(p => ({ v: p, l: p })), "renderCuentas", { live: false })}</th>
-    <th></th>
+    <th style="padding:4px 6px; text-align:center;">${msfBtn("cu-scale", CU_MODELOS.map(m => ({ v: m.v, l: (m.ic ? m.ic + " " : "") + m.l })), "renderCuentas", { live: false })}</th>
     <th style="padding:4px 6px; text-align:center;">${msfBtn("cu-sem", Object.keys(CUENTAS_SEMAFORO).map(k => ({ v: k, l: CUENTAS_SEMAFORO[k].label })), "renderCuentas", { live: false })}</th>
-    <th style="padding:4px 6px; text-align:center;">${msfBtn("cu-fact", [{ v: "", l: "— sin estado" }].concat(CU_FACT_OPTS.map(o => ({ v: o, l: o }))), "renderCuentas", { live: false })}</th>
     <th></th><th></th><th></th><th></th><th></th>
     <th style="padding:4px 6px; text-align:center;"><button title="Limpiar filtros" onclick="clearCueColFilters()" style="padding:2px 8px; font-size:11px; border:1px solid #d1d5db; background:#fff; border-radius:5px; cursor:pointer;">✕</button>${cfActivo ? `<div style="font-size:10px; color:#4030C8; font-weight:700; margin-top:2px;">${rows.length} de ${totalPreCF}</div>` : ""}</th>
   </tr></thead><tbody>`;
-  if (!rows.length) html += `<tr><td colspan="22" class="empty">Sin cuentas en esta selección.</td></tr>`;
+
+  if (!rows.length) html += `<tr><td colspan="11" class="empty">Sin cuentas en esta selección.</td></tr>`;
   rows.forEach(r => {
     const meta = cuentasGetMeta(r.cli);
-    const nota = meta.nota || "";
     const isArg = r.pais === "AR";
-    const cliJs = cliAttr(r.cli);
-    /* Todos los modelos salvo "por hora" anulan las dos celdas de valor hora en vez de dejarlas
-       editables. Dejarlas activas invitaría a cargar un precio que no factura nadie y que después
-       el monto auto usaría para inventar un MRR falso. La frase del tooltip sale de mdef.d, así
-       que sumar un modelo nuevo no obliga a tocar el render. */
-    const modelo = cuModelo(r.cli);
-    const mdef = cuModeloDef(modelo);
-    const sinVh = !mdef.hora;
-    const vhNA = `<span style="display:inline-block; padding:2px 7px; border-radius:5px; background:#F3F4F6; color:#9ca3af; font-size:10px;" title="${escAttr(mdef.l + " no se cobra por hora: " + mdef.d)}">n/a · ${escAttr(mdef.l)}</span>`;
-    const vhPesoCell = sinVh ? vhNA : (isArg
-      ? `<input type="number" value="${meta.vhPeso != null ? meta.vhPeso : ""}" placeholder="$/h" onchange="cuSetVhPeso('${cliJs}','${r.id}',this.value)" style="padding:3px 6px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; width:90px; text-align:right;">`
-      : `<span style="color:#cbd5e1;">—</span>`);
-    const vhUsd = cuVhUsdEff(r.cli, isArg);
-    let vhUsdCell;
-    if (sinVh) {
-      vhUsdCell = vhNA;
-    } else if (isArg) {
-      vhUsdCell = vhUsd !== null
-        ? `<span style="display:inline-block; padding:3px 8px; background:#E0F2FE; border:1px solid #7DD3FC; border-radius:5px; color:#075985; font-size:12px; font-weight:600;">U$S ${vhUsd.toFixed(1)}</span>`
-        : `<span style="display:inline-block; padding:3px 8px; background:#E0F2FE; border:1px solid #BAE6FD; border-radius:5px; color:#9ca3af; font-size:11px;">cargá $ y cotiz.</span>`;
-    } else {
-      vhUsdCell = `<input type="number" value="${meta.vhUsd != null ? meta.vhUsd : ""}" placeholder="u$s/h" onchange="cuSetVhUsd('${cliJs}','${r.id}',this.value)" style="padding:3px 6px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; width:90px; text-align:right;">`;
-    }
-    // Sin valor hora no hay monto auto: el fijo se carga a mano y es el único origen del monto.
-    const montoAuto = (!sinVh && vhUsd !== null && r.sgh) ? vhUsd * r.sgh : null;
-    const montoMan = cuNum(meta.montoUsd);
-    const montoPh = sinVh ? (mdef.varb ? "fijo u$s" : "u$s/mes") : (montoAuto !== null ? "auto " + Math.round(montoAuto).toLocaleString("es-AR") : "u$s/mes");
-    /* El input sigue siendo type="number" a propósito: parsear "1.500" vs "1.5" con separadores
-       de miles es ambiguo y un valor hora de 32,5 se convertiría en silencio en 325. Se corrige la
-       legibilidad con una línea formateada DEBAJO del input, no cambiando el tipo de campo. */
-    /* El input de Monto es el FIJO. En Scale el MRR real es fijo + variable, así que el número
-       que se controla contra CU_MONTO_MAX y el que se lee debajo es el TOTAL, no el fijo solo:
-       si no, una cuenta con fijo chico y variable enorme pasaría el control sin que se note. */
-    const varUsd = mdef.varb ? cuVarUsd(r.cli) : null;
-    const montoFijo = montoMan !== null ? montoMan : montoAuto;
-    const montoEff = montoFijo === null ? null : montoFijo + (varUsd || 0);
-    const montoRaro = montoEff !== null && montoEff > CU_MONTO_MAX;
-    const desglose = (mdef.varb && varUsd) ? `${Math.round(montoFijo).toLocaleString("es-AR")} fijo + ${Math.round(varUsd).toLocaleString("es-AR")} var = ` : "";
-    const montoLeer = montoEff === null ? "" :
-      `<div style="font-size:10px; margin-top:2px; font-variant-numeric:tabular-nums; color:${montoRaro ? "#b91c1c" : "#6b7280"}; font-weight:${montoRaro ? "700" : "400"};" title="${montoRaro ? escAttr("Monto mensual fuera de rango (> U$S " + CU_MONTO_MAX.toLocaleString("es-AR") + "). Los planes de S&C van de U$S 790 a 2.100/mes y Scale ronda U$S 2.900/mes: un número de este tamaño suele ser un GMV cargado en la celda equivocada. Queda fuera del KPI de MRR hasta que se corrija.") : (desglose ? "MRR de la cuenta = fijo + variable del mes" : "Monto mensual formateado")}">${desglose}U$S ${Math.round(montoEff).toLocaleString("es-AR")}${montoRaro ? " ⚠" : ""}</div>${montoRaro ? `<div style="font-size:9px; color:#b91c1c; line-height:1.2;">revisá: parece un GMV,<br>no un monto mensual</div>` : ""}`;
-    /* Bajo Demanda y En IDP no tienen monto mensual: la celda se apaga en vez de quedar editable.
-       Si hubiera quedado un montoUsd cargado de un modelo anterior se avisa acá, porque el número
-       sigue guardado (no se destruye por si German vuelve atrás) pero ya NO cuenta para el MRR. */
-    const montoCell = !mdef.monto
-      ? `<span style="color:#cbd5e1;" title="${escAttr(mdef.l + ": " + mdef.d + (montoMan !== null ? " Quedó cargado U$S " + Math.round(montoMan).toLocaleString("es-AR") + " de un modelo anterior: se conserva por si volvés a cambiar el modelo, pero no suma al MRR." : ""))}">—${montoMan !== null ? ` <span style="font-size:9px; color:#d97706;">(u$s ${Math.round(montoMan).toLocaleString("es-AR")} guardado, no suma)</span>` : ""}</span>`
-      : `<input type="number" value="${montoMan !== null ? montoMan : ""}" placeholder="${montoPh}" onchange="cuSetMonto('${cliJs}','${r.id}',this.value)" style="padding:3px 6px; font-size:12px; border:1px solid ${montoRaro ? "#FCA5A5" : (montoMan !== null ? "#6EE7B7" : "#d1d5db")}; border-radius:5px; width:110px; text-align:right; color:${montoRaro ? "#b91c1c" : "#047857"}; font-weight:600; background:${montoRaro ? "#FEF2F2" : (montoMan !== null ? "#ECFDF5" : "#fff")};">${montoLeer}`;
-    /* El variable es propio de Scale y sólo de Scale: en Grow Pro (fijo puro) y en por-hora la
-       celda se apaga en vez de aceptar un número que después nadie factura. Se carga en valor
-       ABSOLUTO mensual (u$s), no en porcentaje — German lo pidió así explícitamente. */
-    const varCell = mdef.varb
-      ? `<input type="number" value="${varUsd != null ? varUsd : ""}" placeholder="var u$s" onchange="cuSetVarUsd('${cliJs}','${r.id}',this.value)" title="Componente variable del mes en u$s (valor absoluto, no %). Se suma al fijo para dar el MRR de la cuenta." style="padding:3px 6px; font-size:12px; border:1px solid ${varUsd != null ? "#C4B5FD" : "#d1d5db"}; border-radius:5px; width:100px; text-align:right; color:#6d28d9; font-weight:600; background:${varUsd != null ? "#F5F3FF" : "#fff"};">`
-      : `<span style="color:#cbd5e1;" title="${escAttr("Sólo las cuentas Scale tienen componente variable. " + mdef.l + " " + mdef.d)}">—</span>`;
-    const planSel = meta.plan || "";
-    const planCell = `<select onchange="cuSetPlan('${cliJs}','${r.id}',this.value)" style="font-size:11px; padding:2px 5px; border:1px solid #d1d5db; border-radius:5px; background:#fff;"><option value="">—</option>${CUENTAS_PLANES.map(p => `<option value="${p}" ${planSel === p ? "selected" : ""}>${p}</option>`).join("")}</select>`;
-    const fin = meta.finAcuerdo || "";
-    const dg = cuFinDanger(fin);
-    const finStyle = dg && dg.bg ? `background:${dg.bg}; color:${dg.fg}; border-color:${dg.fg};` : `border-color:#d1d5db;`;
-    const finBadge = dg && dg.icon ? `<div style="font-size:10px; color:${dg.fg}; font-weight:600; margin-top:2px;">${dg.icon} ${dg.txt}</div>` : "";
-    const finCell = `<input type="date" value="${fin}" onchange="cuSetFin('${cliJs}','${r.id}',this.value)" style="padding:3px 5px; font-size:11px; border:1px solid; border-radius:5px; ${finStyle}">${finBadge}`;
-    const semCell = cuSemaforoSelect(r.cli, r.id);
-    /* GMV: si la cuenta tiene archivo cargado en Cartera GMV, la celda es DERIVADA — media
-       mensual en USD sobre meses completos y con cotización. Deja de ser editable a propósito:
-       tipear a mano encima de un dato calculado sólo genera dos verdades. Sin archivo, sigue
-       siendo el input manual de siempre (que además escribe gmv_mensual en HubSpot). */
+    const mdef = cuModeloDef(cuModelo(r.cli));
     const cartR = cartCliRow(r.cli);
-    const cartAvg = cartR ? cartR.gmvAvg : null;
-    let gmvCell;
-    if (cartAvg !== null) {
-      const ct = cartSerieTrend(cartR.serie);
-      const ctB = ct ? `<div style="font-size:10px; color:${ct.color}; font-weight:600; margin-top:1px;">${ct.arrow} ${ct.pct}</div>` : "";
-      const nm = cartR.okMeses.length;
-      const alerta = cartR.sinFx ? " · ⚠︎ " + cartR.sinFx + " mes(es) sin cotización" : "";
-      const prom = cartR.gmvProm;
-      gmvCell = `<div title="Mes típico: MEDIANA en USD de los ${nm} mes(es) completo(s) cargados en Salud cliente (${escAttr(cartR.periodo)}). Mediana y no promedio para que un pico tipo Hot Sale no distorsione.&#10;Promedio del período: ${escAttr(prom == null ? "—" : fmtMoney(prom))}${escAttr(alerta)}" style="cursor:help;">
-        <div style="font-size:12px; font-weight:700; color:#111827;">${fmtMoneyK(cartAvg)}</div>
-        <div style="font-size:9px; color:#9ca3af;">mediana · ${nm}m${cartR.sinFx ? " ⚠︎" : ""}</div>${ctB}
-      </div>`;
-    } else {
-      const gmv = cuGmvCurrent(r.cli);
-      const trend = cuGmvTrend(r.cli);
-      const trBadge = trend ? `<div style="font-size:10px; color:${trend.color}; font-weight:600; margin-top:2px;">${trend.arrow} ${trend.pct}</div>` : "";
-      gmvCell = `<input type="number" value="${gmv}" placeholder="GMV/mes" onchange="cuSetGmv('${cliJs}','${r.id}',this.value)" style="padding:3px 6px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; width:100px; text-align:right;" title="Sin archivo en Salud cliente: carga manual. Al subir el export de VTEX esta celda pasa a ser la media en USD.">${trBadge}`;
-    }
-    /* % del P&L del cliente = cuánto pesa Innew sobre lo que el cliente vende.
-       Fuente preferida: `pen` de Cartera GMV (OPEX ÷ GMV del período), para que el número sea
-       EXACTAMENTE el mismo que muestra esa vista — dos vistas con dos penetraciones distintas
-       para la misma cuenta es peor que no tenerlo. Cae al MRR de esta tabla ÷ mediana de GMV
-       sólo cuando no hay facturación cargada en Cartera, y en ese caso se rotula "estimado"
-       para que no se confunda un contrato vigente con lo realmente facturado. */
+    const contratado = cuMontoEff(r.cli, isArg, r.sgh);
+    const facturado = cartR ? cartR.factMes : null;
+    const gmvAvg = cartR ? cartR.gmvAvg : null;
+    const gmvBase = gmvAvg !== null ? gmvAvg : cuNum(cuGmvCurrent(r.cli));
     const penReal = cartR ? cartR.pen : null;
-    const gmvBase = cartAvg !== null ? cartAvg : cuNum(cuGmvCurrent(r.cli));
-    const mrrCu = cuMontoEff(r.cli, isArg, r.sgh);
-    const penEst = (penReal === null && mrrCu !== null && gmvBase) ? mrrCu / gmvBase : null;
-    let penCell;
-    if (penReal !== null) {
-      penCell = `<div title="${escAttr("OPEX facturado ÷ GMV del período (" + cartR.periodo + "). Mismo cálculo que la vista Salud cliente.")}" style="cursor:help;">${cartPenTxt(penReal)}<div style="font-size:9px; color:#9ca3af;">real · ${cartR.mesesAcv}m</div></div>`;
-    } else if (penEst !== null) {
-      penCell = `<div title="${escAttr("Estimado: Monto mensual u$s de esta tabla (" + Math.round(mrrCu).toLocaleString("es-AR") + ") ÷ GMV mensual (" + Math.round(gmvBase).toLocaleString("es-AR") + "). No hay facturación cargada en Salud cliente para esta cuenta, así que usa el contrato vigente, no lo facturado.")}" style="cursor:help;">${cartPenTxt(penEst)}<div style="font-size:9px; color:#9ca3af;">estimado</div></div>`;
+    const penEst = (penReal === null && contratado !== null && gmvBase) ? contratado / gmvBase : null;
+    const cliJs = cliAttr(r.cli);
+
+    /* Contratado vs Facturado, uno al lado del otro: es el cruce que antes no existía en
+       ninguna pantalla. El Δ sólo se pinta si los DOS números están, para no leer como
+       "cobrás de más" lo que en realidad es "falta cargar el contrato". */
+    const contratadoTxt = contratado === null
+      ? `<span style="color:#cbd5e1;" title="${escAttr(mdef.l + ": " + mdef.d)}">—</span>`
+      : `<span style="font-weight:600; color:#047857;">${fmtMoneyK(contratado)}</span>`;
+    let factTxt;
+    if (facturado === null) {
+      factTxt = `<span style="color:#cbd5e1;" title="Sin facturación Innew cargada para esta cuenta. Abrí 📥 Cargar exports → ⟳ Cargar facturación Innew.">—</span>`;
     } else {
-      penCell = `<span style="color:#cbd5e1;" title="${escAttr(gmvBase ? "Falta el monto mensual de Innew." : "Falta el GMV del cliente: cargá el export en Salud cliente o el GMV manual.")}">—</span>`;
+      const dlt = contratado === null ? null : facturado - contratado;
+      const dpct = (dlt !== null && contratado) ? Math.round(dlt / contratado * 100) : null;
+      const dCol = dlt === null ? "#9ca3af" : (Math.abs(dpct || 0) < 10 ? "#9ca3af" : (dlt > 0 ? "#047857" : "#b91c1c"));
+      const dTxt = dlt === null ? "" : (Math.abs(dpct || 0) < 10 ? "≈ contrato" : (dlt > 0 ? "+" : "−") + fmtMoneyK(Math.abs(dlt)) + " vs contrato");
+      factTxt = `<div style="font-weight:600;">${fmtMoneyK(facturado)}</div>${dTxt ? `<div style="font-size:9px; color:${dCol};">${dTxt}</div>` : ""}`;
     }
+
+    /* GMV: con export cargado es la mediana (derivada, no editable acá); sin export muestra el
+       manual cargado en la ficha. El input dejó de vivir en la tabla a propósito. */
+    let gmvTxt;
+    if (gmvAvg !== null) {
+      const ct = cartSerieTrend(cartR.serie);
+      gmvTxt = `<div title="${escAttr("Mediana en USD de los " + cartR.okMeses.length + " mes(es) completo(s) del export (" + cartR.periodo + ")." + (cartR.sinFx ? " ⚠︎ " + cartR.sinFx + " mes(es) sin cotización." : ""))}" style="cursor:help;">
+        <div style="font-weight:700; color:#111827;">${fmtMoneyK(gmvAvg)}</div>
+        <div style="font-size:9px; color:#9ca3af;">mediana · ${cartR.okMeses.length}m${cartR.sinFx ? " ⚠︎" : ""}</div>
+        ${ct ? `<div style="font-size:10px; color:${ct.color}; font-weight:600;">${ct.arrow} ${ct.pct}</div>` : ""}
+      </div>`;
+    } else if (gmvBase) {
+      const tr = cuGmvTrend(r.cli);
+      gmvTxt = `<div title="GMV cargado a mano en la ficha. Al subir el export de pedidos pasa a ser la mediana calculada." style="cursor:help;"><div style="font-weight:600;">${fmtMoneyK(gmvBase)}</div><div style="font-size:9px; color:#9ca3af;">manual</div>${tr ? `<div style="font-size:10px; color:${tr.color}; font-weight:600;">${tr.arrow} ${tr.pct}</div>` : ""}</div>`;
+    } else {
+      gmvTxt = `<span style="color:#cbd5e1; font-size:11px; font-style:italic;" title="Sin export ni GMV manual: no se puede calcular el % del P&amp;L.">sin datos</span>`;
+    }
+
+    const penTxt = penReal !== null
+      ? `<div title="${escAttr("OPEX facturado ÷ GMV del período (" + cartR.periodo + ").")}" style="cursor:help;">${cartPenTxt(penReal)}<div style="font-size:9px; color:#9ca3af;">real · ${cartR.mesesAcv}m</div></div>`
+      : (penEst !== null
+        ? `<div title="${escAttr("Estimado: contratado (" + Math.round(contratado).toLocaleString("es-AR") + ") ÷ GMV mensual (" + Math.round(gmvBase).toLocaleString("es-AR") + "). No hay facturación cargada, así que usa el contrato vigente y no lo realmente facturado.")}" style="cursor:help;">${cartPenTxt(penEst)}<div style="font-size:9px; color:#9ca3af;">estimado</div></div>`
+        : `<span style="color:#cbd5e1;">—</span>`);
+
+    const al = cliAlertas(r, cartR);
+    const alTxt = al.length
+      ? al.slice(0, 2).map(a => `<span title="${escAttr(a.d)}" style="display:inline-block; font-size:9.5px; font-weight:600; border-radius:9px; padding:1px 7px; margin:1px 1px; white-space:nowrap; ${a.tone === "bad" ? "background:#FEF2F2; color:#b91c1c;" : a.tone === "warn" ? "background:#FEF3C7; color:#92400e;" : "background:#F3F4F6; color:#374151;"}">${a.ic} ${a.txt}</span>`).join("")
+        + (al.length > 2 ? `<span title="${escAttr(al.slice(2).map(a => a.ic + " " + a.txt + " — " + a.d).join("\n"))}" style="font-size:9.5px; color:#6b7280; cursor:help;"> +${al.length - 2}</span>` : "")
+      : `<span style="color:#c7d2cd; font-size:11px;">✓</span>`;
+
     html += `<tr>
-      <td style="position:sticky; left:0; z-index:1; background:#fff; width:200px; min-width:200px; max-width:200px;"><strong><a href="${HUBSPOT_COMPANY(r.id)}" target="_blank" style="color:#4030C8;">${escAttr(r.cli)}</a></strong> <span id="hsst-${r.id}" style="font-size:10px;"></span></td>
-      <td><select onchange="cuentasSetCsm('${r.id}',this.value,this)" style="padding:3px 6px; font-size:12px; border:1px solid ${r.csm ? "#d1d5db" : "#f59e0b"}; border-radius:5px; background:${r.csm ? "#fff" : "#fffbeb"}; max-width:150px;">${csmEnumOptions(r.csm)}</select> <span id="csmst-${r.id}" style="font-size:11px;"></span></td>
-      <td style="text-align:center;"><select onchange="cuentasSetBcg('${r.id}',this.value,this)" title="Calificación matriz BCG (escribe calificacion_matriz_bcg en HubSpot)" style="padding:3px 6px; font-size:12px; border:1px solid ${r.bcg ? ((bcgDef(r.bcg) || {}).color || "#d1d5db") : "#d1d5db"}; border-radius:5px; background:${r.bcg ? ((bcgDef(r.bcg) || {}).bg || "#fff") : "#fff"};">${bcgOptions(r.bcg)}</select> <span id="bcgst-${r.id}" style="font-size:11px;"></span></td>
+      <td style="position:sticky; left:0; z-index:1; background:#fff; width:220px; min-width:220px;">
+        <a href="#" onclick="cliFichaOpen('${cliJs}','${r.id}'); return false;" style="font-weight:700; color:#111827; text-decoration:none; border-bottom:1px dotted #430C89;">${escAttr(r.cli)}</a>
+        <a href="${HUBSPOT_COMPANY(r.id)}" target="_blank" title="Abrir la empresa en HubSpot" style="font-size:10px; color:#9ca3af; text-decoration:none; margin-left:4px;">↗</a>
+        <span id="hsst-${r.id}" style="font-size:10px;"></span>
+        <div style="margin-top:2px;">${bcgBadge(r.bcg)}</div>
+      </td>
+      <td>${r.csm ? escAttr(r.csm) : `<span style="font-size:10px; color:#b45309; background:#fffbeb; border-radius:8px; padding:1px 7px;">⚠ sin CSM</span>`}</td>
       <td style="text-align:center;">${r.pais || "—"}</td>
-      <td style="text-align:center;"><input type="number" value="${r.sgh != null ? r.sgh : ""}" placeholder="h/mes" onchange="cuSetSgh('${r.id}',this.value)" style="padding:3px 6px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; width:70px; text-align:right;"></td>
-      <td style="text-align:center;"><select onchange="cuSetModelo('${cliJs}','${r.id}',this.value)" title="${escAttr("Modelo de cobro de la cuenta. " + CU_MODELOS.map(m => (m.ic ? m.ic + " " : "") + m.l + ": " + m.d).join(" ") + " Bajo Demanda y En IDP no aportan MRR: se cuentan como clientes pero sin monto mensual contratado. Donde no hay bolsa de horas (Scale, Bajo Demanda, En IDP) el sobreconsumo no se pinta en rojo.")}" style="padding:3px 6px; font-size:11px; font-weight:${modelo ? "600" : "400"}; border:1px solid ${modelo ? mdef.c : "#d1d5db"}; border-radius:5px; color:${mdef.c}; background:${modelo ? (mdef.varb ? "#F5F3FF" : (mdef.monto ? "#ECFDF5" : "#FFF7ED")) : "#fff"};">${CU_MODELOS.map(m => `<option value="${m.v}" ${modelo === m.v ? "selected" : ""}>${m.ic ? m.ic + " " : ""}${m.l}</option>`).join("")}</select></td>
-      <td style="text-align:center;"><input type="number" value="${cuHorasCurrent(r.cli)}" placeholder="hs" onchange="cuSetHorasConsumidas('${cliJs}','${r.id}',this.value)" style="padding:3px 6px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; width:70px; text-align:right;"></td>
-      <td style="text-align:center;">${cuHorasCell(r.cli, r.id)}</td>
-      <td style="text-align:center;">${vhPesoCell}</td>
-      <td style="text-align:center;">${vhUsdCell}</td>
-      <td style="text-align:center;">${montoCell}</td>
-      <td style="text-align:center;">${varCell}</td>
-      <td style="text-align:center;">${planCell}</td>
-      <td style="text-align:center;">${finCell}</td>
-      <td style="text-align:center;">${semCell}</td>
-      <td style="text-align:center;">${cuFactSelect(r.cli, r.id)}</td>
-      <td style="text-align:center;">${gmvCell}</td>
-      <td style="text-align:center;">${penCell}</td>
-      <td style="text-align:center;">${cuGmvSparkCell(r.cli, r.id)}</td>
-      <td style="text-align:center;">${r.deals ? `<button onclick="cuentasToggleDeals('${r.id}')" style="cursor:pointer; border:1px solid #C7BDFF; background:#F1EFFF; color:#4030C8; border-radius:6px; padding:2px 9px; font-size:12px; font-weight:600;"><span id="dealscaret-${r.id}">▸</span> ${r.deals}</button>` : '<span style="color:#9ca3af;">0</span>'}</td>
-      <td><input type="text" value="${escAttr(nota)}" placeholder="—" onchange="cuentasSetNota('${cliJs}',this.value)" style="padding:3px 6px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; width:160px;"></td>
-      <td style="text-align:center;"><button id="baja-${r.id}" onclick="cuentasDarBaja('${r.id}','${cliJs}')" title="Da de baja el cliente: crea el deal Reactivación en Nurturing y saca la empresa de customer" style="cursor:pointer; border:1px solid #fecaca; background:#fef2f2; color:#b91c1c; border-radius:6px; padding:2px 9px; font-size:11px; font-weight:600;">🚫 Baja</button></td>
-    </tr>
-    <tr id="deals-row-${r.id}" style="display:none;"><td colspan="22" style="padding:0; background:#faf9ff;"><div id="deals-panel-${r.id}" data-cli="${escAttr(r.cli)}" style="padding:10px 16px;"></div></td></tr>`;
+      <td style="text-align:center;"><span title="${escAttr(mdef.l + ": " + mdef.d)}" style="font-size:10.5px; font-weight:600; color:${mdef.c}; white-space:nowrap;">${mdef.ic ? mdef.ic + " " : ""}${mdef.l}</span></td>
+      <td style="text-align:center;">${semPill(meta.semaforo || "")}</td>
+      <td style="text-align:center; font-variant-numeric:tabular-nums;">${contratadoTxt}</td>
+      <td style="text-align:center; font-variant-numeric:tabular-nums;">${factTxt}</td>
+      <td style="text-align:center; font-variant-numeric:tabular-nums;">${gmvTxt}</td>
+      <td style="text-align:center; font-variant-numeric:tabular-nums;">${penTxt}</td>
+      <td style="text-align:center; max-width:190px; white-space:normal;">${alTxt}</td>
+      <td style="text-align:center;"><button onclick="cliFichaOpen('${cliJs}','${r.id}')" style="cursor:pointer; border:1px solid #C7BDFF; background:#F1EFFF; color:#4030C8; border-radius:6px; padding:3px 10px; font-size:11px; font-weight:700; white-space:nowrap;">Ficha ↗</button></td>
+    </tr>`;
   });
   html += `</tbody></table></div>`;
   document.getElementById("cue-tabla").innerHTML = html;
+  // Si hay una ficha abierta, repintarla con los datos recién calculados.
+  if (typeof cliFichaRender === "function") cliFichaRender();
 
   const sinCsm = accounts.filter(a => !a.csm);
   const fEl = document.getElementById("cue-focos");
