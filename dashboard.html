@@ -788,7 +788,7 @@ table.std tr:hover td { background: #fafafa; }
   <div id="view-clientes" style="display:none">
     <div style="display:flex; gap:6px; margin-bottom:12px; border-bottom:2px solid #e5e7eb;">
       <button id="clitab-btn-cuentas" class="clitab active" onclick="cliTab('cuentas')">🏬 Cuentas activas</button>
-      <button id="clitab-btn-cartera" class="clitab" onclick="cliTab('cartera')">📦 Cartera GMV</button>
+      <button id="clitab-btn-cartera" class="clitab" onclick="cliTab('cartera')">🩺 Salud cliente</button>
     </div>
 
     <div id="clitab-cuentas">
@@ -800,12 +800,12 @@ table.std tr:hover td { background: #fafafa; }
       <div id="cue-tabla"></div>
       <div class="cue-foco-grid" id="cue-focos"></div>
       <div class="small" style="margin-top:12px; font-style:italic; color:#888;">
-        % Penetración = facturación Innew ÷ GMV del cliente (baja = más techo para crecer). Antigüedad y LTV se calculan; servicios y deals salen de HubSpot; el GMV se carga a mano o subiendo el export de pedidos en la pestaña <b>Cartera GMV</b>.
+        % Penetración = facturación Innew ÷ GMV del cliente (baja = más techo para crecer). Antigüedad y LTV se calculan; servicios y deals salen de HubSpot; el GMV se carga a mano o subiendo el export de pedidos en la pestaña <b>Salud cliente</b>.
       </div>
     </div>
 
     <div id="clitab-cartera" style="display:none">
-      <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">📦 Cartera GMV — cuánto venden nuestros clientes y qué parte de ese P&amp;L somos nosotros. Soltá el export de pedidos de VTEX (CSV, ZIP o XLSX) y elegí la cuenta. <b>El archivo se procesa en tu navegador: no se sube a ningún lado</b>; sólo se guarda el resumen mensual.</div>
+      <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">🩺 Salud cliente — cuánto venden nuestros clientes y qué parte de ese P&amp;L somos nosotros. Soltá el export de pedidos de VTEX (CSV, ZIP o XLSX) y elegí la cuenta. <b>El archivo se procesa en tu navegador: no se sube a ningún lado</b>; sólo se guarda el resumen mensual.</div>
       <div id="cart-drop"></div>
       <div id="cart-fx"></div>
       <div id="cart-kpis"></div>
@@ -7491,33 +7491,98 @@ async function cuentasSetBcg(companyId, value, el) {
 }
 // Da de baja un cliente: crea el deal 'Reactivación "X"' en Nurturing (asociado a la company)
 // y saca la empresa de customer (lifecycle → opportunity), con lo que desaparece de Cuentas Activas.
+/* Escapa un nombre de cliente para pasarlo a un handler inline dentro de un atributo HTML.
+   Antes se hacía `replace(/'/g,"")`: además de frágil, CAMBIABA el valor — los settings de un
+   cliente con apóstrofo se guardaban bajo una key distinta a la que lee el render, así que no
+   pegaban nunca. Acá se escapa (JS primero, HTML después) en vez de mutilar. */
+function cliAttr(cli) {
+  return String(cli)
+    .replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\r?\n/g, " ")
+    .replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+}
+
+/* Lee el lifecyclestage actual de una company. Se usa para VERIFICAR que la baja se haya
+   aplicado: HubSpot puede rechazar en silencio un retroceso de etapa (customer → opportunity)
+   según el setting "las etapas del ciclo de vida pueden retroceder". Devuelve el string, o
+   null si no se pudo leer (en ese caso no afirmamos nada). */
+async function cuentasLeerLifecycle(companyId) {
+  try {
+    const res = await withTimeout(mcpCall("mcp__aaaa9eed-76e4-4bc8-a1a2-fad976f54ccb__search_crm_objects", {
+      objectType: "companies", properties: ["name", "lifecyclestage"],
+      filterGroups: [{ filters: [{ propertyName: "hs_object_id", operator: "EQ", value: String(companyId) }] }],
+      limit: 1, chatInsights: false
+    }), 30000);
+    const parsed = typeof res === "string" ? JSON.parse(res) : res;
+    const results = parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
+    if (!results.length) return null;
+    return (results[0].properties && results[0].properties.lifecyclestage) || "";
+  } catch (e) { console.warn("cuentasLeerLifecycle falló", companyId, e); return null; }
+}
+
+/* Da de baja un cliente. Orden deliberado (2026-09-07, al arreglar "no me deja dar de baja"):
+     1) PRIMERO el lifecycle. Es el paso que puede rebotar; si arrancáramos creando el deal,
+        cada intento fallido dejaría un 'Reactivación "X"' huérfano en Nurturing.
+     2) Verificación por lectura. HubSpot puede aceptar el update con 200 y NO mover la etapa
+        (retroceso bloqueado por configuración del portal). Sin este read-back el dashboard
+        cantaba éxito y al recargar la cuenta reaparecía: eso es exactamente "no me permite".
+     3) Recién ahí el deal de Reactivación, y sin duplicar si ya existe uno de un intento previo.
+     4) Baja LOCAL siempre. Aunque HubSpot no coopere, la fila sale de la cartera de German
+        (se guarda `baja` en la meta local y se puede revertir desde el chip "dadas de baja"). */
 async function cuentasDarBaja(companyId, cli) {
-  if (!confirm(`¿Dar de baja a "${cli}"?\n\nEsto va a:\n1) Crear el deal 'Reactivación "${cli}"' en el pipeline Nurturing (asociado a la empresa).\n2) Sacar la empresa de customer (lifecycle → opportunity): deja de aparecer en Cuentas Activas y en la matriz de Upsell.`)) return;
+  if (!/^\d+$/.test(String(companyId))) { alert(`No puedo dar de baja "${cli}": la fila no tiene un id de empresa válido en HubSpot (llegó "${companyId}").`); return; }
+  if (!confirm(`¿Dar de baja a "${cli}"?\n\nEsto va a:\n1) Sacar la empresa de customer (lifecycle → opportunity): deja de aparecer en Cuentas Activas y en la matriz de Upsell.\n2) Crear el deal 'Reactivación "${cli}"' en el pipeline Nurturing (asociado a la empresa).`)) return;
   const btn = document.getElementById("baja-" + companyId);
   if (btn) { btn.disabled = true; btn.textContent = "…"; }
   const cd = new Date(); cd.setMonth(cd.getMonth() + 6);
+  let avisoHS = "";
   try {
-    await hsWrite({ createRequest: { objects: [{
-      objectType: "deals",
-      properties: {
-        dealname: `Reactivación "${cli}"`,
-        pipeline: NURTURING_PIPELINE_ID,
-        dealstage: "1365871683",
-        amount: "0",
-        closedate: cd.toISOString().slice(0, 10),
-        hs_next_step: "Definir plan de reactivación"
-      },
-      associations: [{ targetObjectType: "companies", targetObjectId: Number(companyId) }]
-    }] } });
+    // 1) lifecycle
     await hsWrite({ updateRequest: { objects: [{ objectType: "companies", objectId: Number(companyId), properties: { lifecyclestage: "opportunity" } }] } });
+    // 2) verificación: si sigue en customer, el portal bloqueó el retroceso
+    const lc = await cuentasLeerLifecycle(companyId);
+    if (lc === "customer") {
+      avisoHS = `HubSpot aceptó el pedido pero dejó a "${cli}" en customer.\n\nEs el bloqueo de retroceso de etapa del portal: Configuración → Objetos → Empresas → Etapa del ciclo de vida → permitir que las etapas retrocedan (o cambiala a mano en la ficha de la empresa).\n\nMientras tanto la saqué de tu cartera acá en el dashboard, así podés seguir trabajando.`;
+    }
+    // 3) deal de Reactivación, sin duplicar
+    const yaHay = (window.__allDeals || []).some(d =>
+      String(d.pipeline || (d.properties && d.properties.pipeline)) === NURTURING_PIPELINE_ID &&
+      String((d.name || (d.properties && d.properties.dealname) || "")).toLowerCase() === `reactivación "${cli}"`.toLowerCase());
+    if (!yaHay) {
+      try {
+        await hsWrite({ createRequest: { objects: [{
+          objectType: "deals",
+          properties: {
+            dealname: `Reactivación "${cli}"`,
+            pipeline: NURTURING_PIPELINE_ID,
+            dealstage: "1365871683",
+            amount: "0",
+            closedate: cd.toISOString().slice(0, 10),
+            hs_next_step: "Definir plan de reactivación"
+          },
+          associations: [{ targetObjectId: Number(companyId), targetObjectType: "companies" }]
+        }] } });
+      } catch (e2) {
+        // La baja ya se hizo: que no se caiga todo por el deal de seguimiento.
+        avisoHS += (avisoHS ? "\n\n" : "") + "La empresa se dio de baja, pero no pude crear el deal de Reactivación en Nurturing: " + String(e2 && e2.message ? e2.message : e2).slice(0, 200);
+        console.error("cuentasDarBaja/deal", e2);
+      }
+    }
+    // 4) baja local — la fila desaparece de la cartera pase lo que pase en HubSpot
+    cuentasSetMeta(cli, { baja: new Date().toISOString().slice(0, 10) });
     window.__cuentasData = (window.__cuentasData || []).filter(x => String(x.id) !== String(companyId));
     renderCuentas();
     if (document.getElementById("nurt-tabla") && typeof renderNurturing === "function") renderNurturing();
+    if (avisoHS) alert(avisoHS);
   } catch (e) {
-    alert("No se pudo dar de baja: " + (e && e.message ? e.message : e));
+    alert(`No se pudo dar de baja "${cli}" (empresa ${companyId}).\n\n${String(e && e.message ? e.message : e).slice(0, 400)}\n\nNo se creó ningún deal de Reactivación, así que podés reintentar sin ensuciar Nurturing.`);
     if (btn) { btn.disabled = false; btn.textContent = "🚫 Baja"; }
     console.error("cuentasDarBaja", e);
   }
+}
+// Revierte una baja local (no toca HubSpot: el lifecycle se corrige allá si hace falta).
+function cuentasRevertirBaja(cli) {
+  cuentasSetMeta(cli, { baja: null });
+  reloadCuentas();
 }
 function cuentasEstadoSelect(cli) {
   const sel = cuentasGetMeta(cli).estado || "al_dia"; const e = CUENTAS_ESTADOS[sel];
@@ -7734,7 +7799,7 @@ function cuSetFacturacion(cli, companyId, v) {
 function cuFactSelect(cli, companyId) {
   const cur = cuentasGetMeta(cli).estadoFact || "";
   const col = CU_FACT_COLORS[cur] || { bg: "#fff", fg: "#374151" };
-  const cliJs = String(cli).replace(/'/g, "");
+  const cliJs = cliAttr(cli);
   return `<select onchange="cuSetFacturacion('${cliJs}','${companyId || ""}',this.value)" style="padding:3px 5px; font-size:11px; border:1px solid ${cur ? col.fg : "#d1d5db"}; border-radius:5px; background:${col.bg}; color:${col.fg}; font-weight:${cur ? 600 : 400};"><option value="">—</option>${CU_FACT_OPTS.map(o => `<option value="${o}" ${cur === o ? "selected" : ""}>${o}</option>`).join("")}</select>`;
 }
 // Serie de los últimos n meses: [{key, c, k}] — contratadas cae al valor vigente si falta el snapshot
@@ -7794,7 +7859,7 @@ function cuHorasCell(cli, companyId) {
     : `<span style="font-size:11px; font-weight:700; color:${color};">${pct}%</span>`;
   const series = cuHorasSeries(cli, companyId, 6);
   const spark = cuHorasSparkSvg(series, 78, 24, isScale);
-  const cliJs = String(cli).replace(/'/g, "");
+  const cliJs = cliAttr(cli);
   return `<div style="display:flex; align-items:center; gap:5px; justify-content:center;">${badge}${spark}<a href="#" onclick="cuHorasDetail('${cliJs}','${companyId || ""}');return false;" style="font-size:10px; color:#4030C8; white-space:nowrap;">detalle ↗</a></div>`;
 }
 function closeHorasModal() { const m = document.getElementById("horas-modal"); if (m) m.remove(); }
@@ -10091,6 +10156,13 @@ async function renderCuentas() {
   let bcgChips = `<div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:6px;"><span style="font-size:12px; color:#6b7280;">Matriz BCG:</span>${bchip("all", "Todas")}`;
   CUENTAS_BCG.forEach(b => bcgChips += bchip(b.v, b.icon + " " + b.label, accounts.filter(a => a.bcg === b.v).length));
   bcgChips += bchip("__none", "Sin calificar", accounts.filter(a => !a.bcg).length) + `</div>`;
+  /* Cuentas dadas de baja localmente. Aparecen acá (y no desaparecen sin dejar rastro) porque
+     HubSpot puede seguir devolviéndolas como customer si el portal bloquea el retroceso de etapa. */
+  const bajasLoc = accounts.filter(a => cuentasGetMeta(a.cli).baja);
+  if (bajasLoc.length) {
+    bcgChips += `<div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:6px;"><span style="font-size:12px; color:#6b7280;">Dadas de baja (${bajasLoc.length}):</span>` +
+      bajasLoc.map(a => `<button onclick="cuentasRevertirBaja(${JSON.stringify(a.cli).replace(/"/g, "&quot;")})" title="${escAttr(`Baja el ${cuentasGetMeta(a.cli).baja}. Click para volver a incluirla en la cartera.`)}" class="fc-btn secondary" style="font-size:11px; color:#b91c1c; border-color:#fecaca;">${escAttr(a.cli)} ↩</button>`).join("") + `</div>`;
+  }
   const csmEl = document.getElementById("cue-csm");
   if (csmEl) {
     if (window.__csmLock) { csmEl.innerHTML = `<div style="font-size:13px; color:#4030C8; font-weight:500;">Cartera de ${escAttr(cur)}</div>` + bcgChips; }
@@ -10107,6 +10179,10 @@ async function renderCuentas() {
   else if (cur === "__none") rows = accounts.filter(a => !a.csm);
   else rows = accounts.filter(a => a.csm === cur);
   if (bsel !== "all") rows = rows.filter(a => bsel === "__none" ? !a.bcg : a.bcg === bsel);
+  /* Bajas locales: cuentas que German dio de baja pero que HubSpot puede seguir devolviendo como
+     customer (retroceso de etapa bloqueado en el portal). Se sacan de la cartera acá y quedan
+     listadas en un chip para poder revertirlas — nunca se ocultan en silencio. */
+  rows = rows.filter(a => !cuentasGetMeta(a.cli).baja);
   // Filtros por columna (msf multi-select + texto)
   const CF = window.__cueColF || {};
   const cfNom = (CF.nombre || "").trim().toLowerCase();
@@ -10165,7 +10241,7 @@ async function renderCuentas() {
     <th style="text-align:center;" title="Modelo de cobro. Por hora = valor hora × horas contratadas. ⚡ Scale = fijo + variable, sin valor hora. 🌱 Grow Pro = fijo puro, sin valor hora ni variable. No confundir con Tipo plan, que es la cadencia de cobro.">Modelo</th><th style="text-align:center;">Hs consumidas</th><th style="text-align:center;">Consumo</th>
     <th style="text-align:center;">Valor hora $</th><th style="text-align:center;">Valor hora u$s</th><th style="text-align:center;" title="Scale y Grow Pro: el fijo mensual. Por hora: se autocalcula como valor hora u$s × horas, y se puede pisar a mano.">Monto mensual u$s</th>
     <th style="text-align:center;" title="Sólo para cuentas Scale: componente VARIABLE del mes, en valor absoluto (u$s), no en porcentaje. Se suma al fijo para dar el MRR de la cuenta.">Variable u$s</th>
-    <th style="text-align:center;">Tipo plan</th><th style="text-align:center;">Fin acuerdo</th><th style="text-align:center;">Semáforo</th><th style="text-align:center;">Facturación</th><th style="text-align:center;" title="GMV de un mes típico del cliente, en USD: MEDIANA de la serie mensual calculada en Cartera GMV sobre los meses completos con cotización. Se usa mediana y no promedio para que un pico (Hot Sale, Black Friday) no infle el número. Las cuentas sin archivo cargado mantienen el input manual.">GMV cliente /mes</th><th style="text-align:center;" title="Cuánto pesa Innew en el P&L del cliente: facturación mensual de Innew ÷ GMV mensual del cliente. Si la cuenta tiene facturación cargada en Cartera GMV usa ese dato (OPEX ÷ GMV del período, el mismo número que muestra la vista Cartera GMV). Si no, cae al Monto mensual u$s de esta tabla ÷ la mediana de GMV, y queda marcado como estimado.">% del P&L</th><th style="text-align:center;" title="Misma tendencia que la vista Cartera GMV: serie mensual en USD, sólo meses completos.">Tendencia GMV</th>
+    <th style="text-align:center;">Tipo plan</th><th style="text-align:center;">Fin acuerdo</th><th style="text-align:center;">Semáforo</th><th style="text-align:center;">Facturación</th><th style="text-align:center;" title="GMV de un mes típico del cliente, en USD: MEDIANA de la serie mensual calculada en Salud cliente sobre los meses completos con cotización. Se usa mediana y no promedio para que un pico (Hot Sale, Black Friday) no infle el número. Las cuentas sin archivo cargado mantienen el input manual.">GMV cliente /mes</th><th style="text-align:center;" title="Cuánto pesa Innew en el P&L del cliente: facturación mensual de Innew ÷ GMV mensual del cliente. Si la cuenta tiene facturación cargada en Salud cliente usa ese dato (OPEX ÷ GMV del período, el mismo número que muestra la vista Salud cliente). Si no, cae al Monto mensual u$s de esta tabla ÷ la mediana de GMV, y queda marcado como estimado.">% del P&L</th><th style="text-align:center;" title="Misma tendencia que la vista Salud cliente: serie mensual en USD, sólo meses completos.">Tendencia GMV</th>
     <th style="text-align:center;">Deals</th><th>Nota</th><th style="text-align:center;">Baja</th>
   </tr><tr style="background:#fafafa;">
     <th style="position:sticky; left:0; z-index:3; background:#fafafa; width:200px; min-width:200px; max-width:200px; padding:4px 6px;"><input type="text" value="${escAttr(CF.nombre || "")}" placeholder="filtrar… (Enter)" onchange="cueColFSet('nombre',this.value)" style="width:95%; box-sizing:border-box; padding:3px 6px; border:1px solid #d1d5db; border-radius:5px; font-size:11px; font-weight:400;"></th>
@@ -10187,7 +10263,7 @@ async function renderCuentas() {
     const meta = cuentasGetMeta(r.cli);
     const nota = meta.nota || "";
     const isArg = r.pais === "AR";
-    const cliJs = r.cli.replace(/'/g, "");
+    const cliJs = cliAttr(r.cli);
     /* Todos los modelos salvo "por hora" anulan las dos celdas de valor hora en vez de dejarlas
        editables. Dejarlas activas invitaría a cargar un precio que no factura nadie y que después
        el monto auto usaría para inventar un MRR falso. La frase del tooltip sale de mdef.d, así
@@ -10260,7 +10336,7 @@ async function renderCuentas() {
       const nm = cartR.okMeses.length;
       const alerta = cartR.sinFx ? " · ⚠︎ " + cartR.sinFx + " mes(es) sin cotización" : "";
       const prom = cartR.gmvProm;
-      gmvCell = `<div title="Mes típico: MEDIANA en USD de los ${nm} mes(es) completo(s) cargados en Cartera GMV (${escAttr(cartR.periodo)}). Mediana y no promedio para que un pico tipo Hot Sale no distorsione.&#10;Promedio del período: ${escAttr(prom == null ? "—" : fmtMoney(prom))}${escAttr(alerta)}" style="cursor:help;">
+      gmvCell = `<div title="Mes típico: MEDIANA en USD de los ${nm} mes(es) completo(s) cargados en Salud cliente (${escAttr(cartR.periodo)}). Mediana y no promedio para que un pico tipo Hot Sale no distorsione.&#10;Promedio del período: ${escAttr(prom == null ? "—" : fmtMoney(prom))}${escAttr(alerta)}" style="cursor:help;">
         <div style="font-size:12px; font-weight:700; color:#111827;">${fmtMoneyK(cartAvg)}</div>
         <div style="font-size:9px; color:#9ca3af;">mediana · ${nm}m${cartR.sinFx ? " ⚠︎" : ""}</div>${ctB}
       </div>`;
@@ -10268,7 +10344,7 @@ async function renderCuentas() {
       const gmv = cuGmvCurrent(r.cli);
       const trend = cuGmvTrend(r.cli);
       const trBadge = trend ? `<div style="font-size:10px; color:${trend.color}; font-weight:600; margin-top:2px;">${trend.arrow} ${trend.pct}</div>` : "";
-      gmvCell = `<input type="number" value="${gmv}" placeholder="GMV/mes" onchange="cuSetGmv('${cliJs}','${r.id}',this.value)" style="padding:3px 6px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; width:100px; text-align:right;" title="Sin archivo en Cartera GMV: carga manual. Al subir el export de VTEX esta celda pasa a ser la media en USD.">${trBadge}`;
+      gmvCell = `<input type="number" value="${gmv}" placeholder="GMV/mes" onchange="cuSetGmv('${cliJs}','${r.id}',this.value)" style="padding:3px 6px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; width:100px; text-align:right;" title="Sin archivo en Salud cliente: carga manual. Al subir el export de VTEX esta celda pasa a ser la media en USD.">${trBadge}`;
     }
     /* % del P&L del cliente = cuánto pesa Innew sobre lo que el cliente vende.
        Fuente preferida: `pen` de Cartera GMV (OPEX ÷ GMV del período), para que el número sea
@@ -10282,11 +10358,11 @@ async function renderCuentas() {
     const penEst = (penReal === null && mrrCu !== null && gmvBase) ? mrrCu / gmvBase : null;
     let penCell;
     if (penReal !== null) {
-      penCell = `<div title="${escAttr("OPEX facturado ÷ GMV del período (" + cartR.periodo + "). Mismo cálculo que la vista Cartera GMV.")}" style="cursor:help;">${cartPenTxt(penReal)}<div style="font-size:9px; color:#9ca3af;">real · ${cartR.mesesAcv}m</div></div>`;
+      penCell = `<div title="${escAttr("OPEX facturado ÷ GMV del período (" + cartR.periodo + "). Mismo cálculo que la vista Salud cliente.")}" style="cursor:help;">${cartPenTxt(penReal)}<div style="font-size:9px; color:#9ca3af;">real · ${cartR.mesesAcv}m</div></div>`;
     } else if (penEst !== null) {
-      penCell = `<div title="${escAttr("Estimado: Monto mensual u$s de esta tabla (" + Math.round(mrrCu).toLocaleString("es-AR") + ") ÷ GMV mensual (" + Math.round(gmvBase).toLocaleString("es-AR") + "). No hay facturación cargada en Cartera GMV para esta cuenta, así que usa el contrato vigente, no lo facturado.")}" style="cursor:help;">${cartPenTxt(penEst)}<div style="font-size:9px; color:#9ca3af;">estimado</div></div>`;
+      penCell = `<div title="${escAttr("Estimado: Monto mensual u$s de esta tabla (" + Math.round(mrrCu).toLocaleString("es-AR") + ") ÷ GMV mensual (" + Math.round(gmvBase).toLocaleString("es-AR") + "). No hay facturación cargada en Salud cliente para esta cuenta, así que usa el contrato vigente, no lo facturado.")}" style="cursor:help;">${cartPenTxt(penEst)}<div style="font-size:9px; color:#9ca3af;">estimado</div></div>`;
     } else {
-      penCell = `<span style="color:#cbd5e1;" title="${escAttr(gmvBase ? "Falta el monto mensual de Innew." : "Falta el GMV del cliente: cargá el export en Cartera GMV o el GMV manual.")}">—</span>`;
+      penCell = `<span style="color:#cbd5e1;" title="${escAttr(gmvBase ? "Falta el monto mensual de Innew." : "Falta el GMV del cliente: cargá el export en Salud cliente o el GMV manual.")}">—</span>`;
     }
     html += `<tr>
       <td style="position:sticky; left:0; z-index:1; background:#fff; width:200px; min-width:200px; max-width:200px;"><strong><a href="${HUBSPOT_COMPANY(r.id)}" target="_blank" style="color:#4030C8;">${escAttr(r.cli)}</a></strong> <span id="hsst-${r.id}" style="font-size:10px;"></span></td>
