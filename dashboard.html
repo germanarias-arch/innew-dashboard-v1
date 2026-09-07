@@ -7649,37 +7649,151 @@ function cliAlertas(r, cartR) {
   const out = [];
   // 1) Sobreconsumo de horas — sólo donde hay bolsa (Scale/Bajo Demanda/En IDP no la tienen)
   const pct = cuHorasPct(cuNum(cuHorasCurrent(r.cli)), r.sgh);
-  if (mdef.cupo && pct !== null && pct > 110) out.push({ ic: "🔥", txt: "consumo " + pct + "%", tone: "bad", d: "Consumió " + pct + "% de la bolsa de horas del mes: estás poniendo más horas de las que cobrás." });
+  if (mdef.cupo && pct !== null && pct > 110) out.push({ k: "sobreconsumo de horas", ic: "🔥", txt: "consumo " + pct + "%", tone: "bad", d: "Consumió " + pct + "% de la bolsa de horas del mes: estás poniendo más horas de las que cobrás." });
   // 2) Vencimiento del acuerdo
   const dg = cuFinDanger(meta.finAcuerdo || "");
-  if (dg && dg.icon) out.push({ ic: dg.icon, txt: dg.txt === "vencido" ? "acuerdo vencido" : "vence en " + dg.txt, tone: dg.days < 0 || dg.days <= 30 ? "bad" : "warn", d: "Fin de acuerdo: " + (meta.finAcuerdo || "—") + (dg.days < 0 ? " (ya venció)" : " (faltan " + dg.days + " días)") });
+  if (dg && dg.icon) out.push({ k: "acuerdo por vencer", ic: dg.icon, txt: dg.txt === "vencido" ? "acuerdo vencido" : "vence en " + dg.txt, tone: dg.days < 0 || dg.days <= 30 ? "bad" : "warn", d: "Fin de acuerdo: " + (meta.finAcuerdo || "—") + (dg.days < 0 ? " (ya venció)" : " (faltan " + dg.days + " días)") });
   // 3) GMV del cliente cayendo
   if (cartR) {
     const ct = cartSerieTrend(cartR.serie);
     if (ct && String(ct.pct).indexOf("-") === 0) {
       const n = Math.abs(parseFloat(String(ct.pct).replace(/[^\d.-]/g, "")) || 0);
-      if (n >= 10) out.push({ ic: "📉", txt: "GMV " + ct.pct, tone: n >= 20 ? "bad" : "warn", d: "El GMV del cliente viene cayendo " + ct.pct + " contra el mes anterior. Si además pesás mucho en su P&L, es conversación de retención, no de upsell." });
+      if (n >= 10) out.push({ k: "GMV cayendo", ic: "📉", txt: "GMV " + ct.pct, tone: n >= 20 ? "bad" : "warn", d: "El GMV del cliente viene cayendo " + ct.pct + " contra el mes anterior. Si además pesás mucho en su P&L, es conversación de retención, no de upsell." });
     }
   }
   // 4) Peso alto en el P&L del cliente: cuanto más pesás, más te mira el CFO
   const pen = cartR ? cartR.pen : null;
-  if (pen !== null && pen >= 0.025) out.push({ ic: "⚖️", txt: "pesás " + (pen * 100).toFixed(1) + "%", tone: pen >= 0.04 ? "bad" : "warn", d: "Innew representa el " + (pen * 100).toFixed(2) + "% del GMV del cliente. Por encima del 2,5% el gasto entra en el radar del CFO: hay que poder defender el ROI." });
+  if (pen !== null && pen >= 0.025) out.push({ k: "peso alto en el P&L", ic: "⚖️", txt: "pesás " + (pen * 100).toFixed(1) + "%", tone: pen >= 0.04 ? "bad" : "warn", d: "Innew representa el " + (pen * 100).toFixed(2) + "% del GMV del cliente. Por encima del 2,5% el gasto entra en el radar del CFO: hay que poder defender el ROI." });
   // 5) Δ facturado vs contratado
   const contratado = cuMontoEff(r.cli, isArg, r.sgh);
   const fact = cartR ? cartR.factMes : null;
   if (contratado !== null && fact !== null && contratado > 0) {
     const d = fact - contratado, p = Math.round(d / contratado * 100);
-    if (p >= 40) out.push({ ic: "💰", txt: "facturás +" + p + "%", tone: "warn", d: "Le facturás " + fmtMoneyK(fact) + "/mes contra un contrato de " + fmtMoneyK(contratado) + ". O el contrato está desactualizado en el dashboard, o hay evolutivos que conviene pasar a recurrente." });
-    else if (p <= -25) out.push({ ic: "🩸", txt: "facturás " + p + "%", tone: "bad", d: "Le facturás " + fmtMoneyK(fact) + "/mes contra un contrato de " + fmtMoneyK(contratado) + ": estás cobrando menos de lo firmado." });
+    if (p >= 40) out.push({ k: "facturás más que el contrato", ic: "💰", txt: "facturás +" + p + "%", tone: "warn", d: "Le facturás " + fmtMoneyK(fact) + "/mes contra un contrato de " + fmtMoneyK(contratado) + ". O el contrato está desactualizado en el dashboard, o hay evolutivos que conviene pasar a recurrente." });
+    else if (p <= -25) out.push({ k: "facturás menos que el contrato", ic: "🩸", txt: "facturás " + p + "%", tone: "bad", d: "Le facturás " + fmtMoneyK(fact) + "/mes contra un contrato de " + fmtMoneyK(contratado) + ": estás cobrando menos de lo firmado." });
   }
   // 6) Cuenta sin contrato cargado pero con facturación real
-  if (contratado === null && fact !== null && mdef.monto) out.push({ ic: "📄", txt: "sin contrato", tone: "warn", d: "Factura " + fmtMoneyK(fact) + "/mes pero no tiene monto contratado cargado. Cargalo en el bloque Contrato de la ficha." });
+  if (contratado === null && fact !== null && mdef.monto) out.push({ k: "sin contrato cargado", ic: "📄", txt: "sin contrato", tone: "warn", d: "Factura " + fmtMoneyK(fact) + "/mes pero no tiene monto contratado cargado. Cargalo en el bloque Contrato de la ficha." });
   // 7) Datos que faltan
-  if (!cartR) out.push({ ic: "📥", txt: "sin export", tone: "info", d: "No hay export de pedidos cargado: sin eso no se puede calcular el GMV real ni el % del P&L. Cargalo en 📥 Cargar exports." });
-  if (!r.csm) out.push({ ic: "👤", txt: "sin CSM", tone: "info", d: "La cuenta no tiene CSM asignado en HubSpot." });
+  if (!cartR) out.push({ k: "sin export cargado", ic: "📥", txt: "sin export", tone: "info", d: "No hay export de pedidos cargado: sin eso no se puede calcular el GMV real ni el % del P&L. Cargalo en 📥 Cargar exports." });
+  if (!r.csm) out.push({ k: "sin CSM", ic: "👤", txt: "sin CSM", tone: "info", d: "La cuenta no tiene CSM asignado en HubSpot." });
   const ordr = { bad: 0, warn: 1, info: 2 };
   return out.sort((a, b) => ordr[a.tone] - ordr[b.tone]);
 }
+
+
+/* ===== MOTOR DE LA LISTA MAESTRA: ordenar y filtrar por CUALQUIER columna (2026-09-07) =====
+   Pedido textual de German: "que se pueda filtrar por todas las columnas (combinar filtros
+   también)" + "que se pueda ordenar por columna".
+   Los filtros se COMBINAN con AND: cada columna aporta su condición y la fila tiene que
+   cumplirlas todas. Clave del diseño: filtra y ordena sobre los valores YA CALCULADOS
+   (run-rate, % del P&L, tendencia, alertas) y no sobre las props crudas de HubSpot — si no,
+   no se podría pedir "las que caen más de 10% y pesan más de 2% del P&L", que es exactamente
+   para lo que sirve tener las dos columnas juntas. */
+const CLI_COLS = [
+  { id: "cli",        lbl: "Cliente",           t: "txt",   al: "left"   },
+  { id: "csm",        lbl: "CSM",               t: "sel",   al: "left"   },
+  { id: "pais",       lbl: "País",              t: "sel",   al: "center" },
+  { id: "modelo",     lbl: "Modelo",            t: "sel",   al: "center" },
+  { id: "semaforo",   lbl: "Semáforo",          t: "sel",   al: "center" },
+  { id: "contratado", lbl: "Contratado /mes",   t: "money", al: "right"  },
+  { id: "runrate",    lbl: "ACV Run-rate",      t: "money", al: "right"  },
+  { id: "gmv",        lbl: "GMV cliente /mes",  t: "money", al: "right"  },
+  { id: "trend",      lbl: "Tendencia",         t: "pct",   al: "left"   },
+  { id: "pen",        lbl: "% del P&amp;L",     t: "pct",   al: "right"  },
+  { id: "alertas",    lbl: "Alertas",           t: "sel",   al: "center" },
+  { id: "acc",        lbl: "",                  t: "none",  al: "center" }
+];
+const CLI_COL = {}; CLI_COLS.forEach(c => { CLI_COL[c.id] = c; });
+let CLI_SORT = { col: "cli", dir: 1 };   // dir 1 = ascendente
+let CLI_FIL = {};                        // { colId: {q} | {min,max} }
+
+function cliSortBy(col) {
+  const c = CLI_COL[col];
+  if (!c || c.t === "none") return;
+  if (CLI_SORT.col === col) CLI_SORT.dir = -CLI_SORT.dir;
+  else CLI_SORT = { col: col, dir: (c.t === "txt" || c.t === "sel") ? 1 : -1 };   // números: de mayor a menor
+  renderCuentas();
+}
+function cliFilSet(col, key, val) {
+  const f = CLI_FIL[col] || {};
+  const v = String(val == null ? "" : val).trim();
+  if (v === "") delete f[key]; else f[key] = v;
+  if (Object.keys(f).length) CLI_FIL[col] = f; else delete CLI_FIL[col];
+  renderCuentas();
+}
+function cliFilDrop(col) { delete CLI_FIL[col]; renderCuentas(); }
+function cliFilClear() { CLI_FIL = {}; renderCuentas(); }
+
+// Valores únicos de una columna enumerable, para los <select> de la fila de filtros.
+function cliFilOpts(rows, col) {
+  const s = new Set();
+  if (col === "alertas") { rows.forEach(m => (m.alertas || []).forEach(a => s.add(a.k))); }
+  else rows.forEach(m => { const v = String(m[col] == null ? "" : m[col]).trim(); if (v) s.add(v); });
+  return Array.from(s).sort((a, b) => a.localeCompare(b));
+}
+/* Número comparable de una celda. Los porcentajes se comparan en PUNTOS (2,5 y no 0,025)
+   porque es lo que German va a tipear en el filtro. */
+function cliFilNum(m, id) {
+  if (id === "pen") return m.pen == null ? null : m.pen * 100;
+  const v = m[id];
+  return (v == null || !isFinite(v)) ? null : v;
+}
+function cliRowsView(rows) {
+  let out = rows;
+  Object.keys(CLI_FIL).forEach(col => {
+    const f = CLI_FIL[col], c = CLI_COL[col];
+    if (!c) return;
+    if (c.t === "txt") {
+      const q = (f.q || "").toLowerCase();
+      if (q) out = out.filter(m => String(m[col] || "").toLowerCase().includes(q));
+    } else if (c.t === "sel") {
+      if (!f.q) return;
+      if (col === "alertas") {
+        out = f.q === "__none"
+          ? out.filter(m => !(m.alertas || []).length)
+          : out.filter(m => (m.alertas || []).some(a => a.k === f.q));
+      } else if (f.q === "__none") out = out.filter(m => !String(m[col] || "").trim());
+      else out = out.filter(m => String(m[col] || "").trim() === f.q);
+    } else if (c.t !== "none") {
+      const mn = f.min === undefined ? null : parseFloat(String(f.min).replace(",", "."));
+      const mx = f.max === undefined ? null : parseFloat(String(f.max).replace(",", "."));
+      /* Sin dato NO pasa el filtro numérico: si pedís "% del P&L mayor a 2" una cuenta sin
+         export no cumple nada, y colarla sería mentir por omisión. */
+      if (mn !== null && isFinite(mn)) out = out.filter(m => { const v = cliFilNum(m, col); return v !== null && v >= mn; });
+      if (mx !== null && isFinite(mx)) out = out.filter(m => { const v = cliFilNum(m, col); return v !== null && v <= mx; });
+    }
+  });
+  const c = CLI_COL[CLI_SORT.col] || CLI_COL.cli, d = CLI_SORT.dir;
+  out = [...out].sort((a, b) => {
+    if (c.t === "txt" || c.t === "sel") {
+      if (c.id === "alertas") return d * ((b.alertaScore || 0) - (a.alertaScore || 0));
+      return d * String(a[c.id] || "").localeCompare(String(b[c.id] || ""));
+    }
+    const x = cliFilNum(a, c.id), y = cliFilNum(b, c.id);
+    if (x === null && y === null) return a.cli.localeCompare(b.cli);
+    if (x === null) return 1;    // los sin dato van SIEMPRE al fondo, en los dos sentidos
+    if (y === null) return -1;
+    if (x === y) return a.cli.localeCompare(b.cli);
+    return d * (x - y);
+  });
+  return out;
+}
+// Tooltips del encabezado de la lista maestra.
+const CLI_TIP = {
+  cli: "Clic en el nombre (o en Ficha ↗) para abrir la ficha del cliente: ahí se edita todo.",
+  csm: "CSM asignado en HubSpot. Se cambia en la ficha.",
+  pais: "País de la empresa en HubSpot.",
+  modelo: "Modelo de cobro. Por hora = valor hora × horas. ⚡ Scale = fijo + variable. 🌱 Grow Pro = fijo puro. 🧰 Bajo Demanda y 🚧 En IDP no tienen recurrente contratado.",
+  semaforo: "Estado de la cuenta. Se cambia en la ficha.",
+  contratado: "Lo que la cuenta tiene FIRMADO por mes (fijo + variable en Scale). Sale del contrato cargado en la ficha, no de lo facturado.",
+  runrate: "Lo facturado en la ventana proyectado a 12 meses. Debajo, el ACV crudo con la cantidad de meses, para poder comparar cuentas de distinto plazo.",
+  gmv: "GMV de un mes típico del cliente en USD: MEDIANA de los meses completos del export. Mediana y no promedio para que un Hot Sale no infle el número.",
+  trend: "Serie mensual de GMV en USD, sólo meses completos. Se ordena y se filtra por la variación del último mes contra el anterior.",
+  pen: "Cuánto pesa Innew en el P&L del cliente. Con export cargado usa lo facturado (real); sin export cae al contratado ÷ GMV y se rotula estimado.",
+  alertas: "Lo que hay que mirar en esta cuenta, ordenado por gravedad. Se ordena por gravedad total y se filtra por tipo de alerta.",
+  acc: ""
+};
 
 function cliFichaOpen(cli, id) {
   CLI_FICHA = { cli: String(cli), id: String(id) };
@@ -10476,23 +10590,10 @@ async function renderCuentas() {
      customer (retroceso de etapa bloqueado en el portal). Se sacan de la cartera acá y quedan
      listadas en un chip para poder revertirlas — nunca se ocultan en silencio. */
   rows = rows.filter(a => !cuentasGetMeta(a.cli).baja);
-  // Filtros por columna (msf multi-select + texto)
-  const CF = window.__cueColF || {};
-  const cfNom = (CF.nombre || "").trim().toLowerCase();
+  /* Los filtros por columna ya NO viven acá: los maneja el motor CLI_FIL/CLI_SORT de la lista
+     maestra (cliRowsView), que filtra y ordena sobre valores YA calculados —run-rate, % del P&L,
+     tendencia— y no sólo sobre las props crudas de HubSpot. Acá queda el orden por defecto. */
   const totalPreCF = rows.length;
-  rows = rows.filter(a => {
-    if (cfNom && !a.cli.toLowerCase().includes(cfNom)) return false;
-    if (!msfMatch("cu-csm", a.csm || "")) return false;
-    if (!msfMatch("cu-bcg", a.bcg || "")) return false;
-    if (!msfMatch("cu-pais", a.pais || "")) return false;
-    const cfMeta = cuentasGetMeta(a.cli);
-    if (!msfMatch("cu-plan", cfMeta.plan || "")) return false;
-    if (!msfMatch("cu-sem", cfMeta.semaforo || "")) return false;
-    if (!msfMatch("cu-scale", cuModelo(a.cli))) return false;
-    if (!msfMatch("cu-fact", cfMeta.estadoFact || "")) return false;
-    return true;
-  });
-  const cfActivo = !!cfNom || ["cu-csm", "cu-bcg", "cu-pais", "cu-plan", "cu-sem", "cu-scale", "cu-fact"].some(u => msfSel(u).length);
   rows = [...rows].sort((a, b) => (b.sgh || 0) - (a.sgh || 0) || a.cli.localeCompare(b.cli));
 
   const totalH = rows.reduce((s, a) => s + (a.sgh || 0), 0);
@@ -10534,102 +10635,128 @@ async function renderCuentas() {
      edición se mudó a la ficha (cliFichaOpen), que es el único lugar donde se escribe.
      Motivo: las dos pestañas de Clientes se pisaban en 7 columnas, y en dos de esos pisones
      el mismo nombre mostraba números distintos (% del P&L estimado vs. real; contrato vs.
-     facturado). Acá cada dato aparece una sola vez y con su origen a la vista. */
+     facturado). Acá cada dato aparece una sola vez y con su origen a la vista.
+     Las 12 columnas se ORDENAN (clic en el encabezado) y se FILTRAN (fila de filtros), y los
+     filtros se combinan con AND. Ver CLI_COLS / cliRowsView. */
   const semPill = k => {
     const s = CUENTAS_SEMAFORO[k];
     return s ? `<span title="${escAttr(s.label)}" style="display:inline-block; font-size:10px; font-weight:600; color:${s.fg}; background:${s.bg}; border-radius:9px; padding:1px 8px; white-space:nowrap;">● ${s.label}</span>`
              : `<span style="color:#d1d5db; font-size:11px;">—</span>`;
   };
-  /* Filtros que quedaron activos sobre columnas que ya no se muestran: si no se avisara, German
-     vería menos cuentas de las que hay y sin ningún control visible para entender por qué. */
-  const filtOcultos = [["cu-plan", "Tipo plan"], ["cu-fact", "Estado de facturación"], ["cu-bcg", "Matriz BCG"]].filter(u => msfSel(u[0]).length);
 
-  let html = cotBar + bcgLegendHtml()
-    + (filtOcultos.length ? `<div style="margin-bottom:10px; padding:7px 12px; background:#FFFBEB; border:1px solid #FDE68A; border-radius:8px; font-size:11.5px; color:#92400e;">⚠ Hay filtros activos sobre columnas que ya no están en la lista (${filtOcultos.map(u => u[1]).join(" · ")}): estás viendo menos cuentas de las que hay. <a href="#" onclick="clearCueColFilters(); return false;" style="color:#b45309; font-weight:700;">Limpiar filtros</a></div>` : "")
-    + `<div style="overflow-x:auto; border:1px solid #e5e5e5; border-radius:8px;"><table class="std"><thead><tr>
-    <th style="position:sticky; left:0; z-index:3; background:#fafafa; width:220px; min-width:220px;">Cliente</th>
-    <th>CSM</th>
-    <th style="text-align:center;">País</th>
-    <th style="text-align:center;" title="Modelo de cobro. Por hora = valor hora × horas contratadas. ⚡ Scale = fijo + variable. 🌱 Grow Pro = fijo puro. 🧰 Bajo Demanda y 🚧 En IDP no tienen recurrente contratado.">Modelo</th>
-    <th style="text-align:center;">Semáforo</th>
-    <th style="text-align:center;" title="Lo que la cuenta tiene FIRMADO por mes (fijo + variable en Scale). Sale del contrato cargado en la ficha, no de lo facturado.">Contratado /mes</th>
-    <th style="text-align:center;" title="Lo que Innew le facturó REALMENTE por mes: OPEX de los deals ganados ÷ meses de la ventana. Necesita el export de pedidos cargado y la facturación Innew traída.">Facturado /mes</th>
-    <th style="text-align:center;" title="GMV de un mes típico del cliente en USD: MEDIANA de los meses completos del export. Mediana y no promedio para que un Hot Sale no infle el número.">GMV cliente /mes</th>
-    <th style="text-align:center;" title="Cuánto pesa Innew en el P&amp;L del cliente. Con export cargado usa lo facturado (real); sin export cae al contratado ÷ GMV y se rotula estimado.">% del P&amp;L</th>
-    <th style="text-align:center;" title="Lo que hay que mirar en esta cuenta, ordenado por gravedad. Pasá el mouse por cada chip.">Alertas</th>
-    <th style="text-align:center;"></th>
-  </tr><tr style="background:#fafafa;">
-    <th style="position:sticky; left:0; z-index:3; background:#fafafa; padding:4px 6px;"><input type="text" value="${escAttr(CF.nombre || "")}" placeholder="filtrar… (Enter)" onchange="cueColFSet('nombre',this.value)" style="width:95%; box-sizing:border-box; padding:3px 6px; border:1px solid #d1d5db; border-radius:5px; font-size:11px; font-weight:400;"></th>
-    <th style="padding:4px 6px;">${msfBtn("cu-csm", [{ v: "", l: "— sin CSM" }].concat(csms.map(c => ({ v: c, l: c }))), "renderCuentas", { live: false })}</th>
-    <th style="padding:4px 6px; text-align:center;">${msfBtn("cu-pais", [...new Set(accounts.map(a => a.pais).filter(Boolean))].sort().map(p => ({ v: p, l: p })), "renderCuentas", { live: false })}</th>
-    <th style="padding:4px 6px; text-align:center;">${msfBtn("cu-scale", CU_MODELOS.map(m => ({ v: m.v, l: (m.ic ? m.ic + " " : "") + m.l })), "renderCuentas", { live: false })}</th>
-    <th style="padding:4px 6px; text-align:center;">${msfBtn("cu-sem", Object.keys(CUENTAS_SEMAFORO).map(k => ({ v: k, l: CUENTAS_SEMAFORO[k].label })), "renderCuentas", { live: false })}</th>
-    <th></th><th></th><th></th><th></th><th></th>
-    <th style="padding:4px 6px; text-align:center;"><button title="Limpiar filtros" onclick="clearCueColFilters()" style="padding:2px 8px; font-size:11px; border:1px solid #d1d5db; background:#fff; border-radius:5px; cursor:pointer;">✕</button>${cfActivo ? `<div style="font-size:10px; color:#4030C8; font-weight:700; margin-top:2px;">${rows.length} de ${totalPreCF}</div>` : ""}</th>
-  </tr></thead><tbody>`;
-
-  if (!rows.length) html += `<tr><td colspan="11" class="empty">Sin cuentas en esta selección.</td></tr>`;
-  rows.forEach(r => {
+  /* --- valores por fila: primero se CALCULA, después se filtra/ordena, y recién ahí se pinta.
+         Si se pintara antes no se podría ordenar por run-rate ni por % del P&L. --- */
+  const mrows = rows.map(r => {
     const meta = cuentasGetMeta(r.cli);
     const isArg = r.pais === "AR";
     const mdef = cuModeloDef(cuModelo(r.cli));
     const cartR = cartCliRow(r.cli);
     const contratado = cuMontoEff(r.cli, isArg, r.sgh);
-    const facturado = cartR ? cartR.factMes : null;
     const gmvAvg = cartR ? cartR.gmvAvg : null;
-    const gmvBase = gmvAvg !== null ? gmvAvg : cuNum(cuGmvCurrent(r.cli));
+    const gmv = gmvAvg !== null ? gmvAvg : cuNum(cuGmvCurrent(r.cli));
     const penReal = cartR ? cartR.pen : null;
-    const penEst = (penReal === null && contratado !== null && gmvBase) ? contratado / gmvBase : null;
+    const penEst = (penReal === null && contratado !== null && gmv) ? contratado / gmv : null;
+    const ct = cartR ? cartSerieTrend(cartR.serie) : null;
+    const trend = ct ? (parseFloat(String(ct.pct).replace("%", "").replace(",", ".")) || 0) : null;
+    const alertas = cliAlertas(r, cartR);
+    const sc = { bad: 100, warn: 10, info: 1 };
+    return {
+      r: r, meta: meta, mdef: mdef, cartR: cartR, isArg: isArg, ct: ct,
+      cli: r.cli, csm: r.csm || "", pais: r.pais || "",
+      modelo: mdef.l, semaforo: (CUENTAS_SEMAFORO[meta.semaforo || ""] || {}).label || "",
+      contratado: contratado, runrate: cartR ? cartR.runrate : null, gmv: gmv || null,
+      trend: trend, pen: penReal !== null ? penReal : penEst, penTipo: penReal !== null ? "real" : (penEst !== null ? "estimado" : ""),
+      alertas: alertas, alertaScore: alertas.reduce((s, a) => s + (sc[a.tone] || 0), 0)
+    };
+  });
+  const view = cliRowsView(mrows);
+
+  /* --- encabezado ordenable --- */
+  const cth = c => {
+    const act = CLI_SORT.col === c.id;
+    const ar = c.t === "none" ? "" : (act ? (CLI_SORT.dir > 0 ? " ▲" : " ▼") : ` <span style="color:#d1d5db;">⇅</span>`);
+    return `<th${c.t === "none" ? "" : ` onclick="cliSortBy('${c.id}')"`} style="text-align:${c.al}; ${c.t === "none" ? "" : "cursor:pointer;"} color:${act ? "#430C89" : ""}; ${c.id === "cli" ? "position:sticky; left:0; z-index:3; background:#fafafa; width:200px; min-width:200px;" : ""}" title="${escAttr(CLI_TIP[c.id] || "")}">${c.lbl}${ar}</th>`;
+  };
+  /* --- fila de filtros, tipada por columna --- */
+  const cfc = c => {
+    const f = CLI_FIL[c.id] || {};
+    const st = "width:100%; box-sizing:border-box; font-size:10px; padding:2px 4px; border:1px solid #e5e7eb; border-radius:4px; background:#fff; font-weight:400;";
+    let inner = "";
+    if (c.t === "txt") {
+      inner = `<input value="${escAttr(f.q || "")}" placeholder="contiene…" style="${st}" onchange="cliFilSet('${c.id}','q',this.value)">`;
+    } else if (c.t === "sel") {
+      const opts = cliFilOpts(mrows, c.id);
+      inner = `<select style="${st}" onchange="cliFilSet('${c.id}','q',this.value)"><option value="">— todas —</option><option value="__none"${f.q === "__none" ? " selected" : ""}>${c.id === "alertas" ? "— sin alertas" : "— sin dato"}</option>${opts.map(o => `<option value="${escAttr(o)}"${f.q === o ? " selected" : ""}>${escAttr(o)}</option>`).join("")}</select>`;
+    } else if (c.t !== "none") {
+      const ph = c.t === "pct" ? ["mín %", "máx %"] : ["mín", "máx"];
+      inner = `<div style="display:flex; gap:3px;"><input value="${escAttr(f.min || "")}" placeholder="${ph[0]}" style="${st}" onchange="cliFilSet('${c.id}','min',this.value)"><input value="${escAttr(f.max || "")}" placeholder="${ph[1]}" style="${st}" onchange="cliFilSet('${c.id}','max',this.value)"></div>`;
+    } else {
+      inner = `<button title="Limpiar todos los filtros" onclick="cliFilClear()" style="padding:2px 8px; font-size:11px; border:1px solid #d1d5db; background:#fff; border-radius:5px; cursor:pointer;">✕</button>`;
+    }
+    return `<th style="padding:4px 6px; background:#fafafa; vertical-align:top; ${c.id === "cli" ? "position:sticky; left:0; z-index:3;" : ""}">${inner}</th>`;
+  };
+  /* --- chips de los filtros activos: se combinan, así que hay que poder ver y sacar cada uno --- */
+  const cchips = Object.keys(CLI_FIL).map(col => {
+    const f = CLI_FIL[col], c = CLI_COL[col];
+    const q = f.q === "__none" ? (col === "alertas" ? "sin alertas" : "sin dato") : f.q;
+    const txt = f.q !== undefined ? "“" + q + "”" : [f.min ? "≥ " + f.min : "", f.max ? "≤ " + f.max : ""].filter(Boolean).join(" · ");
+    return `<span style="font-size:10px; background:#EDE9FE; color:#430C89; border-radius:10px; padding:2px 8px; font-weight:600;">${c.lbl}: ${escAttr(txt)} <a href="#" onclick="cliFilDrop('${col}'); return false;" style="color:#7c3aed; text-decoration:none;">×</a></span>`;
+  }).join(" ");
+  const cbarra = (cchips || view.length !== mrows.length)
+    ? `<div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
+        <span style="font-size:11px; color:#6b7280; font-weight:600;">${view.length} de ${mrows.length} cuentas</span>
+        ${cchips}${cchips ? ` <a href="#" onclick="cliFilClear(); return false;" style="font-size:10px; color:#dc2626;">limpiar filtros</a>` : ""}
+      </div>` : "";
+
+  let html = cotBar + bcgLegendHtml() + cbarra
+    + `<div style="overflow-x:auto; border:1px solid #e5e5e5; border-radius:8px;"><table class="std">
+      <thead><tr>${CLI_COLS.map(cth).join("")}</tr><tr style="background:#fafafa;">${CLI_COLS.map(cfc).join("")}</tr></thead><tbody>`;
+
+  if (!view.length) html += `<tr><td colspan="12" class="empty">Sin cuentas en esta selección.</td></tr>`;
+  view.forEach(m => {
+    const r = m.r, cartR = m.cartR, mdef = m.mdef;
     const cliJs = cliAttr(r.cli);
 
-    /* Contratado vs Facturado, uno al lado del otro: es el cruce que antes no existía en
-       ninguna pantalla. El Δ sólo se pinta si los DOS números están, para no leer como
-       "cobrás de más" lo que en realidad es "falta cargar el contrato". */
-    const contratadoTxt = contratado === null
+    const contratadoTxt = m.contratado === null
       ? `<span style="color:#cbd5e1;" title="${escAttr(mdef.l + ": " + mdef.d)}">—</span>`
-      : `<span style="font-weight:600; color:#047857;">${fmtMoneyK(contratado)}</span>`;
-    let factTxt;
-    if (facturado === null) {
-      factTxt = `<span style="color:#cbd5e1;" title="Sin facturación Innew cargada para esta cuenta. Abrí 📥 Cargar exports → ⟳ Cargar facturación Innew.">—</span>`;
-    } else {
-      const dlt = contratado === null ? null : facturado - contratado;
-      const dpct = (dlt !== null && contratado) ? Math.round(dlt / contratado * 100) : null;
-      const dCol = dlt === null ? "#9ca3af" : (Math.abs(dpct || 0) < 10 ? "#9ca3af" : (dlt > 0 ? "#047857" : "#b91c1c"));
-      const dTxt = dlt === null ? "" : (Math.abs(dpct || 0) < 10 ? "≈ contrato" : (dlt > 0 ? "+" : "−") + fmtMoneyK(Math.abs(dlt)) + " vs contrato");
-      factTxt = `<div style="font-weight:600;">${fmtMoneyK(facturado)}</div>${dTxt ? `<div style="font-size:9px; color:${dCol};">${dTxt}</div>` : ""}`;
-    }
+      : `<span style="font-weight:600; color:#047857;">${fmtMoneyK(m.contratado)}</span>`;
 
-    /* GMV: con export cargado es la mediana (derivada, no editable acá); sin export muestra el
-       manual cargado en la ficha. El input dejó de vivir en la tabla a propósito. */
+    /* ACV Run-rate: lo facturado en la ventana proyectado a 12 meses. Debajo va el ACV crudo
+       con la CANTIDAD DE MESES, porque comparar un ACV de 6 meses contra uno de 2 no dice nada
+       —fue el pedido original de German cuando pidió la columna ACV. */
+    const rrTxt = m.runrate === null || !m.runrate
+      ? `<span style="color:#cbd5e1;" title="Sin facturación Innew cargada. Abrí 📥 Cargar exports → ⟳ Cargar facturación Innew.">—</span>`
+      : `<div style="font-weight:600;">${fmtMoneyK(m.runrate)}</div><div style="font-size:9px; color:#9ca3af;" title="${escAttr("ACV del período (OPEX + CAPEX): " + fmtMoney(cartR.acv) + " en " + cartR.mesesAcv + " mes(es). El run-rate lo proyecta a 12.")}">ACV ${fmtMoneyK(cartR.acv)} · ${cartR.mesesAcv}m</div>`;
+
     let gmvTxt;
-    if (gmvAvg !== null) {
-      const ct = cartSerieTrend(cartR.serie);
+    if (m.cartR && m.cartR.gmvAvg !== null) {
       gmvTxt = `<div title="${escAttr("Mediana en USD de los " + cartR.okMeses.length + " mes(es) completo(s) del export (" + cartR.periodo + ")." + (cartR.sinFx ? " ⚠︎ " + cartR.sinFx + " mes(es) sin cotización." : ""))}" style="cursor:help;">
-        <div style="font-weight:700; color:#111827;">${fmtMoneyK(gmvAvg)}</div>
-        <div style="font-size:9px; color:#9ca3af;">mediana · ${cartR.okMeses.length}m${cartR.sinFx ? " ⚠︎" : ""}</div>
-        ${ct ? `<div style="font-size:10px; color:${ct.color}; font-weight:600;">${ct.arrow} ${ct.pct}</div>` : ""}
-      </div>`;
-    } else if (gmvBase) {
-      const tr = cuGmvTrend(r.cli);
-      gmvTxt = `<div title="GMV cargado a mano en la ficha. Al subir el export de pedidos pasa a ser la mediana calculada." style="cursor:help;"><div style="font-weight:600;">${fmtMoneyK(gmvBase)}</div><div style="font-size:9px; color:#9ca3af;">manual</div>${tr ? `<div style="font-size:10px; color:${tr.color}; font-weight:600;">${tr.arrow} ${tr.pct}</div>` : ""}</div>`;
+        <div style="font-weight:700; color:#111827;">${fmtMoneyK(m.gmv)}</div>
+        <div style="font-size:9px; color:#9ca3af;">mediana · ${cartR.okMeses.length}m${cartR.sinFx ? " ⚠︎" : ""}</div></div>`;
+    } else if (m.gmv) {
+      gmvTxt = `<div title="GMV cargado a mano en la ficha. Al subir el export de pedidos pasa a ser la mediana calculada." style="cursor:help;"><div style="font-weight:600;">${fmtMoneyK(m.gmv)}</div><div style="font-size:9px; color:#9ca3af;">manual</div></div>`;
     } else {
       gmvTxt = `<span style="color:#cbd5e1; font-size:11px; font-style:italic;" title="Sin export ni GMV manual: no se puede calcular el % del P&amp;L.">sin datos</span>`;
     }
 
-    const penTxt = penReal !== null
-      ? `<div title="${escAttr("OPEX facturado ÷ GMV del período (" + cartR.periodo + ").")}" style="cursor:help;">${cartPenTxt(penReal)}<div style="font-size:9px; color:#9ca3af;">real · ${cartR.mesesAcv}m</div></div>`
-      : (penEst !== null
-        ? `<div title="${escAttr("Estimado: contratado (" + Math.round(contratado).toLocaleString("es-AR") + ") ÷ GMV mensual (" + Math.round(gmvBase).toLocaleString("es-AR") + "). No hay facturación cargada, así que usa el contrato vigente y no lo realmente facturado.")}" style="cursor:help;">${cartPenTxt(penEst)}<div style="font-size:9px; color:#9ca3af;">estimado</div></div>`
-        : `<span style="color:#cbd5e1;">—</span>`);
+    /* Tendencia al lado del GMV, con los meses debajo de la curva (pedido de German). Si no
+       hay export cae al sparkline del histórico manual, que es lo único que existe ahí. */
+    const trendTxt = (cartR && cartR.serie.length >= 2)
+      ? `<div style="line-height:0;">${cartSparkMeses(cartR.serie, cartR.okMeses, 150, 40)}</div>${m.ct ? `<div style="font-size:10px; color:${m.ct.color}; font-weight:600; text-align:center;">${m.ct.arrow} ${m.ct.pct}</div>` : ""}`
+      : cuGmvSparkCell(r.cli, r.id);
 
-    const al = cliAlertas(r, cartR);
+    const penTxt = m.pen === null || m.pen === undefined
+      ? `<span style="color:#cbd5e1;">—</span>`
+      : `<div title="${escAttr(m.penTipo === "real" ? "OPEX facturado ÷ GMV del período (" + cartR.periodo + ")." : "Estimado: contratado ÷ GMV mensual. No hay facturación cargada, así que usa el contrato vigente y no lo realmente facturado.")}" style="cursor:help;">${cartPenTxt(m.pen)}<div style="font-size:9px; color:#9ca3af;">${m.penTipo}${m.penTipo === "real" ? " · " + cartR.mesesAcv + "m" : ""}</div></div>`;
+
+    const al = m.alertas;
     const alTxt = al.length
       ? al.slice(0, 2).map(a => `<span title="${escAttr(a.d)}" style="display:inline-block; font-size:9.5px; font-weight:600; border-radius:9px; padding:1px 7px; margin:1px 1px; white-space:nowrap; ${a.tone === "bad" ? "background:#FEF2F2; color:#b91c1c;" : a.tone === "warn" ? "background:#FEF3C7; color:#92400e;" : "background:#F3F4F6; color:#374151;"}">${a.ic} ${a.txt}</span>`).join("")
         + (al.length > 2 ? `<span title="${escAttr(al.slice(2).map(a => a.ic + " " + a.txt + " — " + a.d).join("\n"))}" style="font-size:9.5px; color:#6b7280; cursor:help;"> +${al.length - 2}</span>` : "")
       : `<span style="color:#c7d2cd; font-size:11px;">✓</span>`;
 
     html += `<tr>
-      <td style="position:sticky; left:0; z-index:1; background:#fff; width:220px; min-width:220px;">
+      <td style="position:sticky; left:0; z-index:1; background:#fff; width:200px; min-width:200px;">
         <a href="#" onclick="cliFichaOpen('${cliJs}','${r.id}'); return false;" style="font-weight:700; color:#111827; text-decoration:none; border-bottom:1px dotted #430C89;">${escAttr(r.cli)}</a>
         <a href="${HUBSPOT_COMPANY(r.id)}" target="_blank" title="Abrir la empresa en HubSpot" style="font-size:10px; color:#9ca3af; text-decoration:none; margin-left:4px;">↗</a>
         <span id="hsst-${r.id}" style="font-size:10px;"></span>
@@ -10638,10 +10765,11 @@ async function renderCuentas() {
       <td>${r.csm ? escAttr(r.csm) : `<span style="font-size:10px; color:#b45309; background:#fffbeb; border-radius:8px; padding:1px 7px;">⚠ sin CSM</span>`}</td>
       <td style="text-align:center;">${r.pais || "—"}</td>
       <td style="text-align:center;"><span title="${escAttr(mdef.l + ": " + mdef.d)}" style="font-size:10.5px; font-weight:600; color:${mdef.c}; white-space:nowrap;">${mdef.ic ? mdef.ic + " " : ""}${mdef.l}</span></td>
-      <td style="text-align:center;">${semPill(meta.semaforo || "")}</td>
+      <td style="text-align:center;">${semPill(m.meta.semaforo || "")}</td>
       <td style="text-align:center; font-variant-numeric:tabular-nums;">${contratadoTxt}</td>
-      <td style="text-align:center; font-variant-numeric:tabular-nums;">${factTxt}</td>
+      <td style="text-align:center; font-variant-numeric:tabular-nums;">${rrTxt}</td>
       <td style="text-align:center; font-variant-numeric:tabular-nums;">${gmvTxt}</td>
+      <td style="text-align:center;">${trendTxt}</td>
       <td style="text-align:center; font-variant-numeric:tabular-nums;">${penTxt}</td>
       <td style="text-align:center; max-width:190px; white-space:normal;">${alTxt}</td>
       <td style="text-align:center;"><button onclick="cliFichaOpen('${cliJs}','${r.id}')" style="cursor:pointer; border:1px solid #C7BDFF; background:#F1EFFF; color:#4030C8; border-radius:6px; padding:3px 10px; font-size:11px; font-weight:700; white-space:nowrap;">Ficha ↗</button></td>
