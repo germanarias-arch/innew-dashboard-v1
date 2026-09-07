@@ -7574,7 +7574,8 @@ function cuFinDerivedProps(cli, companyId) {
   const isArg = normPais(p.country) === "AR";
   const sgh = p.horas_de_sg_contratadas ? parseFloat(p.horas_de_sg_contratadas) : null;
   const out = {};
-  const vh = cuVhUsdEff(cli, isArg); if (vh !== null) out.valor_hora_us = String(Math.round(vh * 100) / 100);
+  // Scale y Grow Pro no se cobran por hora: no se propaga un valor hora residual a HubSpot.
+  const vh = cuSinValorHora(cli) ? null : cuVhUsdEff(cli, isArg); if (vh !== null) out.valor_hora_us = String(Math.round(vh * 100) / 100);
   const m = cuMontoEff(cli, isArg, sgh); if (m !== null) out.monto_mensual_us = String(Math.round(m * 100) / 100);
   return out;
 }
@@ -7669,10 +7670,41 @@ function cuSetHorasConsumidas(cli, companyId, v) {
   cuFinWrite(companyId, { horas_consumidas_mes: n === null ? "" : String(n), horas_hist: JSON.stringify(hist) });
   renderCuentas();
 }
-function cuIsScale(cli) { return !!cuentasGetMeta(cli).esScale; }
-function cuSetScale(cli, companyId, v) {
-  cuentasSetMeta(cli, { esScale: !!v });
-  cuFinWrite(companyId, { es_scale: v ? "true" : "false" });
+/* MODELO COMERCIAL de la cuenta. Reemplaza al checkbox binario de Scale porque son TRES modelos
+   de cobro mutuamente excluyentes, y dos checkboxes independientes permitirían el estado imposible
+   "Scale y Grow Pro a la vez". OJO: esto NO es `tipo_de_plan` — esa columna es la CADENCIA de cobro
+   (mensual/trimestral/…), no el tier de servicio.
+     ""      por hora → monto = valor hora u$s × horas contratadas (o el override manual)
+     scale   fijo + variable → sin valor hora; el variable se carga aparte en su propia columna
+     grow    Grow Pro (S&G pero distinto) → fijo puro, sin valor hora y sin variable            */
+const CU_MODELOS = [{ v: "", l: "por hora", ic: "", c: "#6b7280" }, { v: "scale", l: "Scale", ic: "⚡", c: "#7c3aed" }, { v: "grow", l: "Grow Pro", ic: "🌱", c: "#047857" }];
+function cuModeloDef(v) { return CU_MODELOS.find(m => m.v === (v || "")) || CU_MODELOS[0]; }
+/* Lee el modelo con fallback al viejo flag booleano `esScale`, para que las cuentas marcadas
+   antes de esta columna sigan mostrándose como Scale sin necesidad de re-taggearlas. */
+function cuModelo(cli) { const m = cuentasGetMeta(cli); if (m.modelo != null && m.modelo !== "") return m.modelo; return m.esScale ? "scale" : ""; }
+function cuIsScale(cli) { return cuModelo(cli) === "scale"; }
+function cuSinValorHora(cli) { return cuModelo(cli) !== ""; }
+function cuSetModelo(cli, companyId, v) {
+  const val = (v === "scale" || v === "grow") ? v : "";
+  const patch = { modelo: val, esScale: val === "scale" };
+  // Al salir de Scale el variable deja de tener sentido: se limpia en vez de quedar colgado sumando.
+  if (val !== "scale") patch.varUsd = null;
+  cuentasSetMeta(cli, patch);
+  cuFinWrite(companyId, { es_scale: val === "scale" ? "true" : "false" });
+  renderCuentas();
+}
+// Compat: algún handler viejo puede seguir llamando cuSetScale con un booleano.
+function cuSetScale(cli, companyId, v) { cuSetModelo(cli, companyId, v ? "scale" : ""); }
+/* Componente VARIABLE de las cuentas Scale, en valor absoluto mensual (u$s), no en porcentaje:
+   German lo pidió así explícitamente. Se guarda sólo en localStorage — no existe una property de
+   company en HubSpot para el variable y no se inventan nombres de propiedad. Lo que sí viaja a
+   HubSpot es el TOTAL (fijo + variable) en `monto_mensual_us`, vía cuMontoEff. */
+function cuVarUsd(cli) { return cuNum(cuentasGetMeta(cli).varUsd); }
+function cuSetVarUsd(cli, companyId, v) {
+  cuentasSetMeta(cli, { varUsd: v === "" ? null : cuNum(v) });
+  const r = (window.__cuentasData || []).find(x => String(x.id) === String(companyId));
+  const tot = cuMontoEff(cli, ((r && r.properties && r.properties.country) || "") === "AR", cuSghOf(companyId));
+  if (tot !== null) cuFinWrite(companyId, { monto_mensual_us: String(Math.round(tot * 100) / 100) });
   renderCuentas();
 }
 function cuSetFacturacion(cli, companyId, v) {
@@ -7842,8 +7874,14 @@ async function cuSyncAllToHS() {
     const isArg = normPais(p.country) === "AR";
     const sgh = p.horas_de_sg_contratadas ? parseFloat(p.horas_de_sg_contratadas) : null;
     const props = {};
-    const vp = cuNum(m.vhPeso); if (isArg && vp !== null) props.valor_hora = String(vp);
-    const vh = cuVhUsdEff(cli, isArg); if (vh !== null) props.valor_hora_us = String(Math.round(vh * 100) / 100);
+    /* Scale y Grow Pro NO tienen valor hora: no se cobran por hora. Si la cuenta arrastra un
+       valor hora viejo de cuando facturaba por hora, no se sincroniza — escribirlo dejaría un
+       precio fantasma en HubSpot que nadie usa para facturar. */
+    const sinVh = cuSinValorHora(cli);
+    const vp = cuNum(m.vhPeso); if (!sinVh && isArg && vp !== null) props.valor_hora = String(vp);
+    const vh = cuVhUsdEff(cli, isArg); if (!sinVh && vh !== null) props.valor_hora_us = String(Math.round(vh * 100) / 100);
+    // En Scale este total ya viene con el variable sumado (cuMontoEff). El desglose fijo/variable
+    // vive sólo en el dashboard: no hay property de company para el variable y no se inventan.
     const mo = cuMontoEff(cli, isArg, sgh); if (mo !== null) props.monto_mensual_us = String(Math.round(mo * 100) / 100);
     if (m.plan) props.tipo_de_plan = m.plan;
     if (m.finAcuerdo) props.fin_acuerdo = m.finAcuerdo;
@@ -7852,7 +7890,9 @@ async function cuSyncAllToHS() {
     const hh = cuHorasHist(cli);
     if (Object.keys(hh).length) props.horas_hist = JSON.stringify(hh);
     const hc = cuHorasEntry(cli, cuMonthKey()).c; if (hc !== null) props.horas_consumidas_mes = String(hc);
-    if (m.esScale != null) props.es_scale = m.esScale ? "true" : "false";
+    /* De los 3 modelos, HubSpot sólo sabe representar Scale (`es_scale`). Grow Pro y el variable
+       quedan en localStorage: haría falta crear 2 properties de company y eso lo decide German. */
+    if (m.modelo != null || m.esScale != null) props.es_scale = cuIsScale(cli) ? "true" : "false";
     if (m.estadoFact) props.estado_facturacion = m.estadoFact;
     if (Object.keys(props).length) objs.push({ objectType: "companies", objectId: Number(c.id), properties: props });
   });
@@ -7880,8 +7920,23 @@ async function cuSyncAllToHS() {
     st.style.color = fail ? "#b45309" : "#059669";
   }
 }
-// Monto mensual u$s efectivo: override manual si existe; sino auto = valor hora u$s × horas
-function cuMontoEff(cli, isArg, sgh) { const man = cuNum(cuentasGetMeta(cli).montoUsd); if (man !== null) return man; const vh = cuVhUsdEff(cli, isArg); return (vh !== null && sgh) ? vh * sgh : null; }
+/* Monto mensual u$s efectivo — depende del MODELO comercial:
+     por hora → override manual si existe; sino auto = valor hora u$s × horas contratadas
+     Scale    → fijo cargado a mano + variable (nunca se deriva de un valor hora: no lo tiene)
+     Grow Pro → fijo cargado a mano, punto
+   Es el número que alimenta el KPI de MRR de cartera y `monto_mensual_us` en HubSpot. */
+function cuMontoEff(cli, isArg, sgh) {
+  const m = cuentasGetMeta(cli);
+  const man = cuNum(m.montoUsd);
+  const mod = cuModelo(cli);
+  if (mod) {
+    if (man === null) return null;
+    return mod === "scale" ? man + (cuVarUsd(cli) || 0) : man;
+  }
+  if (man !== null) return man;
+  const vh = cuVhUsdEff(cli, isArg);
+  return (vh !== null && sgh) ? vh * sgh : null;
+}
 // Migración 1 vez: el viejo "Estado" pasa a "Semáforo" (riesgo→riesgo, resto→normal)
 function cuMigrateEstadoToSemaforo() {
   if (localStorage.getItem("cuentas_estado_migrado") === "1") return;
@@ -10035,7 +10090,7 @@ async function renderCuentas() {
     const cfMeta = cuentasGetMeta(a.cli);
     if (!msfMatch("cu-plan", cfMeta.plan || "")) return false;
     if (!msfMatch("cu-sem", cfMeta.semaforo || "")) return false;
-    if (!msfMatch("cu-scale", cfMeta.esScale ? "1" : "0")) return false;
+    if (!msfMatch("cu-scale", cuModelo(a.cli))) return false;
     if (!msfMatch("cu-fact", cfMeta.estadoFact || "")) return false;
     return true;
   });
@@ -10072,14 +10127,15 @@ async function renderCuentas() {
     <span style="font-size:12px; color:#6b7280;">$</span>
     <input type="number" value="${usdRate || ""}" placeholder="ej. 1350" onchange="cuSetUsdRate(this.value)" style="padding:5px 9px; font-size:13px; border:1px solid #C7BDFF; border-radius:6px; width:120px;">
     <span style="font-size:11px; color:#9ca3af;">se usa para convertir Valor hora $ → u$s en las cuentas de Argentina</span>
-    <button class="fc-btn secondary" onclick="cuSyncAllToHS()" title="Escribe los campos financieros de todas las cuentas visibles en HubSpot (valor hora, monto, plan, fin acuerdo, semáforo, GMV, horas consumidas, histórico de horas, Scale, estado de facturación)" style="font-size:12px; margin-left:auto;">⬆ Sincronizar a HubSpot</button>
+    <button class="fc-btn secondary" onclick="cuSyncAllToHS()" title="Escribe los campos financieros de todas las cuentas visibles en HubSpot (valor hora, monto mensual —en Scale ya con el variable sumado—, plan, fin acuerdo, semáforo, GMV, horas consumidas, histórico de horas, flag Scale, estado de facturación). El modelo Grow Pro y el desglose del variable quedan sólo en el dashboard: HubSpot no tiene properties para eso." style="font-size:12px; margin-left:auto;">⬆ Sincronizar a HubSpot</button>
     <span id="cufin-sync-st" style="font-size:11px; color:#4030C8;"></span>
   </div>`;
 
   let html = cotBar + bcgLegendHtml() + `<div style="overflow-x:auto; border:1px solid #e5e5e5; border-radius:8px;"><table class="std"><thead><tr>
     <th style="position:sticky; left:0; z-index:3; background:#fafafa; width:200px; min-width:200px; max-width:200px;">Cliente</th><th>CSM</th><th style="text-align:center;">Matriz BCG</th><th style="text-align:center;">País</th><th style="text-align:center;">S&G h/mes</th>
-    <th style="text-align:center;">Scale</th><th style="text-align:center;">Hs consumidas</th><th style="text-align:center;">Consumo</th>
-    <th style="text-align:center;">Valor hora $</th><th style="text-align:center;">Valor hora u$s</th><th style="text-align:center;">Monto mensual u$s</th>
+    <th style="text-align:center;" title="Modelo de cobro. Por hora = valor hora × horas contratadas. ⚡ Scale = fijo + variable, sin valor hora. 🌱 Grow Pro = fijo puro, sin valor hora ni variable. No confundir con Tipo plan, que es la cadencia de cobro.">Modelo</th><th style="text-align:center;">Hs consumidas</th><th style="text-align:center;">Consumo</th>
+    <th style="text-align:center;">Valor hora $</th><th style="text-align:center;">Valor hora u$s</th><th style="text-align:center;" title="Scale y Grow Pro: el fijo mensual. Por hora: se autocalcula como valor hora u$s × horas, y se puede pisar a mano.">Monto mensual u$s</th>
+    <th style="text-align:center;" title="Sólo para cuentas Scale: componente VARIABLE del mes, en valor absoluto (u$s), no en porcentaje. Se suma al fijo para dar el MRR de la cuenta.">Variable u$s</th>
     <th style="text-align:center;">Tipo plan</th><th style="text-align:center;">Fin acuerdo</th><th style="text-align:center;">Semáforo</th><th style="text-align:center;">Facturación</th><th style="text-align:center;" title="GMV de un mes típico del cliente, en USD: MEDIANA de la serie mensual calculada en Cartera GMV sobre los meses completos con cotización. Se usa mediana y no promedio para que un pico (Hot Sale, Black Friday) no infle el número. Las cuentas sin archivo cargado mantienen el input manual.">GMV cliente /mes</th><th style="text-align:center;" title="Misma tendencia que la vista Cartera GMV: serie mensual en USD, sólo meses completos.">Tendencia GMV</th>
     <th style="text-align:center;">Deals</th><th>Nota</th><th style="text-align:center;">Baja</th>
   </tr><tr style="background:#fafafa;">
@@ -10088,8 +10144,8 @@ async function renderCuentas() {
     <th style="padding:4px 6px; text-align:center;">${msfBtn("cu-bcg", CUENTAS_BCG.map(b => ({ v: b.v, l: b.icon + " " + b.label })), "renderCuentas", { live: false })}</th>
     <th style="padding:4px 6px; text-align:center;">${msfBtn("cu-pais", [...new Set(accounts.map(a => a.pais).filter(Boolean))].sort().map(p => ({ v: p, l: p })), "renderCuentas", { live: false })}</th>
     <th></th>
-    <th style="padding:4px 6px; text-align:center;">${msfBtn("cu-scale", [{ v: "1", l: "⚡ Scale" }, { v: "0", l: "— no Scale" }], "renderCuentas", { live: false })}</th>
-    <th></th><th></th><th></th><th></th><th></th>
+    <th style="padding:4px 6px; text-align:center;">${msfBtn("cu-scale", CU_MODELOS.map(m => ({ v: m.v, l: (m.ic ? m.ic + " " : "— ") + m.l })), "renderCuentas", { live: false })}</th>
+    <th></th><th></th><th></th><th></th><th></th><th></th>
     <th style="padding:4px 6px; text-align:center;">${msfBtn("cu-plan", CUENTAS_PLANES.map(p => ({ v: p, l: p })), "renderCuentas", { live: false })}</th>
     <th></th>
     <th style="padding:4px 6px; text-align:center;">${msfBtn("cu-sem", Object.keys(CUENTAS_SEMAFORO).map(k => ({ v: k, l: CUENTAS_SEMAFORO[k].label })), "renderCuentas", { live: false })}</th>
@@ -10097,35 +10153,57 @@ async function renderCuentas() {
     <th></th><th></th><th></th><th></th>
     <th style="padding:4px 6px; text-align:center;"><button title="Limpiar filtros" onclick="clearCueColFilters()" style="padding:2px 8px; font-size:11px; border:1px solid #d1d5db; background:#fff; border-radius:5px; cursor:pointer;">✕</button>${cfActivo ? `<div style="font-size:10px; color:#4030C8; font-weight:700; margin-top:2px;">${rows.length} de ${totalPreCF}</div>` : ""}</th>
   </tr></thead><tbody>`;
-  if (!rows.length) html += `<tr><td colspan="20" class="empty">Sin cuentas en esta selección.</td></tr>`;
+  if (!rows.length) html += `<tr><td colspan="21" class="empty">Sin cuentas en esta selección.</td></tr>`;
   rows.forEach(r => {
     const meta = cuentasGetMeta(r.cli);
     const nota = meta.nota || "";
     const isArg = r.pais === "AR";
     const cliJs = r.cli.replace(/'/g, "");
-    const vhPesoCell = isArg
+    /* Scale y Grow Pro no se cobran por hora: las dos celdas de valor hora se anulan en vez de
+       quedar editables. Dejarlas activas invitaría a cargar un precio que no factura nadie y que
+       después el monto auto usaría para inventar un MRR falso. */
+    const modelo = cuModelo(r.cli);
+    const mdef = cuModeloDef(modelo);
+    const sinVh = modelo !== "";
+    const vhNA = `<span style="display:inline-block; padding:2px 7px; border-radius:5px; background:#F3F4F6; color:#9ca3af; font-size:10px;" title="${escAttr(mdef.l + " no se cobra por hora: se cobra un " + (modelo === "scale" ? "fijo más un variable." : "valor fijo."))}">n/a · ${escAttr(mdef.l)}</span>`;
+    const vhPesoCell = sinVh ? vhNA : (isArg
       ? `<input type="number" value="${meta.vhPeso != null ? meta.vhPeso : ""}" placeholder="$/h" onchange="cuSetVhPeso('${cliJs}','${r.id}',this.value)" style="padding:3px 6px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; width:90px; text-align:right;">`
-      : `<span style="color:#cbd5e1;">—</span>`;
+      : `<span style="color:#cbd5e1;">—</span>`);
     const vhUsd = cuVhUsdEff(r.cli, isArg);
     let vhUsdCell;
-    if (isArg) {
+    if (sinVh) {
+      vhUsdCell = vhNA;
+    } else if (isArg) {
       vhUsdCell = vhUsd !== null
         ? `<span style="display:inline-block; padding:3px 8px; background:#E0F2FE; border:1px solid #7DD3FC; border-radius:5px; color:#075985; font-size:12px; font-weight:600;">U$S ${vhUsd.toFixed(1)}</span>`
         : `<span style="display:inline-block; padding:3px 8px; background:#E0F2FE; border:1px solid #BAE6FD; border-radius:5px; color:#9ca3af; font-size:11px;">cargá $ y cotiz.</span>`;
     } else {
       vhUsdCell = `<input type="number" value="${meta.vhUsd != null ? meta.vhUsd : ""}" placeholder="u$s/h" onchange="cuSetVhUsd('${cliJs}','${r.id}',this.value)" style="padding:3px 6px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; width:90px; text-align:right;">`;
     }
-    const montoAuto = (vhUsd !== null && r.sgh) ? vhUsd * r.sgh : null;
+    // Sin valor hora no hay monto auto: el fijo se carga a mano y es el único origen del monto.
+    const montoAuto = (!sinVh && vhUsd !== null && r.sgh) ? vhUsd * r.sgh : null;
     const montoMan = cuNum(meta.montoUsd);
-    const montoPh = montoAuto !== null ? "auto " + Math.round(montoAuto).toLocaleString("es-AR") : "u$s/mes";
+    const montoPh = sinVh ? (modelo === "scale" ? "fijo u$s" : "u$s/mes") : (montoAuto !== null ? "auto " + Math.round(montoAuto).toLocaleString("es-AR") : "u$s/mes");
     /* El input sigue siendo type="number" a propósito: parsear "1.500" vs "1.5" con separadores
        de miles es ambiguo y un valor hora de 32,5 se convertiría en silencio en 325. Se corrige la
        legibilidad con una línea formateada DEBAJO del input, no cambiando el tipo de campo. */
-    const montoEff = montoMan !== null ? montoMan : montoAuto;
+    /* El input de Monto es el FIJO. En Scale el MRR real es fijo + variable, así que el número
+       que se controla contra CU_MONTO_MAX y el que se lee debajo es el TOTAL, no el fijo solo:
+       si no, una cuenta con fijo chico y variable enorme pasaría el control sin que se note. */
+    const varUsd = modelo === "scale" ? cuVarUsd(r.cli) : null;
+    const montoFijo = montoMan !== null ? montoMan : montoAuto;
+    const montoEff = montoFijo === null ? null : montoFijo + (varUsd || 0);
     const montoRaro = montoEff !== null && montoEff > CU_MONTO_MAX;
+    const desglose = (modelo === "scale" && varUsd) ? `${Math.round(montoFijo).toLocaleString("es-AR")} fijo + ${Math.round(varUsd).toLocaleString("es-AR")} var = ` : "";
     const montoLeer = montoEff === null ? "" :
-      `<div style="font-size:10px; margin-top:2px; font-variant-numeric:tabular-nums; color:${montoRaro ? "#b91c1c" : "#6b7280"}; font-weight:${montoRaro ? "700" : "400"};" title="${montoRaro ? escAttr("Monto mensual fuera de rango (> U$S " + CU_MONTO_MAX.toLocaleString("es-AR") + "). Los planes de S&C van de U$S 790 a 2.100/mes y Scale ronda U$S 2.900/mes: un número de este tamaño suele ser un GMV cargado en la celda equivocada. Queda fuera del KPI de MRR hasta que se corrija.") : "Monto mensual formateado"}">U$S ${Math.round(montoEff).toLocaleString("es-AR")}${montoRaro ? " ⚠" : ""}</div>${montoRaro ? `<div style="font-size:9px; color:#b91c1c; line-height:1.2;">revisá: parece un GMV,<br>no un monto mensual</div>` : ""}`;
+      `<div style="font-size:10px; margin-top:2px; font-variant-numeric:tabular-nums; color:${montoRaro ? "#b91c1c" : "#6b7280"}; font-weight:${montoRaro ? "700" : "400"};" title="${montoRaro ? escAttr("Monto mensual fuera de rango (> U$S " + CU_MONTO_MAX.toLocaleString("es-AR") + "). Los planes de S&C van de U$S 790 a 2.100/mes y Scale ronda U$S 2.900/mes: un número de este tamaño suele ser un GMV cargado en la celda equivocada. Queda fuera del KPI de MRR hasta que se corrija.") : (desglose ? "MRR de la cuenta = fijo + variable del mes" : "Monto mensual formateado")}">${desglose}U$S ${Math.round(montoEff).toLocaleString("es-AR")}${montoRaro ? " ⚠" : ""}</div>${montoRaro ? `<div style="font-size:9px; color:#b91c1c; line-height:1.2;">revisá: parece un GMV,<br>no un monto mensual</div>` : ""}`;
     const montoCell = `<input type="number" value="${montoMan !== null ? montoMan : ""}" placeholder="${montoPh}" onchange="cuSetMonto('${cliJs}','${r.id}',this.value)" style="padding:3px 6px; font-size:12px; border:1px solid ${montoRaro ? "#FCA5A5" : (montoMan !== null ? "#6EE7B7" : "#d1d5db")}; border-radius:5px; width:110px; text-align:right; color:${montoRaro ? "#b91c1c" : "#047857"}; font-weight:600; background:${montoRaro ? "#FEF2F2" : (montoMan !== null ? "#ECFDF5" : "#fff")};">${montoLeer}`;
+    /* El variable es propio de Scale y sólo de Scale: en Grow Pro (fijo puro) y en por-hora la
+       celda se apaga en vez de aceptar un número que después nadie factura. Se carga en valor
+       ABSOLUTO mensual (u$s), no en porcentaje — German lo pidió así explícitamente. */
+    const varCell = modelo === "scale"
+      ? `<input type="number" value="${varUsd != null ? varUsd : ""}" placeholder="var u$s" onchange="cuSetVarUsd('${cliJs}','${r.id}',this.value)" title="Componente variable del mes en u$s (valor absoluto, no %). Se suma al fijo para dar el MRR de la cuenta." style="padding:3px 6px; font-size:12px; border:1px solid ${varUsd != null ? "#C4B5FD" : "#d1d5db"}; border-radius:5px; width:100px; text-align:right; color:#6d28d9; font-weight:600; background:${varUsd != null ? "#F5F3FF" : "#fff"};">`
+      : `<span style="color:#cbd5e1;" title="${escAttr("Sólo las cuentas Scale tienen componente variable. " + mdef.l + (modelo === "grow" ? " se cobra a valor fijo." : " se cobra por hora."))}">—</span>`;
     const planSel = meta.plan || "";
     const planCell = `<select onchange="cuSetPlan('${cliJs}','${r.id}',this.value)" style="font-size:11px; padding:2px 5px; border:1px solid #d1d5db; border-radius:5px; background:#fff;"><option value="">—</option>${CUENTAS_PLANES.map(p => `<option value="${p}" ${planSel === p ? "selected" : ""}>${p}</option>`).join("")}</select>`;
     const fin = meta.finAcuerdo || "";
@@ -10163,12 +10241,13 @@ async function renderCuentas() {
       <td style="text-align:center;"><select onchange="cuentasSetBcg('${r.id}',this.value,this)" title="Calificación matriz BCG (escribe calificacion_matriz_bcg en HubSpot)" style="padding:3px 6px; font-size:12px; border:1px solid ${r.bcg ? ((bcgDef(r.bcg) || {}).color || "#d1d5db") : "#d1d5db"}; border-radius:5px; background:${r.bcg ? ((bcgDef(r.bcg) || {}).bg || "#fff") : "#fff"};">${bcgOptions(r.bcg)}</select> <span id="bcgst-${r.id}" style="font-size:11px;"></span></td>
       <td style="text-align:center;">${r.pais || "—"}</td>
       <td style="text-align:center;"><input type="number" value="${r.sgh != null ? r.sgh : ""}" placeholder="h/mes" onchange="cuSetSgh('${r.id}',this.value)" style="padding:3px 6px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; width:70px; text-align:right;"></td>
-      <td style="text-align:center;"><input type="checkbox" ${cuIsScale(r.cli) ? "checked" : ""} onchange="cuSetScale('${cliJs}','${r.id}',this.checked)" title="Cuenta Scale: el sobreconsumo de horas es esperado" style="cursor:pointer; width:15px; height:15px; accent-color:#7c3aed;"></td>
+      <td style="text-align:center;"><select onchange="cuSetModelo('${cliJs}','${r.id}',this.value)" title="${escAttr("Modelo de cobro. Por hora = valor hora × horas contratadas. Scale = fijo + variable. Grow Pro = fijo puro. En Scale el sobreconsumo de horas es esperado y no se pinta en rojo.")}" style="padding:3px 6px; font-size:11px; font-weight:${modelo ? "600" : "400"}; border:1px solid ${modelo ? mdef.c : "#d1d5db"}; border-radius:5px; color:${mdef.c}; background:${modelo ? (modelo === "scale" ? "#F5F3FF" : "#ECFDF5") : "#fff"};">${CU_MODELOS.map(m => `<option value="${m.v}" ${modelo === m.v ? "selected" : ""}>${m.ic ? m.ic + " " : ""}${m.l}</option>`).join("")}</select></td>
       <td style="text-align:center;"><input type="number" value="${cuHorasCurrent(r.cli)}" placeholder="hs" onchange="cuSetHorasConsumidas('${cliJs}','${r.id}',this.value)" style="padding:3px 6px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; width:70px; text-align:right;"></td>
       <td style="text-align:center;">${cuHorasCell(r.cli, r.id)}</td>
       <td style="text-align:center;">${vhPesoCell}</td>
       <td style="text-align:center;">${vhUsdCell}</td>
       <td style="text-align:center;">${montoCell}</td>
+      <td style="text-align:center;">${varCell}</td>
       <td style="text-align:center;">${planCell}</td>
       <td style="text-align:center;">${finCell}</td>
       <td style="text-align:center;">${semCell}</td>
@@ -10179,7 +10258,7 @@ async function renderCuentas() {
       <td><input type="text" value="${escAttr(nota)}" placeholder="—" onchange="cuentasSetNota('${cliJs}',this.value)" style="padding:3px 6px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; width:160px;"></td>
       <td style="text-align:center;"><button id="baja-${r.id}" onclick="cuentasDarBaja('${r.id}','${cliJs}')" title="Da de baja el cliente: crea el deal Reactivación en Nurturing y saca la empresa de customer" style="cursor:pointer; border:1px solid #fecaca; background:#fef2f2; color:#b91c1c; border-radius:6px; padding:2px 9px; font-size:11px; font-weight:600;">🚫 Baja</button></td>
     </tr>
-    <tr id="deals-row-${r.id}" style="display:none;"><td colspan="20" style="padding:0; background:#faf9ff;"><div id="deals-panel-${r.id}" data-cli="${escAttr(r.cli)}" style="padding:10px 16px;"></div></td></tr>`;
+    <tr id="deals-row-${r.id}" style="display:none;"><td colspan="21" style="padding:0; background:#faf9ff;"><div id="deals-panel-${r.id}" data-cli="${escAttr(r.cli)}" style="padding:10px 16px;"></div></td></tr>`;
   });
   html += `</tbody></table></div>`;
   document.getElementById("cue-tabla").innerHTML = html;
