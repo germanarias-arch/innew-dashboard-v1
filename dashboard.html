@@ -10590,24 +10590,34 @@ function inboxIsNoise(email) {
   return INBOX_NOISE_DOM.some(d => e.indexOf(d) !== -1);
 }
 function inboxDays(iso) { const t = Date.parse(iso); return isNaN(t) ? null : Math.floor((Date.now() - t) / 86400000); }
+// OJO: `hs_object_source_label` NO se puede FILTRAR en el endpoint /crm/v3/objects/contacts/search
+// que usa nuestro backend (functions/api/hubspot.js) — es una propiedad derivada, no indexada para search.
+// Sí se puede PEDIR como propiedad. Por eso filtramos por fecha (que sí anda) y clasificamos en JS.
+// Falla ya cometida el 09/09: filtrar por esa propiedad devolvia error del backend y la vista quedaba vacia.
 async function fetchInboundWeb() {
+  const desde = Date.now() - 120 * 86400000; // ultimos 120 dias: alcanza y sobra para inbound sin atender
   const res = await mcpCall("mcp__aaaa9eed-76e4-4bc8-a1a2-fad976f54ccb__search_crm_objects", {
     objectType: "contacts",
-    filterGroups: [{ filters: [{ propertyName: "hs_object_source_label", operator: "EQ", value: "CONVERSATIONS" }] }],
-    properties: ["firstname", "lastname", "email", "createdate", "hubspot_owner_id", "lifecyclestage"],
+    filterGroups: [{ filters: [{ propertyName: "createdate", operator: "GTE", value: String(desde) }] }],
+    properties: ["firstname", "lastname", "email", "createdate", "hubspot_owner_id", "lifecyclestage", "hs_object_source_label"],
     sorts: [{ propertyName: "createdate", direction: "DESCENDING" }],
-    limit: 50, offset: 0,
+    limit: 100,
     chatInsights: { userIntent: "Dashboard: inbound del chat web sin atender", satisfaction: "NEUTRAL" }
   });
   const parsed = typeof res === "string" ? JSON.parse(res) : res;
-  return parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
+  const all = parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
+  return all.filter(c => ((c.properties || {}).hs_object_source_label || "").toUpperCase() === "CONVERSATIONS");
 }
 async function renderInboundWeb() {
   const box = document.getElementById("inbox-web"); if (!box) return;
   box.innerHTML = '<div class="small" style="color:#9ca3af;">📥 Inbound web — leyendo…</div>';
   let rows = [];
   try { rows = await fetchInboundWeb(); }
-  catch (e) { box.innerHTML = '<div class="small" style="color:#b45309;">📥 Inbound web: no se pudo leer HubSpot.</div>'; return; }
+  catch (e) {
+    // Mostrar el error REAL: un "no se pudo leer" mudo cuesta media hora de debug a ciegas.
+    box.innerHTML = '<div class="small" style="color:#b45309;">📥 Inbound web: no se pudo leer HubSpot. <span style="color:#9ca3af;">' + escAttr(String((e && e.message) || e)) + '</span></div>';
+    return;
+  }
   const hum = [], ruido = [];
   // lifecyclestage "other" = ya triado a mano y descartado (RRHH/CV, proveedor, consulta no comercial).
   // Es el unico modo de sacar del panel a un humano real que no es lead: por mail no se puede distinguir.
