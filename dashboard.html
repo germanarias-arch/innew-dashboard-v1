@@ -1996,7 +1996,7 @@ function buildForecast(deals) {
     if (prob === 0) return;
     if (!p.closedate) return;
 
-    const meses = Math.max(1, Math.min(12, parseInt(p.meses_de_facturacion__hasta_6_) || 1));
+    const meses = Math.max(1, Math.min(36, parseInt(p.meses_de_facturacion__hasta_6_) || 1));
     const totalPonderado = amount * prob;
     const planFr = planPagosFracs(d); // plan de pagos (CU1/CU2): null = lineal
 
@@ -4643,7 +4643,7 @@ function ppgBtn(id, p) {
 function ppgOpen(id) {
   const d = genFindDeal(id); if (!d) return;
   const p = d.properties || {};
-  const meses = Math.max(1, Math.min(12, parseInt(p.meses_de_facturacion__hasta_6_) || 1));
+  const meses = Math.max(1, Math.min(36, parseInt(p.meses_de_facturacion__hasta_6_) || 1));
   const fr = planPagosFracs(d);
   const pcts = fr ? fr.map(f => Math.round(f * 1000) / 10) : null;
   let mode = "lineal";
@@ -4656,6 +4656,7 @@ function ppgOpen(id) {
   d0.innerHTML = `<div style="background:#fff; border-radius:10px; max-width:460px; width:100%; max-height:88vh; overflow:auto; padding:20px; box-shadow:0 10px 40px rgba(0,0,0,0.25);">
     <div style="font-weight:600; font-size:15px; margin-bottom:4px;">💳 Plan de pagos</div>
     <div class="small" style="color:#6b7280; margin-bottom:12px;">${escAttr(p.dealname || "(sin nombre)")} — U$S ${amt.toLocaleString("es-AR")} en ${meses} ${meses === 1 ? "mes" : "meses"}. Se guarda en HubSpot (prop <code>plan_de_pagos</code>).</div>
+    ${planPagosInvalid(d) ? `<div class="small" style="background:#fffbeb; border:1px solid #fde68a; color:#b45309; border-radius:8px; padding:10px; margin-bottom:12px;"><b>⚠️ El plan guardado en HubSpot no es válido</b> y hoy se está facturando lineal. Valor actual: <code>${escAttr(p.plan_de_pagos || "")}</code>. Tiene que tener <b>${meses}</b> tramos y sumar 100.</div>` : ""}
     <div id="ppg-tabs" style="display:flex; gap:6px; margin-bottom:14px; flex-wrap:wrap;"></div>
     <div id="ppg-body"></div>
     <div style="margin-top:14px; display:flex; align-items:center; gap:10px;">
@@ -4686,7 +4687,15 @@ function ppgSetMode(mode) {
       <div id="ppg-ant-prev" class="small" style="margin-top:8px;"></div>`;
     ppgAntPreview();
   } else {
-    const pcts = (st.pcts && st.pcts.length === meses) ? st.pcts : Array.from({ length: meses }, () => Math.round(1000 / meses) / 10);
+    // Default que suma EXACTO 100: el ultimo mes absorbe el resto del redondeo.
+    // Antes era Math.round(1000/meses)/10 en todos los meses -> 12 x 8.3 = 99.6.
+    let pcts;
+    if (st.pcts && st.pcts.length === meses) { pcts = st.pcts; }
+    else {
+      const base = Math.round(1000 / meses) / 10;
+      pcts = Array.from({ length: meses }, () => base);
+      pcts[meses - 1] = Math.round((100 - base * (meses - 1)) * 10) / 10;
+    }
     body.innerHTML = `<div class="small" style="color:#555; margin-bottom:8px;">Un % por mes (tienen que sumar 100).</div>
       <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(90px,1fr)); gap:8px;">` +
       pcts.map((v, i) => `<label class="small" style="color:#555;">Mes ${i + 1} %<input type="number" id="ppg-v-${i}" value="${v}" min="0" max="100" step="0.1" style="${inS} width:100%; margin-top:2px;" oninput="ppgVarSum()"></label>`).join("") +
@@ -4731,6 +4740,19 @@ async function ppgSave() {
     const sum = parts.reduce((a, b) => a + b, 0);
     if (Math.abs(sum - 100) > 0.5) { if (box) { box.style.color = "#dc2626"; box.textContent = `La suma da ${Math.round(sum * 10) / 10}% — tiene que dar 100%.`; } return; }
     value = parts.map(ppgNumStr).join("-");
+  }
+  // Guarda dura (2026-09-09): el plan SOLO es valido si tiene tantos tramos como meses
+  // de facturacion del deal. planPagosFracs compara contra el valor SIN cap; si el modal
+  // guardaba con el valor capeado (13 meses -> 12 tramos) HubSpot se quedaba con un plan
+  // que el dashboard despues ignoraba en silencio y volvia a lineal. Caso Bancard 59275432468.
+  if (value) {
+    const dReal = genFindDeal(st.id);
+    const realMeses = Math.max(1, parseInt(((dReal || {}).properties || {}).meses_de_facturacion__hasta_6_) || 1);
+    const nTramos = value.split("-").length;
+    if (nTramos !== realMeses) {
+      if (box) { box.style.color = "#dc2626"; box.textContent = `El plan tiene ${nTramos} tramos y el deal tiene ${realMeses} meses de facturación. Tienen que coincidir o HubSpot lo ignora.`; }
+      return;
+    }
   }
   if (box) { box.style.color = "#555"; box.textContent = "Guardando en HubSpot…"; }
   try {
@@ -5007,7 +5029,7 @@ function buildReforePipeline() {
     if (prob === 0) return;
     if (!p.closedate) return;
 
-    const meses = Math.max(1, Math.min(12, parseInt(p.meses_de_facturacion__hasta_6_) || 1));
+    const meses = Math.max(1, Math.min(36, parseInt(p.meses_de_facturacion__hasta_6_) || 1));
     const planFr = planPagosFracs(d); // plan de pagos (CU1/CU2): null = lineal
 
     const cd = new Date(p.closedate);
@@ -7033,7 +7055,7 @@ async function targetCreateDeal(id) {
   const val = i => { const el = document.getElementById(i); return el ? el.value : ""; };
   const amount = Number(val("tgd-amount"));
   if (!amount || amount <= 0) { alert("Cargá un monto válido."); return; }
-  const meses = Math.max(1, Math.min(12, Number(val("tgd-meses")) || 1));
+  const meses = Math.max(1, Math.min(36, Number(val("tgd-meses")) || 1));
   const st = document.getElementById("tgd-st"); const btn = document.getElementById("tgd-save");
   if (btn) btn.disabled = true; if (st) st.textContent = "Preparando empresa en HubSpot…";
   const cid = val("tgd-contacto");
@@ -11407,7 +11429,7 @@ function dailyStageChange(id, value) {
   }
   return dailyUpdate(id, "dealstage", value, "st-" + id);
 }
-function mesesOptions(sel) { let h = ""; for (let m = 1; m <= 12; m++) h += `<option value="${m}" ${String(sel) === String(m) ? "selected" : ""}>${m}</option>`; return h; }
+function mesesOptions(sel) { let h = ""; for (let m = 1; m <= 24; m++) h += `<option value="${m}" ${String(sel) === String(m) ? "selected" : ""}>${m}</option>`; return h; }
 function paisOptions(sel) { return DAILY_PAISES.map(p => `<option ${sel === p ? "selected" : ""}>${p}</option>`).join(""); }
 
 function toggleDailyForm() {
@@ -11767,7 +11789,7 @@ function dailyFactMes(p, offset) {
   const pond = (window.__factMode || "pleno") === "pond";
   let factor = 1;
   if (pond) { const prob = dealProb(p); if (!prob) return 0; factor = prob; }
-  const meses = Math.max(1, Math.min(12, parseInt(p.meses_de_facturacion__hasta_6_) || 1));
+  const meses = Math.max(1, Math.min(36, parseInt(p.meses_de_facturacion__hasta_6_) || 1));
   const now = new Date();
   const startMonth = new Date(now.getFullYear(), now.getMonth(), 1);
   const cd = new Date(p.closedate);
