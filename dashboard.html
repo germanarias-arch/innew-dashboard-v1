@@ -806,6 +806,7 @@ table.std tr:hover td { background: #fafafa; }
       <div style="margin-bottom:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;"><input type="text" id="cue-search" oninput="onCuentasSearch()" placeholder="🔎 Buscar cuenta por nombre… (muestra su CSM)" style="padding:7px 11px; border:1px solid #d1d5db; border-radius:8px; font-size:13px; width:320px; max-width:100%;"><button class="fc-btn" onclick="toggleNewAccount()">➕ Nueva cuenta</button></div>
       <div id="cue-new-form" style="display:none; margin-bottom:12px;"></div>
       <div id="cue-csm" style="margin-bottom:12px;"></div>
+      <div id="inbox-web" style="margin-bottom:12px;"></div>
       <div class="cue-kpis" id="cue-kpis"></div>
       <div id="cue-tabla"></div>
       <div class="cue-foco-grid" id="cue-focos"></div>
@@ -10559,7 +10560,67 @@ async function cuentaSave() {
 
 function cueColFSet(k, v) { window.__cueColF = window.__cueColF || {}; window.__cueColF[k] = v; renderCuentas(); }
 function clearCueColFilters() { window.__cueColF = {}; msfClearUids(["cu-csm", "cu-bcg", "cu-pais", "cu-plan", "cu-sem", "cu-scale", "cu-fact"]); renderCuentas(); }
+// ===== Inbound web · bandeja de Conversations de HubSpot (regla §10, 2026-09-09) =====
+// La bandeja NO es accesible por MCP: no existe objeto CONVERSATION (verificado con discover_hubspot_schema).
+// Pero todo el que deja un mail en el chat del sitio queda como CONTACT con hs_object_source_label = CONVERSATIONS.
+// LIMITE: los "Visitante desconocido" que nunca dejan mail no generan contacto y son invisibles acá,
+// asi que el contador de la bandeja de HubSpot SIEMPRE va a ser mayor que este panel. No presentarlo como total.
+const INBOX_NOISE_RE = /(no-?responder|no-?reply|comunicaciones@|avisos@|promocion@|posts-recaps?|follow-suggestions|dmarcreport@|postmaster@|mailer-daemon)/i;
+const INBOX_NOISE_DOM = ["mercadolibre", "mercadopago", "instagram", "bancogalicia", "microsoft.com", "amazonses", "innew.la", "prueba."];
+function inboxIsNoise(email) {
+  const e = (email || "").toLowerCase();
+  if (!e) return true;
+  if (INBOX_NOISE_RE.test(e)) return true;
+  if (e.indexOf("test") !== -1) return true;
+  return INBOX_NOISE_DOM.some(d => e.indexOf(d) !== -1);
+}
+function inboxDays(iso) { const t = Date.parse(iso); return isNaN(t) ? null : Math.floor((Date.now() - t) / 86400000); }
+async function fetchInboundWeb() {
+  const res = await mcpCall("mcp__aaaa9eed-76e4-4bc8-a1a2-fad976f54ccb__search_crm_objects", {
+    objectType: "contacts",
+    filterGroups: [{ filters: [{ propertyName: "hs_object_source_label", operator: "EQ", value: "CONVERSATIONS" }] }],
+    properties: ["firstname", "lastname", "email", "createdate", "hubspot_owner_id", "lifecyclestage"],
+    sorts: [{ propertyName: "createdate", direction: "DESCENDING" }],
+    limit: 50, offset: 0,
+    chatInsights: { userIntent: "Dashboard: inbound del chat web sin atender", satisfaction: "NEUTRAL" }
+  });
+  const parsed = typeof res === "string" ? JSON.parse(res) : res;
+  return parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
+}
+async function renderInboundWeb() {
+  const box = document.getElementById("inbox-web"); if (!box) return;
+  box.innerHTML = '<div class="small" style="color:#9ca3af;">📥 Inbound web — leyendo…</div>';
+  let rows = [];
+  try { rows = await fetchInboundWeb(); }
+  catch (e) { box.innerHTML = '<div class="small" style="color:#b45309;">📥 Inbound web: no se pudo leer HubSpot.</div>'; return; }
+  const hum = [], ruido = [];
+  rows.forEach(c => { const p = Object.assign({ id: c.id }, c.properties || {}); (inboxIsNoise(p.email) ? ruido : hum).push(p); });
+  const foot = '<div class="small" style="color:#9ca3af; margin-top:6px;">Filtrados ' + ruido.length + ' de notificaciones (ML, Instagram, MercadoPago, DMARC…). Los “Visitante desconocido” que no dejan mail no llegan acá: la bandeja de HubSpot siempre muestra más.</div>';
+  if (!hum.length) {
+    box.innerHTML = '<div style="border:1px solid #e5e7eb; border-radius:8px; padding:11px 14px; background:#fafafa;"><b style="font-size:13px;">📥 Inbound web</b> <span class="small" style="color:#059669;">sin contactos humanos pendientes</span>' + foot + '</div>';
+    return;
+  }
+  const rojo = hum.filter(p => !p.hubspot_owner_id && (inboxDays(p.createdate) || 0) >= 2).length;
+  let h = '<div style="border:1px solid ' + (rojo ? "#fecaca" : "#e5e7eb") + '; border-radius:8px; padding:11px 14px; background:' + (rojo ? "#fef2f2" : "#fafafa") + ';">'
+    + '<b style="font-size:13px;">📥 Inbound web</b> <span class="small" style="color:#6b7280;">' + hum.length + ' contacto' + (hum.length === 1 ? "" : "s") + ' del chat del sitio</span>'
+    + (rojo ? ' <span style="font-size:11px; font-weight:700; color:#b91c1c;">· ' + rojo + ' sin dueño hace +48 h</span>' : "")
+    + '<table style="width:100%; border-collapse:collapse; font-size:12.5px; margin-top:8px;">';
+  hum.sort((a, b) => (inboxDays(b.createdate) || 0) - (inboxDays(a.createdate) || 0)).forEach(p => {
+    const d = inboxDays(p.createdate);
+    const sinD = !p.hubspot_owner_id;
+    const col = (sinD && d >= 2) ? "#b91c1c" : (sinD && d >= 1) ? "#b45309" : "#6b7280";
+    const nom = ((p.firstname || "") + " " + (p.lastname || "")).trim() || "(sin nombre)";
+    h += '<tr style="border-top:1px solid #eee;">'
+      + '<td style="padding:5px 8px 5px 0;"><b>' + nom + '</b></td>'
+      + '<td style="padding:5px 8px; color:#6b7280;">' + (p.email || "—") + '</td>'
+      + '<td style="padding:5px 8px; text-align:right; color:' + col + '; font-weight:600; white-space:nowrap;">' + (d === null ? "—" : d + " d") + '</td>'
+      + '<td style="padding:5px 0 5px 8px; text-align:right; color:' + col + '; white-space:nowrap;">' + (sinD ? "sin asignar" : "asignado") + '</td>'
+      + '</tr>';
+  });
+  box.innerHTML = h + '</table>' + foot + '</div>';
+}
 async function renderCuentas() {
+  try { renderInboundWeb(); } catch (e) {}
   cuMigrateEstadoToSemaforo();
   const cont = document.getElementById("cue-tabla");
   if (!window.__cuentasData) {
