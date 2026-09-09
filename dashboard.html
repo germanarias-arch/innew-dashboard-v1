@@ -425,6 +425,12 @@ table.std tr:hover td { background: #fafafa; }
         </div>
       </div>
       <div class="nav-group">
+        <div class="nav-tier-label">Motores de Generación - Inbound</div>
+        <div class="view-toggle vt-priority">
+          <button id="vt-inbound" class="vt-btn" onclick="setView('inbound')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:5px;"><path d="M4 21v-13a3 3 0 0 1 3 -3h10a3 3 0 0 1 3 3v13"/><path d="M4 13h3l2 3h6l2 -3h3"/><path d="M12 8v4"/><path d="M9.5 10.5l2.5 2.5l2.5 -2.5"/></svg>Chat web</button>
+        </div>
+      </div>
+      <div class="nav-group">
         <div class="nav-tier-label">Otras vistas</div>
         <div class="view-toggle vt-secondary">
           <button id="vt-clientes" class="vt-btn" onclick="setView('clientes')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><path d="M9 7a4 4 0 1 0 0 8a4 4 0 0 0 0 -8z"/><path d="M3 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><path d="M21 21v-2a4 4 0 0 0 -3 -3.85"/></svg>Clientes</button>
@@ -806,7 +812,6 @@ table.std tr:hover td { background: #fafafa; }
       <div style="margin-bottom:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;"><input type="text" id="cue-search" oninput="onCuentasSearch()" placeholder="🔎 Buscar cuenta por nombre… (muestra su CSM)" style="padding:7px 11px; border:1px solid #d1d5db; border-radius:8px; font-size:13px; width:320px; max-width:100%;"><button class="fc-btn" onclick="toggleNewAccount()">➕ Nueva cuenta</button></div>
       <div id="cue-new-form" style="display:none; margin-bottom:12px;"></div>
       <div id="cue-csm" style="margin-bottom:12px;"></div>
-      <div id="inbox-web" style="margin-bottom:12px;"></div>
       <div class="cue-kpis" id="cue-kpis"></div>
       <div id="cue-tabla"></div>
       <div class="cue-foco-grid" id="cue-focos"></div>
@@ -845,6 +850,15 @@ table.std tr:hover td { background: #fafafa; }
   </div><!-- /view-bugs -->
 
   <!-- ===================== CUENTAS TARGET (prospección outbound) ===================== -->
+  <div id="view-inbound" style="display:none">
+    <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">💬 <b>Chat web de innew.net</b> — leads del asistente del sitio, en vivo desde HubSpot. El chat contesta <i>"no tenemos agentes disponibles"</i> y promete respuesta por mail: <b>esta vista es esa promesa</b>. Se filtran las notificaciones automáticas (Mercado Libre, Instagram, MercadoPago, DMARC) y lo ya descartado a mano.</div>
+    <div id="inbox-web"></div>
+    <div class="small" style="margin-top:14px; color:#6b7280; line-height:1.6;">
+      <b>Cómo leerla.</b> Cada fila es alguien que <b>dejó su mail</b> en el chat. Los <i>"Visitante desconocido"</i> que se van sin dejar dirección <b>no llegan acá</b>: la bandeja de HubSpot siempre va a mostrar más conversaciones que esta tabla, y está bien que así sea — sin mail no hay a quién responderle.<br>
+      <b>Rojo</b> = sin dueño hace más de 48 h · <b>ámbar</b> = entre 24 y 48 h.<br>
+      <b>Si no es comercial</b> (mandan el CV, un proveedor ofrece servicios, consulta administrativa): ponele <code>Lifecycle stage = Other</code> en HubSpot y desaparece de acá para siempre. Es la única forma de sacar a un humano real que no es lead — por el mail no se distingue.
+    </div>
+  </div>
   <div id="view-target" style="display:none">
     <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">🎯 <b>Cuentas Target</b>: lista de empresas objetivo para prospección outbound, organizadas en 3 frentes. Trabajá el estado y el siguiente paso de cada una; cuando detectás oportunidad, creá el deal con ⚡ y entra directo a Total Generación. <i>(Lista local del navegador; los deals sí van a HubSpot.)</i></div>
     <div id="target-kpis"></div>
@@ -7362,8 +7376,8 @@ function renderTarget() {
 function setView(v) {
   // "foco" es la vista Daily (foco comercial del día). Comparten el mismo div view-daily.
   window.__view = v; // lo usa refreshGlobal() para saber qué re-renderizar
-  const views = { foco: "view-daily", metas: "view-metas", fuentes: "view-fuentes", emb: "view-embudo", ritmo: "view-ritmo", cur: "view-curaduria", cue: "view-cuentas", clientes: "view-clientes", nurt: "view-nurt", tareas: "view-tareas", agenda: "view-agenda", reseller: "view-reseller", target: "view-target", marcadores: "view-marcadores", bugs: "view-bugs", guia: "view-guia" };
-  const btns = { foco: "vt-foco", metas: "vt-metas", fuentes: "vt-fuentes", emb: "vt-emb", ritmo: "vt-ritmo", cur: "vt-cur", cue: "vt-cue", clientes: "vt-clientes", nurt: "vt-nurt", tareas: "vt-tareas", agenda: "vt-agenda", reseller: "vt-reseller", target: "vt-target", marcadores: "vt-marcadores", bugs: "vt-bugs", guia: "vt-guia" };
+  const views = { foco: "view-daily", metas: "view-metas", fuentes: "view-fuentes", emb: "view-embudo", ritmo: "view-ritmo", cur: "view-curaduria", cue: "view-cuentas", clientes: "view-clientes", nurt: "view-nurt", tareas: "view-tareas", agenda: "view-agenda", reseller: "view-reseller", target: "view-target", marcadores: "view-marcadores", bugs: "view-bugs", guia: "view-guia", inbound: "view-inbound" };
+  const btns = { foco: "vt-foco", metas: "vt-metas", fuentes: "vt-fuentes", emb: "vt-emb", ritmo: "vt-ritmo", cur: "vt-cur", cue: "vt-cue", clientes: "vt-clientes", nurt: "vt-nurt", tareas: "vt-tareas", agenda: "vt-agenda", reseller: "vt-reseller", target: "vt-target", marcadores: "vt-marcadores", bugs: "vt-bugs", guia: "vt-guia", inbound: "vt-inbound" };
   Object.keys(views).forEach(k => {
     const el = document.getElementById(views[k]); if (el) el.style.display = (k === v) ? "block" : "none";
     const bt = document.getElementById(btns[k]); if (bt) bt.classList.toggle("active", k === v);
@@ -7377,6 +7391,7 @@ function setView(v) {
   if (v === "marcadores") renderMarcadores();
   if (v === "bugs") renderBugs();
   if (v === "target") renderTarget();
+  if (v === "inbound") renderInboundWeb();
   if (v === "ritmo") { if (!window.__tareasLoaded) loadTareas().then(() => { try { renderRitmo(); } catch (e) {} }); renderRitmo(); }
   if (v === "nurt") renderNurturing();
   if (v === "clientes") { renderCuentas(); try { renderCartera(); } catch (e) {} }
@@ -10594,8 +10609,10 @@ async function renderInboundWeb() {
   try { rows = await fetchInboundWeb(); }
   catch (e) { box.innerHTML = '<div class="small" style="color:#b45309;">📥 Inbound web: no se pudo leer HubSpot.</div>'; return; }
   const hum = [], ruido = [];
-  rows.forEach(c => { const p = Object.assign({ id: c.id }, c.properties || {}); (inboxIsNoise(p.email) ? ruido : hum).push(p); });
-  const foot = '<div class="small" style="color:#9ca3af; margin-top:6px;">Filtrados ' + ruido.length + ' de notificaciones (ML, Instagram, MercadoPago, DMARC…). Los “Visitante desconocido” que no dejan mail no llegan acá: la bandeja de HubSpot siempre muestra más.</div>';
+  // lifecyclestage "other" = ya triado a mano y descartado (RRHH/CV, proveedor, consulta no comercial).
+  // Es el unico modo de sacar del panel a un humano real que no es lead: por mail no se puede distinguir.
+  rows.forEach(c => { const p = Object.assign({ id: c.id }, c.properties || {}); ((inboxIsNoise(p.email) || p.lifecyclestage === "other") ? ruido : hum).push(p); });
+  const foot = '<div class="small" style="color:#9ca3af; margin-top:6px;">Filtrados ' + ruido.length + ' entre notificaciones (ML, Instagram, MercadoPago, DMARC…) y descartados a mano. Los “Visitante desconocido” que no dejan mail no llegan acá: la bandeja de HubSpot siempre muestra más.</div>';
   if (!hum.length) {
     box.innerHTML = '<div style="border:1px solid #e5e7eb; border-radius:8px; padding:11px 14px; background:#fafafa;"><b style="font-size:13px;">📥 Inbound web</b> <span class="small" style="color:#059669;">sin contactos humanos pendientes</span>' + foot + '</div>';
     return;
@@ -10620,7 +10637,6 @@ async function renderInboundWeb() {
   box.innerHTML = h + '</table>' + foot + '</div>';
 }
 async function renderCuentas() {
-  try { renderInboundWeb(); } catch (e) {}
   cuMigrateEstadoToSemaforo();
   const cont = document.getElementById("cue-tabla");
   if (!window.__cuentasData) {
