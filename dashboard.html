@@ -792,6 +792,13 @@ table.std tr:hover td { background: #fafafa; }
 
   <!-- ===================== CLIENTES (tabla en vivo) ===================== -->
   <div id="view-clientes" style="display:none">
+    <!-- Dos pestañas, y esta vez son dos PREGUNTAS distintas (quién es el cliente vs. cuánto le
+         puedo vender), no dos versiones del mismo dato como las que se eliminaron el 07/09. -->
+    <div style="display:flex; gap:6px; margin-bottom:12px; border-bottom:2px solid #e5e7eb;">
+      <button id="clitab-btn-cuentas" class="clitab active" onclick="cliTab('cuentas')">🏬 Lista de clientes</button>
+      <button id="clitab-btn-fc" class="clitab" onclick="cliTab('fc')">📈 Forecasting</button>
+    </div>
+
     <div id="clitab-cuentas">
       <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">🏬 Clientes en vivo desde HubSpot (customer) — <b>una fila por cuenta</b>. Todo el detalle y toda la edición viven en la <b>ficha</b>: contrato, consumo de horas, salud del cliente y deals. Abrila con <b>Ficha ↗</b>.</div>
 
@@ -818,6 +825,11 @@ table.std tr:hover td { background: #fafafa; }
       <div class="small" style="margin-top:12px; font-style:italic; color:#888;">
         % del P&amp;L = facturación Innew ÷ GMV del cliente (baja = más techo para crecer). El GMV sale del export de pedidos que cargás en <b>📥 Cargar exports</b>; sin export, se carga a mano en la ficha. Servicios y deals salen de HubSpot.
       </div>
+    </div>
+
+    <div id="clitab-fc" style="display:none">
+      <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">📈 <b>Forecasting de cuentas</b> — qué le podés vender a cada cliente y cuánto suma eso en los próximos meses. Cargá oportunidades por cuenta, mirá la proyección contra el MRR y el run-rate actual, y recién cuando estés conforme mandalas a HubSpot como deals en <b>SQL – Discovery</b>.</div>
+      <div id="fc-body"></div>
     </div>
 
     <!-- Panel lateral de la ficha del cliente. Vive fuera de la tabla y por debajo del popup
@@ -7833,6 +7845,414 @@ const CLI_TIP = {
   acc: ""
 };
 
+
+/* ==========================================================================================
+   FORECASTING DE CUENTAS (2026-09-10)
+   ------------------------------------------------------------------------------------------
+   Pedido de German: ver por cuenta el GMV y su tendencia, el MRR, el ACV run-rate, el tipo de
+   servicio, las horas contratadas vs consumidas del plan, la matriz BCG y cómo está la
+   relación; elegir un horizonte de 3/6/9/12 meses; cargar servicios a vender con su
+   facturación estimada; seguir eso contra el MRR y el ACV; y que esa carga cree deals en
+   SQL – Discovery asignados al CSM.
+
+   Tres decisiones que German cerró antes de construir:
+   1) **Owner = German (75005271) en TODOS los deals.** Verificado con search_owners el 10/09:
+      de los cuatro CSM, el único que existe como usuario de HubSpot es German — Jennifer, Seba
+      y Fernanda no tienen seat, así que no se les puede asignar un deal. El CSM real viaja en
+      el NOMBRE del deal y ya vive en `csm_asignado` de la empresa. Si algún día tienen usuario,
+      se cambia FC_OWNER_ID y listo.
+   2) **Los deals se crean EN LOTE, con botón aparte.** Las oportunidades quedan como borrador
+      local hasta que German aprieta "Crear N deals". Planificar no debe ensuciar el CRM.
+   3) **Vive como pestaña de Clientes**, no como vista suelta.
+   ========================================================================================== */
+const FC_OWNER_ID = "75005271";          // German Patricio Arias
+const FC_STAGE_SQL = "qualifiedtobuy";   // SQL – Discovery en el pipeline default
+const FC_KEY = "dashComercial_fcOpps";
+let FC_HORIZ = 6;      // meses de proyección: 3 / 6 / 9 / 12
+let FC_PER_HS = 6;     // ventana de horas: 1 mes / 6 semestre / 8 / 12 año
+let FC_OPEN = {};      // cuentas con el panel de oportunidades desplegado
+let FC_SORT = { col: "gap", dir: -1 };
+
+/* Servicios vendibles = los mismos values de `producto` que ya usa HubSpot. NO se inventan
+   nombres nuevos: si el value no existe en el enum, HubSpot rechaza el write. */
+const FC_SERVICIOS = Object.keys(PRODUCTO_TO_CATEGORIA);
+
+// ---------- persistencia de los borradores ----------
+function fcOppsAll() { try { return JSON.parse(localStorage.getItem(FC_KEY) || "{}"); } catch (e) { return {}; } }
+function fcOppsSave(all) { try { localStorage.setItem(FC_KEY, JSON.stringify(all)); } catch (e) {} }
+function fcOppsOf(cli) { return fcOppsAll()[String(cli).trim()] || []; }
+function fcOppsSet(cli, list) {
+  const all = fcOppsAll();
+  if (list && list.length) all[String(cli).trim()] = list; else delete all[String(cli).trim()];
+  fcOppsSave(all);
+}
+function fcOppAdd(cli) {
+  const g = i => { const el = document.getElementById(i); return el ? el.value : ""; };
+  const monto = cuNum(g("fc-monto"));
+  if (monto === null || monto <= 0) { alert("Cargá un monto estimado mayor a cero."); return; }
+  const meses = Math.max(1, Math.min(36, parseInt(g("fc-meses"), 10) || 6));
+  const desde = g("fc-desde") || cuMonthKey();
+  const list = fcOppsOf(cli).slice();
+  list.push({
+    id: "o" + Date.now() + Math.random().toString(36).slice(2, 6),
+    servicio: g("fc-serv") || "Upsell - CA",
+    monto: monto, meses: meses, desde: desde,
+    nota: (g("fc-nota") || "").trim(),
+    dealId: null
+  });
+  fcOppsSet(cli, list);
+  renderForecast();
+}
+function fcOppDel(cli, id) {
+  const o = fcOppsOf(cli).find(x => x.id === id);
+  if (o && o.dealId) { if (!confirm("Esta oportunidad YA se creó como deal en HubSpot (" + o.dealId + ").\n\nSacarla de acá NO borra el deal: hay que borrarlo a mano en HubSpot. ¿Sacarla igual?")) return; }
+  fcOppsSet(cli, fcOppsOf(cli).filter(x => x.id !== id));
+  renderForecast();
+}
+
+/* ---------- horas del plan en una ventana de N meses ----------
+   `horasHist` guarda por mes { c: consumidas, k: contratadas }. Para el semestre se SUMAN los
+   meses que existen, y los meses sin `k` caen a las horas contratadas de hoy: si no, un mes sin
+   snapshot haría ver "consumiste 40 de 0". Devuelve también cuántos meses tienen dato, porque
+   "80% de un solo mes" y "80% de seis" no son la misma afirmación. */
+function fcHoras(cli, sghHoy, n) {
+  const hist = cuHorasHist(cli);
+  const keys = [];
+  const d = new Date();
+  for (let i = 0; i < n; i++) { keys.push(d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")); d.setMonth(d.getMonth() - 1); }
+  let c = 0, k = 0, conDato = 0;
+  keys.forEach(m => {
+    const e = hist[m];
+    if (e == null) return;
+    const ec = (typeof e === "number") ? e : (e.c == null ? null : e.c);
+    const ek = (typeof e === "number") ? null : (e.k == null ? null : e.k);
+    if (ec === null && ek === null) return;
+    conDato++;
+    c += (ec || 0);
+    k += (ek != null ? ek : (sghHoy || 0));
+  });
+  return { c: c, k: k, meses: conDato, pct: k > 0 ? Math.round(c / k * 100) : null };
+}
+
+/* ---------- servicios contratados y antigüedad, desde los deals GANADOS ----------
+   Sale del cache que llena "⟳ Cargar facturación Innew". Sin ese cache no se puede afirmar
+   nada, así que devuelve null y la celda lo dice — no un "sin servicios" que sería falso. */
+function fcServicios(companyId) {
+  const deals = (window.__cuentaDealsCache || {})[companyId];
+  if (!deals) return null;
+  const set = {}; let desde = null;
+  deals.forEach(d => {
+    const p = d.properties || {};
+    if (p.dealstage !== WON_STAGE) return;
+    const prod = (p.producto || "").trim();
+    if (prod) set[prod] = (set[prod] || 0) + 1;
+    if (p.closedate) { const cd = new Date(p.closedate); if (!isNaN(cd) && (desde === null || cd < desde)) desde = cd; }
+  });
+  const meses = desde ? Math.max(0, Math.round((new Date() - desde) / 2629800000)) : null;
+  return { productos: Object.keys(set), antigMeses: meses };
+}
+
+/* ---------- proyección ----------
+   Proyectado = MRR contratado × horizonte + lo que aporta cada oportunidad DENTRO de la ventana.
+   Una opp que arranca en el mes 5 con 6 cuotas y un horizonte de 6 sólo aporta 2 cuotas: contar
+   las 6 sería inflar el número con plata que cae fuera de la ventana. La base de comparación es
+   el run-rate anual prorrateado al horizonte, que es lo que la cuenta rinde HOY sin vender nada.
+   Si no hay run-rate (falta traer la facturación de HubSpot) se cae al MRR contratado y se
+   rotula, en vez de comparar contra cero y cantar un crecimiento que no existe. */
+function fcProyeccion(mrr, runrate, opps, horiz) {
+  const hoyIdx = (() => { const d = new Date(); return d.getFullYear() * 12 + d.getMonth(); })();
+  let deOpps = 0;
+  (opps || []).forEach(o => {
+    const p = String(o.desde || "").split("-");
+    const ini = (Number(p[0]) * 12 + (Number(p[1]) - 1)) - hoyIdx;   // offset en meses desde hoy
+    const cuota = o.monto / Math.max(1, o.meses);
+    for (let m = 0; m < o.meses; m++) {
+      const mes = ini + m;
+      if (mes >= 0 && mes < horiz) deOpps += cuota;
+    }
+  });
+  const base = (mrr || 0) * horiz;
+  const refAnual = runrate != null ? runrate : ((mrr || 0) * 12);
+  const ref = refAnual * horiz / 12;
+  return { base: base, opps: deOpps, total: base + deOpps, ref: ref, gap: (base + deOpps) - ref, refEsRunrate: runrate != null };
+}
+
+/* ---------- render de la pestaña Forecasting ---------- */
+function fcSetHoriz(n) { FC_HORIZ = n; renderForecast(); }
+function fcSetPer(n) { FC_PER_HS = n; renderForecast(); }
+function fcToggle(cli) { FC_OPEN[cli] = !FC_OPEN[cli]; renderForecast(); }
+function fcSortBy(col) {
+  if (FC_SORT.col === col) FC_SORT.dir = -FC_SORT.dir;
+  else FC_SORT = { col: col, dir: col === "cli" ? 1 : -1 };   // texto A→Z, números de mayor a menor
+  renderForecast();
+}
+
+// Filas del forecast: mismo universo que la lista maestra (customers vivos, sin bajas locales).
+function fcRows() {
+  const data = window.__cuentasData || [];
+  const cur = window.__csmSel || "all", bsel = window.__bcgSel || "all";
+  return data.map(c => {
+    const cli = (c.properties.name || "(sin nombre)").trim();
+    const r = {
+      id: c.id, cli: cli, csm: (c.properties.csm_asignado || "").trim(),
+      pais: normPais(c.properties.country),
+      sgh: c.properties.horas_de_sg_contratadas ? parseFloat(c.properties.horas_de_sg_contratadas) : null,
+      bcg: (c.properties.calificacion_matriz_bcg || "").trim()
+    };
+    const meta = cuentasGetMeta(cli);
+    const mdef = cuModeloDef(cuModelo(cli));
+    const cartR = cartCliRow(cli);
+    const mrr = cuMontoEff(cli, r.pais === "AR", r.sgh);
+    const opps = fcOppsOf(cli);
+    const pr = fcProyeccion(mrr, cartR ? cartR.runrate : null, opps, FC_HORIZ);
+    return {
+      r: r, meta: meta, mdef: mdef, cartR: cartR, cli: cli,
+      mrr: mrr, runrate: cartR ? cartR.runrate : null,
+      gmv: cartR ? cartR.gmvAvg : cuNum(cuGmvCurrent(cli)),
+      ct: cartR ? cartSerieTrend(cartR.serie) : null,
+      horas: fcHoras(cli, r.sgh, FC_PER_HS),
+      serv: fcServicios(c.id),
+      opps: opps, pr: pr,
+      pendientes: opps.filter(o => !o.dealId).length
+    };
+  }).filter(m => {
+    if (fcEsBaja(m.cli)) return false;
+    if (cur !== "all") { if (cur === "__none" ? m.r.csm : m.r.csm !== cur) return false; }
+    if (bsel !== "all") { if (bsel === "__none" ? m.r.bcg : m.r.bcg !== bsel) return false; }
+    return true;
+  }).sort((a, b) => {
+    const g = { cli: x => x.cli, mrr: x => x.mrr, runrate: x => x.runrate, gmv: x => x.gmv, gap: x => x.pr.gap, opps: x => x.pr.opps, horas: x => (x.horas.pct == null ? null : x.horas.pct) }[FC_SORT.col] || (x => x.pr.gap);
+    const x = g(a), y = g(b);
+    if (typeof x === "string") return FC_SORT.dir * x.localeCompare(y);
+    if (x == null && y == null) return a.cli.localeCompare(b.cli);
+    if (x == null) return 1;
+    if (y == null) return -1;
+    if (x === y) return a.cli.localeCompare(b.cli);
+    return FC_SORT.dir * (x - y);
+  });
+}
+// Bajas locales: la cuenta salió de la cartera aunque HubSpot la siga devolviendo como customer.
+function fcEsBaja(cli) { return !!cuentasGetMeta(cli).baja; }
+
+async function renderForecast() {
+  const el = document.getElementById("fc-body");
+  if (!el) return;
+  if (!window.__cuentasData) {
+    el.innerHTML = '<div class="loading">Cargando cuentas de HubSpot…</div>';
+    try { window.__cuentasData = await fetchCuentas(); } catch (e) { window.__cuentasData = null; }
+    if (!window.__cuentasData) { el.innerHTML = `<div class="cue-alert" style="background:#FEF2F2; border-color:#FECACA; color:#b91c1c;">No se pudieron cargar las cuentas. <button class="fc-btn secondary" onclick="renderForecast()" style="font-size:12px;">↻ Reintentar</button></div>`; return; }
+  }
+  if (!window.__cuentasData.__finHyd) { try { cuFinHydrateFromHS(window.__cuentasData); } catch (e) {} window.__cuentasData.__finHyd = 1; }
+  cartInvalidateCli();
+  const rows = fcRows();
+
+  const totMrr = rows.reduce((s, m) => s + (m.mrr || 0), 0);
+  const totRr = rows.reduce((s, m) => s + (m.runrate || 0), 0);
+  const totOpp = rows.reduce((s, m) => s + m.pr.opps, 0);
+  const totProy = rows.reduce((s, m) => s + m.pr.total, 0);
+  const totRef = rows.reduce((s, m) => s + m.pr.ref, 0);
+  const pend = rows.reduce((s, m) => s + m.pendientes, 0);
+  const nOpps = rows.reduce((s, m) => s + m.opps.length, 0);
+
+  const hbtn = (n, l) => `<button class="fc-btn${FC_HORIZ === n ? "" : " secondary"}" style="font-size:12px; padding:5px 13px;" onclick="fcSetHoriz(${n})">${l}</button>`;
+  const pbtn = (n, l) => `<button class="fc-btn${FC_PER_HS === n ? "" : " secondary"}" style="font-size:11px; padding:4px 10px;" onclick="fcSetPer(${n})">${l}</button>`;
+  const kpi = (l, v, sub, col) => `<div class="cue-kpi"><div class="kl">${l}</div><div class="kv"${col ? ` style="color:${col}; font-size:21px;"` : ' style="font-size:21px;"'}>${v}</div><div class="ks">${sub}</div></div>`;
+
+  const th = (id, lbl, tip, al) => {
+    const act = FC_SORT.col === id;
+    return `<th onclick="fcSortBy('${id}')" title="${escAttr(tip || "")}" style="text-align:${al || "center"}; cursor:pointer; color:${act ? "#430C89" : ""};">${lbl}${act ? (FC_SORT.dir > 0 ? " ▲" : " ▼") : ` <span style="color:#d1d5db;">⇅</span>`}</th>`;
+  };
+
+  /* Los chips de CSM y BCG viven en la pestaña Lista, pero filtran TAMBIÉN acá. Si no se
+     avisara, German vería 6 cuentas de 38 sin ningún control a la vista que lo explique. */
+  const fCsm = window.__csmSel || "all", fBcg = window.__bcgSel || "all";
+  const avisoFiltro = (fCsm !== "all" || fBcg !== "all")
+    ? `<div style="margin-bottom:10px; padding:7px 12px; background:#FFFBEB; border:1px solid #FDE68A; border-radius:8px; font-size:11.5px; color:#92400e;">⚠ Estás viendo <b>${rows.length}</b> cuentas: hay filtros activos puestos en la pestaña Lista${fCsm !== "all" ? ` · CSM <b>${escAttr(fCsm === "__none" ? "sin CSM" : fCsm)}</b>` : ""}${fBcg !== "all" ? ` · BCG <b>${escAttr(fBcg === "__none" ? "sin calificar" : ((bcgDef(fBcg) || {}).label || fBcg))}</b>` : ""}. <a href="#" onclick="window.__csmSel='all'; window.__bcgSel='all'; renderForecast(); return false;" style="color:#b45309; font-weight:700;">Ver todas</a></div>`
+    : "";
+
+  let html = avisoFiltro + `
+    <div style="display:flex; gap:10px; align-items:center; margin-bottom:12px; padding:9px 13px; background:#F1EFFF; border:1px solid #C7BDFF; border-radius:9px; flex-wrap:wrap;">
+      <span style="font-size:12px; color:#4030C8; font-weight:700;">🔭 Horizonte:</span>
+      ${[[3, "3 meses"], [6, "6 meses"], [9, "9 meses"], [12, "12 meses"]].map(p => hbtn(p[0], p[1])).join("")}
+      <span style="font-size:11px; color:#6b7280; margin-left:8px;">Horas del plan:</span>
+      ${[[1, "mes"], [6, "semestre"], [8, "8 meses"], [12, "año"]].map(p => pbtn(p[0], p[1])).join("")}
+      <button class="fc-btn${pend ? "" : " secondary"}" onclick="fcPushAll()" ${pend ? "" : "disabled"} title="${escAttr(pend ? "Crea " + pend + " deal(s) en HubSpot: pipeline de ventas, etapa SQL – Discovery, a nombre de German, asociados a su empresa." : "No hay oportunidades pendientes de crear.")}" style="margin-left:auto; font-size:12px;">↑ Crear ${pend} deal${pend === 1 ? "" : "s"} en HubSpot</button>
+      <span id="fc-push-st" style="font-size:11px; color:#4030C8;"></span>
+    </div>
+
+    <div class="cue-kpis">
+      ${kpi("MRR contratado /mes", totMrr ? fmtMoney(totMrr) : "—", rows.length + " cuentas")}
+      ${kpi("Rinde hoy a " + FC_HORIZ + "m", fmtMoney(totRef), totRr ? "run-rate real prorrateado" : "sin facturación cargada · usa el MRR")}
+      ${kpi("Oportunidades cargadas", nOpps ? fmtMoney(totOpp) : "—", nOpps + " opp(s) · lo que cae dentro de los " + FC_HORIZ + "m")}
+      ${kpi("Proyectado a " + FC_HORIZ + "m", fmtMoney(totProy), "MRR + oportunidades")}
+      ${kpi("Gap vs. hoy", (totProy - totRef >= 0 ? "+" : "−") + fmtMoney(Math.abs(totProy - totRef)), totRef ? ((totProy - totRef) / totRef * 100).toFixed(1) + "% sobre lo que rinde hoy" : "—", (totProy - totRef) >= 0 ? "#047857" : "#b91c1c")}
+    </div>
+
+    <div style="overflow-x:auto; border:1px solid #e5e5e5; border-radius:8px; margin-top:12px;"><table class="std"><thead><tr>
+      ${th("cli", "Cliente", "Clic para ordenar. El chip de abajo es la matriz BCG.", "left")}
+      <th style="text-align:center;">CSM</th>
+      <th style="text-align:center;" title="Cómo está la relación: semáforo de la cuenta y hace cuánto es cliente (primer deal ganado).">Relación</th>
+      <th style="text-align:center;" title="Modelo de cobro + los productos que ya tiene contratados, según los deals ganados en HubSpot.">Servicio</th>
+      ${th("horas", "Horas del plan", "Contratadas vs consumidas en la ventana elegida. Se suman los meses con dato; los meses sin snapshot usan las horas contratadas de hoy.")}
+      ${th("mrr", "MRR /mes", "Lo firmado por mes: fijo + variable en Scale.")}
+      ${th("runrate", "ACV Run-rate", "Lo realmente facturado, proyectado a 12 meses. Necesita ⟳ Cargar facturación Innew en la pestaña Lista.")}
+      ${th("gmv", "GMV cliente /mes", "Mediana mensual del export de pedidos, en USD.")}
+      <th style="text-align:center;">Tendencia</th>
+      ${th("opps", "Opp. en " + FC_HORIZ + "m", "Lo que aportan las oportunidades cargadas DENTRO del horizonte. Una opp que arranca tarde aporta sólo las cuotas que entran en la ventana.")}
+      ${th("gap", "Proyectado vs hoy", "Proyectado (MRR + opps) contra lo que la cuenta rinde hoy, ambos al mismo horizonte.")}
+      <th style="text-align:center;"></th>
+    </tr></thead><tbody>`;
+
+  if (!rows.length) html += `<tr><td colspan="12" class="empty">Sin cuentas en esta selección.</td></tr>`;
+
+  rows.forEach(m => {
+    const r = m.r, cliJs = cliAttr(m.cli);
+    const sem = CUENTAS_SEMAFORO[m.meta.semaforo || ""];
+    const antig = m.serv && m.serv.antigMeses != null ? m.serv.antigMeses : null;
+    const relTxt = `${sem ? `<span style="display:inline-block; font-size:10px; font-weight:600; color:${sem.fg}; background:${sem.bg}; border-radius:9px; padding:1px 8px; white-space:nowrap;">● ${sem.label}</span>` : `<span style="color:#d1d5db; font-size:11px;">sin semáforo</span>`}`
+      + (antig != null ? `<div style="font-size:9px; color:#9ca3af; margin-top:2px;">cliente hace ${antig < 12 ? antig + "m" : (antig / 12).toFixed(1) + "a"}</div>` : "");
+
+    const servTxt = `<span title="${escAttr(m.mdef.l + ": " + m.mdef.d)}" style="font-size:10.5px; font-weight:600; color:${m.mdef.c}; white-space:nowrap;">${m.mdef.ic ? m.mdef.ic + " " : ""}${m.mdef.l}</span>`
+      + (m.serv === null
+        ? `<div style="font-size:9px; color:#b45309; font-style:italic;">falta la facturación</div>`
+        : (m.serv.productos.length
+          ? `<div style="margin-top:2px; max-width:170px; white-space:normal;">${m.serv.productos.map(p => `<span style="display:inline-block; font-size:9px; background:#F3F4F6; color:#374151; border-radius:7px; padding:1px 6px; margin:1px;">${escAttr(p)}</span>`).join("")}</div>`
+          : `<div style="font-size:9px; color:#9ca3af; font-style:italic;">sin producto en los deals</div>`));
+
+    const h = m.horas;
+    const hTxt = h.meses === 0
+      ? `<span style="color:#cbd5e1; font-size:11px;" title="Sin horas cargadas en la ventana. Se cargan en la ficha del cliente.">sin registro</span>`
+      : `<div style="font-weight:600; ${h.pct != null && h.pct > 110 ? "color:#b91c1c;" : (h.pct != null && h.pct < 60 ? "color:#b45309;" : "")}">${Math.round(h.c)} / ${Math.round(h.k) || "—"} h</div>
+         <div style="font-size:9px; color:#9ca3af;" title="${escAttr(h.meses + " mes(es) con dato dentro de la ventana de " + FC_PER_HS + ". " + (h.pct == null ? "" : h.pct > 110 ? "Sobreconsumo: estás poniendo horas que no cobrás." : h.pct < 60 ? "Sub-consumo: la cuenta paga por horas que no usa, es un riesgo de renovación." : "Consumo en rango."))}">${h.pct == null ? "" : h.pct + "% · "}${h.meses}m con dato</div>`;
+
+    const gapCol = m.pr.gap >= 0 ? "#047857" : "#b91c1c";
+    const proyTxt = `<div style="font-weight:700;">${fmtMoneyK(m.pr.total)}</div>
+      <div style="font-size:9px; color:${gapCol}; font-weight:600;" title="${escAttr("Rinde hoy a " + FC_HORIZ + " meses: " + fmtMoney(m.pr.ref) + (m.pr.refEsRunrate ? " (run-rate real)" : " (estimado con el MRR: falta traer la facturación)"))}">${m.pr.gap >= 0 ? "+" : "−"}${fmtMoneyK(Math.abs(m.pr.gap))} vs hoy</div>`;
+
+    html += `<tr>
+      <td style="min-width:190px;"><a href="#" onclick="cliFichaOpen('${cliJs}','${r.id}'); return false;" style="font-weight:700; color:#111827; text-decoration:none; border-bottom:1px dotted #430C89;">${escAttr(m.cli)}</a><div style="margin-top:2px;">${bcgBadge(r.bcg)}</div></td>
+      <td style="text-align:center; font-size:11.5px;">${r.csm ? escAttr(r.csm) : `<span style="color:#b45309;">sin CSM</span>`}</td>
+      <td style="text-align:center;">${relTxt}</td>
+      <td style="text-align:center;">${servTxt}</td>
+      <td style="text-align:center; font-variant-numeric:tabular-nums;">${hTxt}</td>
+      <td style="text-align:center; font-variant-numeric:tabular-nums;">${m.mrr === null ? `<span style="color:#cbd5e1;">—</span>` : `<b style="color:#047857;">${fmtMoneyK(m.mrr)}</b>`}</td>
+      <td style="text-align:center; font-variant-numeric:tabular-nums;">${m.runrate == null ? (window.__perfLoaded ? `<span style="color:#cbd5e1; font-size:11px;">sin facturación</span>` : `<a href="#" onclick="perfLoadAll(true); return false;" style="font-size:10.5px; color:#b45309; background:#FFFBEB; border:1px solid #FDE68A; border-radius:8px; padding:1px 7px; text-decoration:none;">⟳ cargar</a>`) : `<b>${fmtMoneyK(m.runrate)}</b>`}</td>
+      <td style="text-align:center; font-variant-numeric:tabular-nums;">${m.gmv ? fmtMoneyK(m.gmv) : `<span style="color:#cbd5e1; font-size:11px;">—</span>`}</td>
+      <td style="text-align:center;">${m.cartR && m.cartR.serie.length >= 2 ? `<div style="line-height:0;">${cartSparkMeses(m.cartR.serie, m.cartR.okMeses, 130, 36)}</div>${m.ct ? `<div style="font-size:10px; color:${m.ct.color}; font-weight:600;">${m.ct.arrow} ${m.ct.pct}</div>` : ""}` : `<span style="color:#cbd5e1; font-size:11px;">—</span>`}</td>
+      <td style="text-align:center; font-variant-numeric:tabular-nums;">${m.pr.opps ? `<b style="color:#6d28d9;">${fmtMoneyK(m.pr.opps)}</b><div style="font-size:9px; color:#9ca3af;">${m.opps.length} opp${m.opps.length === 1 ? "" : "s"}${m.pendientes ? " · " + m.pendientes + " sin crear" : " · todas en HubSpot"}</div>` : `<span style="color:#cbd5e1;">—</span>`}</td>
+      <td style="text-align:center; font-variant-numeric:tabular-nums;">${proyTxt}</td>
+      <td style="text-align:center;"><button onclick="fcToggle('${cliJs}')" style="cursor:pointer; border:1px solid #C7BDFF; background:#F1EFFF; color:#4030C8; border-radius:6px; padding:3px 10px; font-size:11px; font-weight:700; white-space:nowrap;">${FC_OPEN[m.cli] ? "▾" : "＋"} Opp${m.opps.length ? " (" + m.opps.length + ")" : ""}</button></td>
+    </tr>`;
+
+    if (FC_OPEN[m.cli]) html += `<tr><td colspan="12" style="padding:0; background:#faf9ff;">${fcPanel(m)}</td></tr>`;
+  });
+
+  html += `</tbody></table></div>
+    <div class="small" style="margin-top:12px; font-style:italic; color:#888;">
+      Las oportunidades viven en tu navegador hasta que las mandás a HubSpot. Al crearlas van al <b>pipeline de ventas</b>, etapa <b>SQL – Discovery</b>, a nombre de <b>German</b> (Jennifer, Seba y Fernanda no tienen usuario en HubSpot) y con el CSM en el nombre del deal.
+    </div>`;
+  el.innerHTML = html;
+}
+
+/* Panel de carga de oportunidades de una cuenta. */
+function fcPanel(m) {
+  const cliJs = cliAttr(m.cli);
+  const inS = "padding:5px 8px; font-size:12.5px; border:1px solid #d1d5db; border-radius:6px;";
+  const prox = (() => { const d = new Date(); d.setMonth(d.getMonth() + 1); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); })();
+  const filas = m.opps.length ? m.opps.map(o => {
+    const cuota = o.monto / Math.max(1, o.meses);
+    return `<tr style="border-top:1px solid #eee;">
+      <td style="padding:5px 9px; font-size:12px;">${escAttr(o.servicio)}${o.nota ? `<div style="font-size:10px; color:#9ca3af;">${escAttr(o.nota)}</div>` : ""}</td>
+      <td style="padding:5px 9px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px;"><b>${fmtMoney(o.monto)}</b><div style="font-size:10px; color:#9ca3af;">${fmtMoney(cuota)}/mes × ${o.meses}</div></td>
+      <td style="padding:5px 9px; text-align:center; font-size:12px;">${escAttr(o.desde)}</td>
+      <td style="padding:5px 9px; text-align:center; font-size:11px;">${o.dealId ? `<span style="color:#047857; font-weight:600;" title="Ya existe como deal en HubSpot">✓ en HubSpot</span>` : `<span style="color:#b45309;">borrador</span>`}</td>
+      <td style="padding:5px 9px; text-align:right;"><a href="#" onclick="fcOppDel('${cliJs}','${o.id}'); return false;" style="font-size:11px; color:#dc2626;">quitar</a></td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="5" style="padding:9px; font-size:12px; color:#9ca3af; font-style:italic;">Todavía no cargaste oportunidades para esta cuenta.</td></tr>`;
+
+  return `<div style="padding:12px 16px;">
+    <div style="font-size:12px; font-weight:700; color:#430C89; margin-bottom:7px;">Oportunidades a vender — ${escAttr(m.cli)}</div>
+    <table style="width:100%; border-collapse:collapse; background:#fff; border:1px solid #eee; border-radius:8px; overflow:hidden;">
+      <thead><tr style="background:#fafafa;"><th style="text-align:left; padding:5px 9px; font-size:9px; text-transform:uppercase; color:#6b7280;">Servicio</th><th style="text-align:right; padding:5px 9px; font-size:9px; text-transform:uppercase; color:#6b7280;">Monto total</th><th style="text-align:center; padding:5px 9px; font-size:9px; text-transform:uppercase; color:#6b7280;">Arranca</th><th style="text-align:center; padding:5px 9px; font-size:9px; text-transform:uppercase; color:#6b7280;">Estado</th><th></th></tr></thead>
+      <tbody>${filas}</tbody>
+    </table>
+    <div style="display:flex; gap:7px; align-items:flex-end; flex-wrap:wrap; margin-top:10px;">
+      <label style="font-size:11px; color:#6b7280;">Servicio<br><select id="fc-serv" style="${inS} max-width:190px;">${FC_SERVICIOS.map(s => `<option value="${escAttr(s)}"${s === "Upsell - CA" ? " selected" : ""}>${escAttr(s)}</option>`).join("")}</select></label>
+      <label style="font-size:11px; color:#6b7280;" title="Monto TOTAL del contrato, no la cuota mensual.">Monto total u$s<br><input type="number" id="fc-monto" placeholder="ej. 12000" style="${inS} width:120px; text-align:right;"></label>
+      <label style="font-size:11px; color:#6b7280;" title="En cuántos meses se factura. El dashboard reparte el monto en cuotas iguales desde el mes de arranque.">Meses de fact.<br><input type="number" id="fc-meses" value="6" min="1" max="36" style="${inS} width:80px; text-align:right;"></label>
+      <label style="font-size:11px; color:#6b7280;" title="Mes en que empieza a facturar. Define el closedate del deal y cuántas cuotas caen dentro del horizonte.">Arranca<br><input type="month" id="fc-desde" value="${prox}" style="${inS} width:135px;"></label>
+      <label style="font-size:11px; color:#6b7280;">Nota (opcional)<br><input type="text" id="fc-nota" placeholder="contexto para el deal" style="${inS} width:190px;"></label>
+      <button class="fc-btn" onclick="fcOppAdd('${cliJs}')" style="font-size:12px;">＋ Agregar</button>
+    </div>
+    <div style="font-size:10.5px; color:#9ca3af; margin-top:6px;">Se guarda en tu navegador. Nada llega a HubSpot hasta que apretás <b>↑ Crear deals</b> arriba.</div>
+  </div>`;
+}
+
+/* ---------- push en lote a HubSpot ----------
+   Crea SOLO las oportunidades sin `dealId`. Cada deal creado se marca al instante, así un
+   reintento después de un error parcial no duplica lo que ya se escribió — que es la forma
+   clásica de ensuciar el CRM con este tipo de botón. */
+async function fcPushAll() {
+  const all = fcOppsAll();
+  const cuentas = window.__cuentasData || [];
+  const lote = [];
+  Object.keys(all).forEach(cli => {
+    const acc = cuentas.find(c => (c.properties.name || "").trim() === cli);
+    (all[cli] || []).forEach(o => {
+      if (o.dealId) return;
+      lote.push({ cli: cli, opp: o, companyId: acc ? String(acc.id) : null, csm: acc ? (acc.properties.csm_asignado || "").trim() : "", pais: acc ? normPais(acc.properties.country) : "" });
+    });
+  });
+  if (!lote.length) { alert("No hay oportunidades pendientes de crear."); return; }
+  const sinEmpresa = lote.filter(x => !x.companyId || !/^\d+$/.test(x.companyId));
+  const detalle = lote.slice(0, 12).map(x => `· ${x.cli} — ${x.opp.servicio} — ${fmtMoney(x.opp.monto)} (${x.opp.meses}m, arranca ${x.opp.desde})`).join("\n");
+  if (!confirm(`Se van a crear ${lote.length} deal(s) en HubSpot:\n\n${detalle}${lote.length > 12 ? `\n… y ${lote.length - 12} más` : ""}\n\nPipeline de ventas · etapa SQL – Discovery · a nombre de German.\n${sinEmpresa.length ? `\n⚠ ${sinEmpresa.length} sin empresa asociada: se crean igual, pero quedan sueltos.\n` : ""}\n¿Confirmás?`)) return;
+
+  const st = document.getElementById("fc-push-st");
+  const say = t => { if (st) st.textContent = t; };
+  let ok = 0, fail = 0;
+  for (let i = 0; i < lote.length; i++) {
+    const x = lote[i], o = x.opp;
+    say(`creando ${i + 1}/${lote.length}…`);
+    /* closedate = último día del mes de arranque. El motor de facturación cuenta las cuotas
+       DESDE el mes de cierre, así que un deal que arranca en noviembre tiene que cerrar en
+       noviembre — poner "hoy" adelantaría toda la serie. */
+    const p = String(o.desde).split("-");
+    const cierre = new Date(Number(p[0]), Number(p[1]), 0);
+    const props = {
+      dealname: `${x.cli} - ${o.servicio} (Upsell${x.csm ? " · CSM " + x.csm : ""})`,
+      pipeline: "default",
+      dealstage: FC_STAGE_SQL,
+      amount: String(Math.round(o.monto)),
+      meses_de_facturacion__hasta_6_: String(o.meses),
+      closedate: cierre.toISOString().slice(0, 10),
+      hubspot_owner_id: FC_OWNER_ID,
+      producto: o.servicio,
+      dealtype: "existingbusiness",
+      hs_next_step: o.nota || "Definir alcance y agendar reunión de discovery"
+    };
+    if (x.pais) props.segmento = x.pais;
+    try {
+      const obj = { objectType: "deals", properties: props };
+      if (x.companyId && /^\d+$/.test(x.companyId)) obj.associations = [{ targetObjectId: Number(x.companyId), targetObjectType: "companies" }];
+      const res = await hsWrite({ createRequest: { objects: [obj] } });
+      const nid = genExtractNewId(res);
+      // Marcar YA, antes de seguir: si el próximo falla, éste no se vuelve a crear.
+      const cur = fcOppsAll();
+      const lst = (cur[x.cli] || []).map(y => y.id === o.id ? Object.assign({}, y, { dealId: nid ? String(nid) : "creado" }) : y);
+      cur[x.cli] = lst; fcOppsSave(cur);
+      ok++;
+    } catch (e) {
+      fail++;
+      console.error("fcPushAll", x.cli, o.servicio, e);
+    }
+  }
+  say(fail ? `✓ ${ok} creados · ✕ ${fail} con error` : `✓ ${ok} creados`);
+  if (fail) alert(`Se crearon ${ok} deal(s), pero ${fail} fallaron.\n\nLos que fallaron siguen marcados como borrador, así que podés reintentar sin duplicar los que sí salieron. Mirá la consola para el detalle del error.`);
+  try { await reloadDaily(); } catch (e) {}
+  renderForecast();
+}
+
 function cliFichaOpen(cli, id) {
   CLI_FICHA = { cli: String(cli), id: String(id) };
   cliFichaRender();
@@ -9409,11 +9829,22 @@ function cartRowsView() {
   return rows;
 }
 
-/* Las dos pestañas de Clientes ("Cuentas activas" y "Salud cliente") murieron el 2026-09-07:
-   se pisaban en 7 columnas y dos de esos pisones mostraban números DISTINTOS con el mismo
-   nombre (% del P&L estimado vs real; contrato vs facturado). Ahora hay una sola lista maestra
-   y una ficha por cliente. cliTab queda como stub por si algún link viejo lo llama. */
-function cliTab() { renderCuentas(); renderCartera(); }
+/* Las pestañas "Cuentas activas" y "Salud cliente" murieron el 2026-09-07: se pisaban en 7
+   columnas y dos de esos pisones mostraban números DISTINTOS con el mismo nombre (% del P&L
+   estimado vs real; contrato vs facturado). Quedó una sola lista maestra + ficha por cliente.
+   El 2026-09-10 volvió una segunda pestaña, pero con una diferencia de fondo: "Forecasting"
+   responde otra pregunta (cuánto le puedo vender a esta cuenta), no repinta los mismos datos
+   con otro nombre. Si alguna vez una columna aparece igual en las dos, es señal de alarma. */
+function cliTab(which) {
+  ["cuentas", "fc"].forEach(t => {
+    const pane = document.getElementById("clitab-" + t);
+    const btn = document.getElementById("clitab-btn-" + t);
+    if (pane) pane.style.display = (t === which) ? "block" : "none";
+    if (btn) btn.className = "clitab" + (t === which ? " active" : "");
+  });
+  if (which === "fc") renderForecast();
+  else { renderCuentas(); renderCartera(); }
+}
 
 // Cajón de ingesta de exports: plegado por defecto, porque cargar archivos es una tarea puntual.
 function cliToggleIngesta() {
@@ -10590,10 +11021,12 @@ function inboxIsNoise(email) {
   return INBOX_NOISE_DOM.some(d => e.indexOf(d) !== -1);
 }
 function inboxDays(iso) { const t = Date.parse(iso); return isNaN(t) ? null : Math.floor((Date.now() - t) / 86400000); }
-// OJO: `hs_object_source_label` NO se puede FILTRAR en el endpoint /crm/v3/objects/contacts/search
-// que usa nuestro backend (functions/api/hubspot.js) — es una propiedad derivada, no indexada para search.
-// Sí se puede PEDIR como propiedad. Por eso filtramos por fecha (que sí anda) y clasificamos en JS.
-// Falla ya cometida el 09/09: filtrar por esa propiedad devolvia error del backend y la vista quedaba vacia.
+// REQUISITO DE SCOPE (09/09/2026): esta es la UNICA vista del dashboard que lee CONTACTS.
+// Todo el resto lee deals / companies / tickets. Si la app de HubSpot detras de /api/hubspot
+// no tiene `crm.objects.contacts.read`, esto devuelve 403 "This app hasn't been granted all
+// required scopes" y la vista queda vacia — el resto del dashboard sigue andando igual.
+// Filtramos por createdate (filtrable seguro) y clasificamos por fuente en JS, para no depender
+// de que `hs_object_source_label` sea indexable en /crm/v3/objects/contacts/search.
 async function fetchInboundWeb() {
   const desde = Date.now() - 120 * 86400000; // ultimos 120 dias: alcanza y sobra para inbound sin atender
   const res = await mcpCall("mcp__aaaa9eed-76e4-4bc8-a1a2-fad976f54ccb__search_crm_objects", {
@@ -10737,6 +11170,17 @@ async function renderCuentas() {
     <span style="font-size:11px; color:#9ca3af;">se usa para convertir Valor hora $ → u$s en las cuentas de Argentina</span>
     <button class="fc-btn secondary" onclick="cuSyncAllToHS()" title="Escribe los campos financieros de todas las cuentas visibles en HubSpot (valor hora, monto mensual —en Scale ya con el variable sumado—, plan, fin acuerdo, semáforo, GMV, horas consumidas, histórico de horas, flag Scale, estado de facturación). El modelo Grow Pro y el desglose del variable quedan sólo en el dashboard: HubSpot no tiene properties para eso." style="font-size:12px; margin-left:auto;">⬆ Sincronizar a HubSpot</button>
     <span id="cufin-sync-st" style="font-size:11px; color:#4030C8;"></span>
+  </div>`
+  /* Barra de facturación Innew. VIVE ACÁ Y NO EN EL CAJÓN DE INGESTA (2026-09-10): el botón
+     "⟳ Cargar facturación Innew" estaba dentro de los KPIs de cartera, que quedaron plegados,
+     así que German nunca lo veía → `__cuentaDealsCache` vacío → `cartFactUsd` devolvía null →
+     **ACV Run-rate en "—" para TODAS las filas** y el % del P&L cayendo siempre a "estimado".
+     El dato no se carga solo a propósito: son N llamadas a HubSpot (una por cuenta con deals). */
+  + `<div style="display:flex; gap:10px; align-items:center; margin-bottom:10px; padding:8px 12px; background:${window.__perfLoaded ? "#F0FDF4" : "#FFFBEB"}; border:1px solid ${window.__perfLoaded ? "#BBF7D0" : "#FDE68A"}; border-radius:8px; flex-wrap:wrap;">
+    <span style="font-size:12px; color:${window.__perfLoaded ? "#065f46" : "#92400e"}; font-weight:600;">${window.__perfLoaded ? "✓ Facturación Innew cargada" : "⚠ Facturación Innew sin cargar"}</span>
+    <span style="font-size:11px; color:#6b7280;">${window.__perfLoaded ? "ACV, Run-rate y % del P&amp;L real salen de los deals ganados de cada cuenta." : "Sin esto no hay <b>ACV Run-rate</b> ni <b>% del P&amp;L real</b>: se lee de los deals ganados de cada cuenta y hay que traerlo de HubSpot."}</span>
+    <button class="fc-btn${window.__perfLoaded ? " secondary" : ""}" onclick="perfLoadAll(true)" title="Trae los deals de cada cuenta desde HubSpot para calcular lo realmente facturado (OPEX/CAPEX) por mes. Tarda unos segundos." style="font-size:12px; margin-left:auto;">⟳ Cargar facturación Innew</button>
+    <span class="perf-st" style="font-size:11px; color:#9ca3af;"></span>
   </div>`;
 
   /* ===== LISTA MAESTRA DE CLIENTES (2026-09-07) =====================================
@@ -10833,8 +11277,12 @@ async function renderCuentas() {
     /* ACV Run-rate: lo facturado en la ventana proyectado a 12 meses. Debajo va el ACV crudo
        con la CANTIDAD DE MESES, porque comparar un ACV de 6 meses contra uno de 2 no dice nada
        —fue el pedido original de German cuando pidió la columna ACV. */
+    /* Celda vacía que se explica sola. Un "—" mudo hizo perder tiempo el 10/09: parecía un bug
+       de la columna cuando en realidad faltaba traer la facturación de HubSpot. */
     const rrTxt = m.runrate === null || !m.runrate
-      ? `<span style="color:#cbd5e1;" title="Sin facturación Innew cargada. Abrí 📥 Cargar exports → ⟳ Cargar facturación Innew.">—</span>`
+      ? (window.__perfLoaded
+        ? `<span style="color:#cbd5e1;" title="${escAttr("La facturación Innew ya está cargada, pero esta cuenta no tiene deals ganados que facturen en " + (m.cartR ? m.cartR.periodo : "el período") + ". Si debería tenerlos, revisá el pipeline de la cuenta.")}">sin facturación</span>`
+        : `<a href="#" onclick="perfLoadAll(true); return false;" title="La facturación Innew todavía no se trajo de HubSpot: sin eso no hay ACV ni run-rate. Clic para cargarla." style="font-size:10.5px; color:#b45309; background:#FFFBEB; border:1px solid #FDE68A; border-radius:8px; padding:1px 7px; text-decoration:none; white-space:nowrap;">⟳ cargar</a>`)
       : `<div style="font-weight:600;">${fmtMoneyK(m.runrate)}</div><div style="font-size:9px; color:#9ca3af;" title="${escAttr("ACV del período (OPEX + CAPEX): " + fmtMoney(cartR.acv) + " en " + cartR.mesesAcv + " mes(es). El run-rate lo proyecta a 12.")}">ACV ${fmtMoneyK(cartR.acv)} · ${cartR.mesesAcv}m</div>`;
 
     let gmvTxt;
