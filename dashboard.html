@@ -265,6 +265,28 @@ table.std tr:hover td { background: #fafafa; }
 .nav-group .view-toggle { margin: 0; }
 .nav-group .nav-tier-label { margin: 0 4px 3px; }
 
+/* ---- Accesos a los portales de partner (VTEX y Tiendanube) ----
+   Salen del dashboard: son links externos, no vistas. Por eso son <a> y no .vt-btn — no
+   participan del estado activo de setView() y abren en pestaña nueva.
+   Los colores viven en estas dos variables: si German trae el hex exacto del manual de marca,
+   se cambia acá y listo. --vtex-pink es el rosa de VTEX; --tn-blue es el azul de Tiendanube,
+   tomado a ojo del sitio y pendiente de confirmar contra su guía.
+   No se reproducen los logos de ninguna de las dos: van el nombre y el color, nada más. */
+:root { --vtex-pink: #F71963; --tn-blue: #2C6ECB; }
+.portal-toggle { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.portal-btn {
+  display: inline-flex; align-items: center; gap: 8px; text-decoration: none;
+  border-radius: 999px; padding: 7px 15px 7px 13px; color: #fff; font-weight: 600;
+  font-size: 13px; line-height: 1.15; border: 1px solid transparent;
+  transition: filter .15s ease, transform .15s ease, box-shadow .15s ease;
+}
+.portal-btn:hover { filter: brightness(1.07); transform: translateY(-1px); box-shadow: 0 3px 10px rgba(15,23,42,.18); }
+.portal-btn .pb-marca { font-weight: 800; letter-spacing: .01em; }
+.portal-btn .pb-sub { font-weight: 500; font-size: 10.5px; opacity: .85; display: block; }
+.portal-btn .pb-txt { display: flex; flex-direction: column; }
+.portal-vtex { background: var(--vtex-pink); }
+.portal-tn { background: var(--tn-blue); }
+
 /* Franja sticky de metas del mes */
 #goal-strip { position: relative; background: #fff; color: #1e293b; border: 1px solid #e2e8f0; border-radius: 14px; padding: 12px 40px 14px 16px; margin: 0 0 14px; display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; box-shadow: 0 1px 3px rgba(15,23,42,0.05); }
 #goal-strip .gs-toggle { position: absolute; top: 9px; right: 10px; width: 22px; height: 22px; padding: 0; border: 1px solid #e2e8f0; border-radius: 5px; background: #f8fafc; color: #64748b; font-size: 15px; line-height: 1; cursor: pointer; }
@@ -428,6 +450,19 @@ table.std tr:hover td { background: #fafafa; }
         <div class="nav-tier-label">Motores de Generación - Inbound</div>
         <div class="view-toggle vt-priority">
           <button id="vt-inbound" class="vt-btn" onclick="setView('inbound')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:5px;"><path d="M4 21v-13a3 3 0 0 1 3 -3h10a3 3 0 0 1 3 3v13"/><path d="M4 13h3l2 3h6l2 -3h3"/><path d="M12 8v4"/><path d="M9.5 10.5l2.5 2.5l2.5 -2.5"/></svg>Chat web</button>
+        </div>
+      </div>
+      <div class="nav-group">
+        <div class="nav-tier-label">Portales de partner</div>
+        <div class="portal-toggle">
+          <a class="portal-btn portal-vtex" href="https://siportal.vtex.com/login" target="_blank" rel="noopener noreferrer" title="Abre el portal de partner de VTEX en una pestaña nueva">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6h-6a2 2 0 0 0 -2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2 -2v-6"/><path d="M11 13l9 -9"/><path d="M15 4h5v5"/></svg>
+            <span class="pb-txt"><span class="pb-marca">VTEX</span><span class="pb-sub">Portal Partner Sales</span></span>
+          </a>
+          <a class="portal-btn portal-tn" href="https://partner-suite.tiendanube.com" target="_blank" rel="noopener noreferrer" title="Abre el Partner Suite de Tiendanube en una pestaña nueva">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6h-6a2 2 0 0 0 -2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2 -2v-6"/><path d="M11 13l9 -9"/><path d="M15 4h5v5"/></svg>
+            <span class="pb-txt"><span class="pb-marca">Tiendanube</span><span class="pb-sub">Portal Partner Sales</span></span>
+          </a>
         </div>
       </div>
       <div class="nav-group">
@@ -10933,9 +10968,40 @@ async function fetchCuentas() {
 }
 function reloadCuentas() { window.__cuentasData = null; renderCuentas(); }
 function onCuentasSearch() { const el = document.getElementById("cue-search"); window.__cuentasSearch = el ? el.value : ""; renderCuentas(); }
+/* ===== CSM asignado: enum REAL de HubSpot =================================================
+   Leído de la property `csm_asignado` de companies el **2026-09-10** con get_properties.
+   La lista vieja estaba hardcodeada y desactualizada, y no era sólo cosmético: ofrecía
+   **"Alfred", "Alejandro Becerra (CL)" y "Otro", que NO existen en el enum** — elegir uno de
+   esos mandaba a HubSpot un valor inválido. Y le faltaban German, Fernanda y el valor de
+   "sin asignar" real. Diego Suarez ya fue archivado del enum; Julieta sigue con 0 cuentas.
+
+   ⚠️ `Sin CSM asiganado` tiene un TYPO en el value interno ("asiganado"). Va tal cual o
+   HubSpot rechaza el write; el label sí está bien escrito. No tocar el value.
+
+   Si German agrega o archiva un CSM en HubSpot, hay que actualizar esta lista. */
+const CSM_OPCIONES = [
+  { v: "German Arias",       l: "German Arias" },
+  { v: "Jenny",              l: "Jennifer Sotomayor" },
+  { v: "Seba Pavlotsky",     l: "Sebastian Pavlotsky" },
+  { v: "Fernanda Varela",    l: "Fernanda Varela" },
+  { v: "Ale Berdaguez (FS)", l: "Ale Berdaguez (FS)" },
+  { v: "Sin CSM asiganado",  l: "Sin CSM asignado" }
+];
+/* Valores del enum que ya no se ofrecen (quedaron en cero y están para archivar). NO se borran
+   de la lista a ciegas: si alguna cuenta todavía los tiene cargados, la opción aparece igual —
+   un <select> sin la opción del valor actual lo cambia solo al abrirlo, y eso pisa el dato. */
+const CSM_DEPRECADOS = ["Julieta Balbuena", "Diego Suarez"];
 function csmEnumOptions(sel) {
-  const opts = ["Diego Suarez", "Seba Pavlotsky", "Julieta Balbuena", "Jenny", "Ale Berdaguez (FS)", "Alfred", "Alejandro Becerra (CL)", "Otro"];
-  return `<option value="">Sin asignar</option>` + opts.map(o => `<option ${sel === o ? "selected" : ""}>${o}</option>`).join("");
+  const cur = String(sel || "");
+  const usados = {};
+  (window.__cuentasData || []).forEach(c => { const v = (c.properties.csm_asignado || "").trim(); if (v) usados[v] = 1; });
+  const extra = CSM_DEPRECADOS.filter(v => usados[v] || v === cur).map(v => ({ v: v, l: v + " · a archivar" }));
+  const desconocidos = Object.keys(usados)
+    .filter(v => !CSM_OPCIONES.some(o => o.v === v) && CSM_DEPRECADOS.indexOf(v) < 0)
+    .map(v => ({ v: v, l: v + " · fuera del enum" }));
+  return `<option value=""${cur === "" ? " selected" : ""}>— vaciar el campo</option>`
+    + CSM_OPCIONES.concat(extra, desconocidos)
+      .map(o => `<option value="${escAttr(o.v)}"${cur === o.v ? " selected" : ""}>${escAttr(o.l)}</option>`).join("");
 }
 function toggleNewAccount(forceClose) {
   const c = document.getElementById("cue-new-form"); if (!c) return;
