@@ -11224,6 +11224,9 @@ function convActorTxt(actorId, nombreContacto) {
   if (a.indexOf("V-") === 0) return { quien: nombreContacto || "Visitante", tipo: "visitante" };
   if (a.indexOf("A-") === 0) return { quien: "Innew", tipo: "agente" };
   if (a.indexOf("S-") === 0) return { quien: "Bot del sitio", tipo: "sistema" };
+  /* `L-` = Customer Agent: el asistente IA de HubSpot (en Innew se presenta como "Milagros").
+     Faltaba en el mapeo y sus mensajes salían con "—" de remitente. */
+  if (a.indexOf("L-") === 0) return { quien: "Asistente IA", tipo: "sistema" };
   if (a.indexOf("I-") === 0) return { quien: "Integración", tipo: "sistema" };
   if (a.indexOf("E-") === 0) return { quien: a.slice(2), tipo: "agente" };
   return { quien: "—", tipo: "sistema" };
@@ -11234,12 +11237,22 @@ function convFecha(iso) {
   if (isNaN(d)) return "";
   return d.toLocaleString("es-AR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 }
-// Texto plano del mensaje. `richText` viene en HTML: se limpia acá y NO se inyecta como HTML.
+function convHtmlAText(v) {
+  return String(v || "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+/* Texto plano del mensaje. OJO: HubSpot manda HTML **también dentro de `text`**, no sólo en
+   `richText` — el saludo del bot llegaba como "<p>Hola, soy Milagros…</p>" y se veía literal
+   (visto en producción el 16/09). Por eso se limpia siempre, venga del campo que venga. */
 function convTexto(m) {
-  const t = (m.text || "").trim();
+  const t = convHtmlAText(m.text);
   if (t) return t;
-  const rt = (m.richText || "").replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").trim();
-  return rt || "";
+  return convHtmlAText(m.richText);
 }
 
 async function convToggle(contactId, nombre) {
@@ -11353,7 +11366,7 @@ async function renderInboundWeb() {
       + '<td style="padding:5px 8px; text-align:right; color:' + col + '; font-weight:600; white-space:nowrap;">' + (d === null ? "—" : d + " d") + '</td>'
       + '<td style="padding:5px 0 5px 8px; text-align:right; color:' + col + '; white-space:nowrap;">' + (sinD ? "sin asignar" : "asignado") + '</td>'
       + '<td style="padding:5px 0 5px 10px; text-align:right; white-space:nowrap;">'
-      + '<a href="#" onclick="convToggle(\'' + p.id + '\', \'' + String(nom).replace(/'/g, "\\'") + '\'); return false;" title="Ver la conversación del chat" style="font-size:11px; color:#430C89; font-weight:600; margin-right:10px;">💬 ver</a>'
+      + '<a href="#" onclick="convToggle(\'' + p.id + '\', \'' + String((nom === "(sin nombre)" && p.email) ? p.email : nom).replace(/'/g, "\\'") + '\'); return false;" title="Ver la conversación del chat" style="font-size:11px; color:#430C89; font-weight:600; margin-right:10px;">💬 ver</a>'
       + (leido
         ? '<a href="#" onclick="inboxMarcarLeido(\'' + p.id + '\', false); return false;" title="Volver a marcarlo como sin leer" style="font-size:11px; color:#9ca3af;">↺ sin leer</a>'
         : '<a href="#" onclick="inboxMarcarLeido(\'' + p.id + '\', true); return false;" style="font-size:11px; color:#4030C8; font-weight:600;">✓ leído</a>')
