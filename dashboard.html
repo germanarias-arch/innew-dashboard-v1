@@ -273,6 +273,27 @@ table.std tr:hover td { background: #fafafa; }
    tomado a ojo del sitio y pendiente de confirmar contra su guía.
    No se reproducen los logos de ninguna de las dos: van el nombre y el color, nada más. */
 :root { --vtex-pink: #F71963; --tn-blue: #2C6ECB; }
+
+/* ---- Badge de mensajes sin leer del Chat web ----
+   Vive en el botón de nav para que se vea SIN entrar a la vista: si hay que abrirla para
+   enterarse de que hay algo, el aviso no sirve. Titila sólo mientras hay pendientes. */
+.nav-badge {
+  display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 6px;
+  border-radius: 999px; background: #E11D48; color: #fff;
+  font-size: 10.5px; font-weight: 800; line-height: 18px; text-align: center;
+  vertical-align: 1px; box-shadow: 0 0 0 0 rgba(225,29,72,.6);
+}
+.nav-badge.titila { animation: badgeTitila 1.25s ease-in-out infinite; }
+@keyframes badgeTitila {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(225,29,72,.55); }
+  50%      { opacity: .55; box-shadow: 0 0 0 5px rgba(225,29,72,0); }
+}
+/* El botón entero cambia de color mientras haya sin leer, no sólo el número. */
+.vt-btn.tiene-pendientes { background: #FFF1F2 !important; color: #9F1239 !important; border-color: #FDA4AF !important; font-weight: 700; }
+.vt-btn.tiene-pendientes.active { background: #E11D48 !important; color: #fff !important; border-color: #E11D48 !important; }
+.vt-btn.tiene-pendientes.active .nav-badge { background: #fff; color: #9F1239; }
+/* Respeta a quien pidió menos animación en el sistema operativo. */
+@media (prefers-reduced-motion: reduce) { .nav-badge.titila { animation: none; } }
 .portal-toggle { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .portal-btn {
   display: inline-flex; align-items: center; gap: 8px; text-decoration: none;
@@ -428,6 +449,15 @@ table.std tr:hover td { background: #fafafa; }
           <button id="vt-metas" class="vt-btn" onclick="setView('metas')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:5px;"><path d="M12 3v18"/><path d="M3 12h18"/><path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0"/><path d="M12 12l4 -2"/></svg>Metas</button>
         </div>
       </div>
+      <!-- Clientes subió acá el 2026-09-16: German pasó a tener rol de CSM (acelerar cuentas),
+           así que la cartera dejó de ser una "otra vista" y es una de sus dos superficies de
+           trabajo diarias. Sacada de "Otras vistas" para no duplicar el botón. -->
+      <div class="nav-group">
+        <div class="nav-tier-label">CSM · Aceleración de cuentas</div>
+        <div class="view-toggle vt-priority">
+          <button id="vt-clientes" class="vt-btn" onclick="setView('clientes')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:5px;"><path d="M9 7a4 4 0 1 0 0 8a4 4 0 0 0 0 -8z"/><path d="M3 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><path d="M21 21v-2a4 4 0 0 0 -3 -3.85"/></svg>Clientes</button>
+        </div>
+      </div>
       <div class="nav-group">
         <div class="nav-tier-label">CRO</div>
         <div class="view-toggle vt-priority">
@@ -468,7 +498,6 @@ table.std tr:hover td { background: #fafafa; }
       <div class="nav-group">
         <div class="nav-tier-label">Otras vistas</div>
         <div class="view-toggle vt-secondary">
-          <button id="vt-clientes" class="vt-btn" onclick="setView('clientes')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><path d="M9 7a4 4 0 1 0 0 8a4 4 0 0 0 0 -8z"/><path d="M3 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><path d="M21 21v-2a4 4 0 0 0 -3 -3.85"/></svg>Clientes</button>
           <button id="vt-cur" class="vt-btn" onclick="setView('cur')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><path d="M16 18a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2z"/><path d="M16 6a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2z"/><path d="M9 18a6 6 0 0 1 6 -6a6 6 0 0 1 -6 -6a6 6 0 0 1 -6 6a6 6 0 0 1 6 6z"/></svg>Curaduría</button>
           <button id="vt-tareas" class="vt-btn" onclick="setView('tareas')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><path d="M10 5a2 2 0 1 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3h-16a4 4 0 0 0 2 -3v-3a7 7 0 0 1 4 -6"/><path d="M9 17v1a3 3 0 0 0 6 0v-1"/></svg>Tareas</button>
           <button id="vt-agenda" class="vt-btn" onclick="setView('agenda')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><path d="M9 11a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"/><path d="M17.657 16.657l-4.243 4.243a2 2 0 0 1 -2.827 0l-4.244 -4.243a8 8 0 1 1 11.314 0z"/></svg>Viajes Comerciales</button>
@@ -11107,6 +11136,180 @@ async function fetchInboundWeb() {
   const all = parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
   return all.filter(c => ((c.properties || {}).hs_object_source_label || "").toUpperCase() === "CONVERSATIONS");
 }
+
+/* ==========================================================================================
+   CHAT WEB — no leídos (2026-09-16)
+   ------------------------------------------------------------------------------------------
+   Pedido de German: que el botón de nav muestre cuántos mensajes nuevos hay, cambie de color,
+   titile, y que adentro se puedan marcar como leídos.
+
+   Qué se considera "un mensaje": un CONTACT creado por el chat del sitio
+   (`hs_object_source_label = CONVERSATIONS`) que no sea ruido y que German no haya marcado
+   como leído todavía. **No es el mensaje en sí** — la bandeja de HubSpot (Conversations) no es
+   accesible ni por el MCP ni por este proxy; ver la nota en fetchInboundWeb.
+
+   Lo leído vive SÓLO en el navegador de German (localStorage), no en HubSpot: marcar leído es
+   su triage personal, no un estado compartido del CRM. Si algún día hay que compartirlo entre
+   dispositivos, el lugar natural es /api/state, no una property de contacto. */
+const INBOX_READ_KEY = "dashComercial_inboxLeidos";
+
+function inboxLeidosAll() { try { return JSON.parse(localStorage.getItem(INBOX_READ_KEY) || "{}"); } catch (e) { return {}; } }
+function inboxLeidosSave(o) { try { localStorage.setItem(INBOX_READ_KEY, JSON.stringify(o)); } catch (e) {} }
+function inboxEsLeido(id) { return !!inboxLeidosAll()[String(id)]; }
+function inboxMarcarLeido(id, leido) {
+  const all = inboxLeidosAll();
+  if (leido === false) delete all[String(id)];
+  else all[String(id)] = new Date().toISOString().slice(0, 10);
+  inboxLeidosSave(all);
+  // renderInboundWeb ya refresca el badge con las filas en mano: no hace falta llamarlo aparte.
+  if (document.getElementById("inbox-web")) renderInboundWeb(); else inboxBadgeUpdate();
+}
+function inboxMarcarTodo() {
+  const rows = window.__inboxHum || [];
+  if (!rows.length) return;
+  const all = inboxLeidosAll(), hoy = new Date().toISOString().slice(0, 10);
+  rows.forEach(p => { all[String(p.id)] = hoy; });
+  inboxLeidosSave(all);
+  if (document.getElementById("inbox-web")) renderInboundWeb(); else inboxBadgeUpdate();
+}
+
+/* Pinta el contador en el botón de nav. Se llama al boot y cada 5 minutos: el badge tiene que
+   aparecer SIN que German entre a la vista, si no llega tarde.
+   Si la lectura falla (por ejemplo, el 403 de scopes de contactos) el badge simplemente no se
+   muestra: el error se explica adentro de la vista, que es donde se diagnostica. Un badge que
+   grita un error de permisos en la barra de nav no ayuda a nadie. */
+async function inboxBadgeUpdate(humYaTraido) {
+  const btn = document.getElementById("vt-inbound");
+  if (!btn) return;
+  let hum = humYaTraido;
+  if (!hum) {
+    let rows = [];
+    try { rows = await fetchInboundWeb(); } catch (e) { return; }
+    hum = rows
+      .map(c => Object.assign({ id: c.id }, c.properties || {}))
+      .filter(p => !inboxIsNoise(p.email) && p.lifecyclestage !== "other");
+  }
+  window.__inboxHum = hum;
+  const nuevos = hum.filter(p => !inboxEsLeido(p.id));
+  window.__inboxNuevos = nuevos.length;
+  const viejo = btn.querySelector(".nav-badge");
+  if (viejo) viejo.remove();
+  btn.classList.toggle("tiene-pendientes", nuevos.length > 0);
+  if (nuevos.length) {
+    const b = document.createElement("span");
+    b.className = "nav-badge titila";
+    b.textContent = String(nuevos.length);
+    b.title = nuevos.length + (nuevos.length === 1 ? " contacto del chat web sin leer" : " contactos del chat web sin leer");
+    btn.appendChild(b);
+  }
+  // El título de la pestaña también lo canta, para verlo con el dashboard en segundo plano.
+  const base = document.title.replace(/^\(\d+\)\s*/, "");
+  document.title = nuevos.length ? "(" + nuevos.length + ") " + base : base;
+}
+function inboxBadgeStart() {
+  inboxBadgeUpdate();
+  setInterval(inboxBadgeUpdate, 5 * 60 * 1000);
+}
+
+
+/* ---- Hilo de conversación del chat web (2026-09-16) -------------------------------------
+   Antes esta vista sólo podía mostrar el CONTACTO que deja el chat; el texto del mensaje
+   nunca había pasado por acá. Con el scope `conversations.read` cargado en la app privada,
+   el proxy expone dos lecturas (threads por contacto, mensajes por thread) y esto las pinta.
+
+   Sólo funciona en la web app: el conector MCP de Cowork NO llega a Conversations (no existe
+   el objeto CONVERSATION en su schema), así que en Cowork se avisa en vez de fallar mudo. */
+function convActorTxt(actorId, nombreContacto) {
+  const a = String(actorId || "");
+  if (a.indexOf("V-") === 0) return { quien: nombreContacto || "Visitante", tipo: "visitante" };
+  if (a.indexOf("A-") === 0) return { quien: "Innew", tipo: "agente" };
+  if (a.indexOf("S-") === 0) return { quien: "Bot del sitio", tipo: "sistema" };
+  if (a.indexOf("I-") === 0) return { quien: "Integración", tipo: "sistema" };
+  if (a.indexOf("E-") === 0) return { quien: a.slice(2), tipo: "agente" };
+  return { quien: "—", tipo: "sistema" };
+}
+function convFecha(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  return d.toLocaleString("es-AR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+// Texto plano del mensaje. `richText` viene en HTML: se limpia acá y NO se inyecta como HTML.
+function convTexto(m) {
+  const t = (m.text || "").trim();
+  if (t) return t;
+  const rt = (m.richText || "").replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").trim();
+  return rt || "";
+}
+
+async function convToggle(contactId, nombre) {
+  const fila = document.getElementById("conv-" + contactId);
+  if (!fila) return;
+  const abierto = fila.style.display !== "none";
+  if (abierto) { fila.style.display = "none"; return; }
+  fila.style.display = "";
+  const cel = document.getElementById("convbody-" + contactId);
+  if (!cel || cel.dataset.loaded === "1") return;
+
+  if (!WEB_MODE) {
+    cel.innerHTML = '<div style="font-size:12px; color:#92400e; padding:8px 0;">El hilo sólo se puede leer desde la web app (innew-dashboard-v2.pages.dev). El conector de Cowork no llega a la bandeja de Conversations de HubSpot.</div>';
+    cel.dataset.loaded = "1";
+    return;
+  }
+  cel.innerHTML = '<div class="loading" style="padding:6px 0;">Trayendo la conversación…</div>';
+  try {
+    const th = await mcpCall("conversations", { op: "threads", contactId: String(contactId) });
+    const threads = (th && th.results) || [];
+    if (!threads.length) {
+      cel.innerHTML = '<div style="font-size:12px; color:#9ca3af; padding:6px 0; font-style:italic;">Este contacto no tiene hilos en la bandeja. Puede haber dejado el mail por un formulario y no por el chat.</div>';
+      cel.dataset.loaded = "1";
+      return;
+    }
+    const packs = await Promise.all(threads.slice(0, 5).map(async t => {
+      try { const r = await mcpCall("conversations", { op: "messages", threadId: String(t.id) }); return { t: t, msgs: (r && r.results) || [] }; }
+      catch (e) { return { t: t, msgs: null, err: String((e && e.message) || e) }; }
+    }));
+    let h = "";
+    packs.forEach(p => {
+      const est = (p.t.status || "").toUpperCase() === "CLOSED" ? "cerrado" : "abierto";
+      h += '<div style="border:1px solid #e5e7eb; border-radius:8px; background:#fff; margin-bottom:8px; overflow:hidden;">'
+        + '<div style="background:#fafafa; border-bottom:1px solid #eee; padding:5px 10px; font-size:10.5px; color:#6b7280; display:flex; gap:8px; align-items:center;">'
+        + '<b style="color:#430C89;">Hilo ' + escAttr(String(p.t.id)) + '</b>'
+        + '<span style="color:' + (est === "abierto" ? "#047857" : "#9ca3af") + '; font-weight:600;">' + est + '</span>'
+        + '<span>' + escAttr(convFecha(p.t.latestMessageTimestamp || p.t.createdAt)) + '</span>'
+        + '</div><div style="padding:8px 10px;">';
+      if (p.msgs === null) {
+        h += '<div style="font-size:11.5px; color:#b45309;">No se pudo leer este hilo: ' + escAttr(String(p.err).slice(0, 200)) + '</div>';
+      } else {
+        // Orden cronológico: la API no garantiza el orden y leer una charla al revés es inservible.
+        const ms = p.msgs.slice().sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
+        const utiles = ms.filter(m => convTexto(m));
+        if (!utiles.length) h += '<div style="font-size:11.5px; color:#9ca3af; font-style:italic;">El hilo no tiene mensajes con texto (sólo eventos del sistema).</div>';
+        utiles.forEach(m => {
+          const act = convActorTxt((m.senders && m.senders[0] && m.senders[0].actorId) || m.createdBy, nombre);
+          const mio = act.tipo === "agente";
+          const sis = act.tipo === "sistema";
+          const col = mio ? "#EDE9FE" : (sis ? "#F3F4F6" : "#fff");
+          const bor = mio ? "#C7BDFF" : "#e5e7eb";
+          h += '<div style="display:flex; justify-content:' + (mio ? "flex-end" : "flex-start") + '; margin-bottom:5px;">'
+            + '<div style="max-width:78%; background:' + col + '; border:1px solid ' + bor + '; border-radius:10px; padding:6px 9px;">'
+            + '<div style="font-size:9.5px; color:#6b7280; font-weight:700; margin-bottom:2px;">' + escAttr(act.quien) + ' · ' + escAttr(convFecha(m.createdAt)) + (m.type === "COMMENT" ? ' · nota interna' : "") + '</div>'
+            + '<div style="font-size:12.5px; color:#111827; white-space:pre-wrap;">' + escAttr(convTexto(m)) + '</div>'
+            + (m.truncationStatus && m.truncationStatus !== "NOT_TRUNCATED" ? '<div style="font-size:9.5px; color:#b45309; margin-top:3px;">⚠︎ HubSpot recortó este mensaje</div>' : "")
+            + '</div></div>';
+        });
+      }
+      h += '</div></div>';
+    });
+    if (threads.length > 5) h += '<div style="font-size:10.5px; color:#9ca3af;">Mostrando los 5 hilos más recientes de ' + threads.length + '.</div>';
+    cel.innerHTML = h;
+    cel.dataset.loaded = "1";
+  } catch (e) {
+    // Error real en pantalla: el texto de HubSpot dice exactamente qué scope falta.
+    cel.innerHTML = '<div style="font-size:12px; color:#b45309; padding:6px 0;">No se pudo traer la conversación. <span style="color:#9ca3af;">' + escAttr(String((e && e.message) || e)) + '</span></div>';
+  }
+}
+
 async function renderInboundWeb() {
   const box = document.getElementById("inbox-web"); if (!box) return;
   box.innerHTML = '<div class="small" style="color:#9ca3af;">📥 Inbound web — leyendo…</div>';
@@ -11127,23 +11330,40 @@ async function renderInboundWeb() {
     return;
   }
   const rojo = hum.filter(p => !p.hubspot_owner_id && (inboxDays(p.createdate) || 0) >= 2).length;
+  const nuevos = hum.filter(p => !inboxEsLeido(p.id)).length;
   let h = '<div style="border:1px solid ' + (rojo ? "#fecaca" : "#e5e7eb") + '; border-radius:8px; padding:11px 14px; background:' + (rojo ? "#fef2f2" : "#fafafa") + ';">'
+    + '<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">'
     + '<b style="font-size:13px;">📥 Inbound web</b> <span class="small" style="color:#6b7280;">' + hum.length + ' contacto' + (hum.length === 1 ? "" : "s") + ' del chat del sitio</span>'
+    + (nuevos ? ' <span style="font-size:11px; font-weight:800; color:#fff; background:#E11D48; border-radius:999px; padding:1px 8px;">' + nuevos + ' sin leer</span>' : ' <span style="font-size:11px; color:#059669; font-weight:600;">✓ todo leído</span>')
     + (rojo ? ' <span style="font-size:11px; font-weight:700; color:#b91c1c;">· ' + rojo + ' sin dueño hace +48 h</span>' : "")
+    + (nuevos ? '<button class="fc-btn secondary" onclick="inboxMarcarTodo()" style="font-size:11px; padding:3px 10px; margin-left:auto;">✓ Marcar todo como leído</button>' : "")
+    + '</div>'
     + '<table style="width:100%; border-collapse:collapse; font-size:12.5px; margin-top:8px;">';
   hum.sort((a, b) => (inboxDays(b.createdate) || 0) - (inboxDays(a.createdate) || 0)).forEach(p => {
     const d = inboxDays(p.createdate);
     const sinD = !p.hubspot_owner_id;
     const col = (sinD && d >= 2) ? "#b91c1c" : (sinD && d >= 1) ? "#b45309" : "#6b7280";
     const nom = ((p.firstname || "") + " " + (p.lastname || "")).trim() || "(sin nombre)";
-    h += '<tr style="border-top:1px solid #eee;">'
-      + '<td style="padding:5px 8px 5px 0;"><b>' + nom + '</b></td>'
+    // Los leídos se atenúan en vez de esconderse: ocultarlos haría desaparecer contactos que
+    // todavía no tienen dueño, que es justo lo que este panel existe para no perder de vista.
+    const leido = inboxEsLeido(p.id);
+    h += '<tr style="border-top:1px solid #eee;' + (leido ? " opacity:.5;" : "") + '">'
+      + '<td style="padding:5px 8px 5px 0;">' + (leido ? "" : '<span title="Sin leer" style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#E11D48; margin-right:6px; vertical-align:1px;"></span>') + '<b>' + nom + '</b></td>'
       + '<td style="padding:5px 8px; color:#6b7280;">' + (p.email || "—") + '</td>'
       + '<td style="padding:5px 8px; text-align:right; color:' + col + '; font-weight:600; white-space:nowrap;">' + (d === null ? "—" : d + " d") + '</td>'
       + '<td style="padding:5px 0 5px 8px; text-align:right; color:' + col + '; white-space:nowrap;">' + (sinD ? "sin asignar" : "asignado") + '</td>'
-      + '</tr>';
+      + '<td style="padding:5px 0 5px 10px; text-align:right; white-space:nowrap;">'
+      + '<a href="#" onclick="convToggle(\'' + p.id + '\', \'' + String(nom).replace(/'/g, "\\'") + '\'); return false;" title="Ver la conversación del chat" style="font-size:11px; color:#430C89; font-weight:600; margin-right:10px;">💬 ver</a>'
+      + (leido
+        ? '<a href="#" onclick="inboxMarcarLeido(\'' + p.id + '\', false); return false;" title="Volver a marcarlo como sin leer" style="font-size:11px; color:#9ca3af;">↺ sin leer</a>'
+        : '<a href="#" onclick="inboxMarcarLeido(\'' + p.id + '\', true); return false;" style="font-size:11px; color:#4030C8; font-weight:600;">✓ leído</a>')
+      + '</td>'
+      + '</tr>'
+      + '<tr id="conv-' + p.id + '" style="display:none;"><td colspan="5" style="padding:0 0 10px; background:#faf9ff;"><div id="convbody-' + p.id + '" style="padding:8px 10px;"></div></td></tr>';
   });
   box.innerHTML = h + '</table>' + foot + '</div>';
+  window.__inboxHum = hum;
+  inboxBadgeUpdate(hum);
 }
 async function renderCuentas() {
   cuMigrateEstadoToSemaforo();
@@ -15084,6 +15304,10 @@ function renderAccuracy() {
     // semana ISO: si ya existe, el back devuelve 409 y no se pisa nada. Va al final del boot
     // para no demorar el render y con los deals ya cargados en window.__allDeals.
     try { if (typeof histAuto === "function") histAuto(); } catch (e) {}
+
+    // Badge de mensajes sin leer del Chat web. Al final del boot y cada 5 min: tiene que
+    // aparecer sin que German entre a la vista, si no el aviso llega tarde.
+    try { if (typeof inboxBadgeStart === "function") inboxBadgeStart(); } catch (e) {}
 
   } catch (e) {
     document.getElementById("loading").innerHTML = `<div style="color:#dc2626">Error: ${e.message}</div>`;
