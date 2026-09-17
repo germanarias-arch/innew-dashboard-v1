@@ -11830,9 +11830,29 @@ function clientNameFromDeal(name) {
    terminan siendo la misma fila. Se compara sin acentos, sin símbolos y en minúsculas. */
 function vjNorm(t) { return String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, " ").trim(); }
 let VJ_CANON = null;
+
+/* 🪤 BUG QUE MOSTRABA A TODOS LOS CLIENTES COMO "PROSPECTO" (2026-09-17) ====================
+   German: "salen clientes como prospectos — Nueva Americana, Atlantic, Personal, Guatapora".
+   No era HubSpot ni el nombre de la cuenta: era una **carrera de carga**.
+
+   `renderAgenda()` disparaba `renderRadar()` (que es async y trae las cuentas) **sin await** y
+   seguía derecho a `renderResultados()`. Cuando esa tabla se pintaba, `window.__cuentasData`
+   todavía era `null`, así que `vjCompanyDe()` devolvía `null` para TODAS las cuentas y el badge
+   caía al `else` → Prospecto para todo el mundo, clientes incluidos.
+
+   Y lo peor: acá abajo `vjCanonBuild()` **cacheaba la lista vacía** en `VJ_CANON`. Una vez que
+   se congelaba en `[]`, ningún render posterior lo arreglaba — sólo un `reloadCuentas()`. Por eso
+   el error se veía permanente y no como un parpadeo.
+
+   Dos reglas que salen de acá:
+   1. **Nunca cachear el resultado de un índice construido sobre datos que todavía no llegaron.**
+   2. **"No sé" no es "no".** Si las cuentas no cargaron, el badge no dice Prospecto: no dice nada.
+      Etiquetar de prospecto a un cliente delante del cliente es peor que no mostrar el chip. */
 function vjCanonBuild() {
+  const data = window.__cuentasData;
+  if (!data) { VJ_CANON = null; return; }   // sin datos NO se cachea: se reintenta en el próximo render
   VJ_CANON = [];
-  (window.__cuentasData || []).forEach(c => {
+  data.forEach(c => {
     const n = ((c.properties || {}).name || "").trim();
     if (n) VJ_CANON.push({ n: n, k: vjNorm(n) });
   });
@@ -11840,10 +11860,11 @@ function vjCanonBuild() {
 }
 function vjNormCuenta(cli) {
   if (!VJ_CANON) vjCanonBuild();
+  const canon = VJ_CANON || [];
   const k = vjNorm(cli);
   if (!k) return cli;
-  for (let i = 0; i < VJ_CANON.length; i++) {
-    const c = VJ_CANON[i];
+  for (let i = 0; i < canon.length; i++) {
+    const c = canon[i];
     if (c.k === k) return c.n;
     // uno es prefijo del otro por PALABRA completa (evita que "Bilder" pegue con "Bild")
     if (k.indexOf(c.k + " ") === 0 || c.k.indexOf(k + " ") === 0) return c.n;
@@ -12847,6 +12868,29 @@ function vjPrepDocDel(k, i) {
 /* Company de HubSpot cuyo nombre matchea la cuenta del bloque. Devuelve null si es prospecto.
    Se resuelve por `vjNorm` — el mismo canonizador que fusiona candidatos en el radar — porque
    los nombres del plan los tipea German y no coinciden carácter a carácter con HubSpot. */
+/* Carga de cuentas compartida por toda la vista Viajes. Una sola request aunque la pidan varios
+   renders a la vez, y `VJ_CANON` se invalida cuando llegan los datos para que se reconstruya con
+   la lista real. Si falla, se marca el error y NO se reintenta en loop. */
+let VJ_CUENTAS_PROM = null, VJ_CUENTAS_ERR = false;
+function vjCuentasReady() {
+  if (window.__cuentasData) return Promise.resolve(window.__cuentasData);
+  if (VJ_CUENTAS_ERR) return Promise.resolve(null);
+  if (!VJ_CUENTAS_PROM) {
+    VJ_CUENTAS_PROM = fetchCuentas()
+      .then(d => { window.__cuentasData = d; VJ_CANON = null; return d; })
+      .catch(e => { console.warn("vjCuentasReady", e); VJ_CUENTAS_ERR = true; return null; })
+      .then(d => { VJ_CUENTAS_PROM = null; return d; });
+  }
+  return VJ_CUENTAS_PROM;
+}
+
+/* TRES estados, no dos: `true` cliente · `false` prospecto · `null` todavía no sé.
+   El `null` es el que faltaba y el que causaba el bug. */
+function vjEsCliente(cli) {
+  if (!window.__cuentasData) return null;
+  return !!vjCompanyDe(cli);
+}
+
 function vjCompanyDe(cli) {
   const t = vjNorm(vjNormCuenta(cli || "")); if (!t) return null;
   return (window.__cuentasData || []).find(c => vjNorm(((c.properties || {}).name || "").trim()) === t) || null;
@@ -13342,8 +13386,10 @@ function vjFichaRender() {
 
   // --- cabecera: contexto que no se tipea ---
   const chips = [];
+  const esCliF = vjEsCliente(cli);
   if (co) chips.push(`<a href="#" onclick="vjFichaClose(); setView('clientes'); cliTab('cuentas'); cliFichaOpen('${String(cli).replace(/'/g, "\\'")}','${co.id}'); return false;" style="${chipH}">👤 Cliente · ver ficha ↗</a>`);
-  else chips.push(`<span style="${chipH}">Prospecto</span>`);
+  else if (esCliF === false) chips.push(`<span style="${chipH}">Prospecto</span>`);
+  else chips.push(`<span style="${chipH}" title="Cargando cuentas de HubSpot…">…</span>`);
   if (meta.semaforo === "riesgo") chips.push(`<span style="${chipH} background:rgba(239,68,68,.32);">⚠ En riesgo</span>`);
   chips.push(`<span style="${chipH}">Última visita: ${ult ? fmtDmy(ult) : "nunca"}${dias !== null ? " · hace " + Math.round(dias / 30) + " m" : ""}</span>`);
   if (co) chips.push(`<a href="${HUBSPOT_COMPANY(co.id)}" target="_blank" rel="noopener" style="${chipH}">HubSpot ↗</a>`);
@@ -13502,9 +13548,11 @@ function renderResultados(trip) {
         : `<span onclick="vjFichaOpen('${kj}',0)" style="font-size:11px; color:#b91c1c; cursor:pointer; white-space:nowrap;" title="${escAttr(wa.msg)}">⚠ revisar tel</span>`);
 
     const ctxt = [];
-    ctxt.push(co
-      ? `<span style="display:inline-block; padding:1px 8px; border-radius:20px; background:#F1EFFF; border:1px solid #C7BDFF; color:#4030C8; font-size:10px; font-weight:700;">Cliente</span>`
-      : `<span style="display:inline-block; padding:1px 8px; border-radius:20px; background:#FFF7ED; border:1px solid #fed7aa; color:#9a3412; font-size:10px; font-weight:700;">Prospecto</span>`);
+    // tri-estado: mientras no sepamos, no se afirma nada (ver la trampa documentada en vjCanonBuild)
+    const esCli = vjEsCliente(s.cli);
+    if (esCli === true) ctxt.push(`<span style="display:inline-block; padding:1px 8px; border-radius:20px; background:#F1EFFF; border:1px solid #C7BDFF; color:#4030C8; font-size:10px; font-weight:700;">Cliente</span>`);
+    else if (esCli === false) ctxt.push(`<span style="display:inline-block; padding:1px 8px; border-radius:20px; background:#FFF7ED; border:1px solid #fed7aa; color:#9a3412; font-size:10px; font-weight:700;">Prospecto</span>`);
+    else ctxt.push(`<span title="Cargando cuentas de HubSpot…" style="display:inline-block; padding:1px 8px; border-radius:20px; background:#f3f4f6; border:1px solid #e5e7eb; color:#9ca3af; font-size:10px; font-weight:700;">…</span>`);
     if (meta.semaforo === "riesgo") ctxt.push(`<span style="display:inline-block; padding:1px 8px; border-radius:20px; background:#FEF2F2; border:1px solid #fecaca; color:#b91c1c; font-size:10px; font-weight:700;">⚠ En riesgo</span>`);
     if (nDeals) ctxt.push(`<span style="display:inline-block; padding:1px 8px; border-radius:20px; background:#f3f4f6; border:1px solid #e5e7eb; color:#6b7280; font-size:10px; font-weight:700;">${nDeals} deal${nDeals > 1 ? "s" : ""} · ${fmtMoneyK(montoDeals)}</span>`);
 
@@ -13553,6 +13601,10 @@ function renderResultados(trip) {
 // ====================================================
 function renderAgenda() {
   const trip = tripGet();
+  /* Si las cuentas todavía no están, se pinta igual (la vista no se queda en blanco) y se vuelve
+     a pintar en cuanto llegan. Antes esto no existía y la primera —y única— pasada dejaba a todos
+     los clientes marcados como prospectos para el resto de la sesión. */
+  if (!window.__cuentasData && !VJ_CUENTAS_ERR) vjCuentasReady().then(() => { try { renderAgenda(); } catch (e) {} });
   // El radar va SIEMPRE, haya viaje activo o no: la vista arranca por ciudad, no por fecha.
   try { renderRadar(); } catch (e) { console.warn("renderRadar", e); }
   if (!trip || !trip.ciudad) {
