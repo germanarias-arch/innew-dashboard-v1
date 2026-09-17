@@ -12167,7 +12167,7 @@ function vjScore(cands, destId) {
 const VJ_EVENTOS_SEED = [
   {
     id: "ed-py-2026", nombre: "eCommerce Day Paraguay", dest: "asuncion",
-    desde: "2026-09-24", hasta: "2026-09-24", prioritario: true,
+    desde: "2026-09-24", hasta: "2026-09-24", hIni: "09:00", hFin: "14:30", prioritario: true,
     url: "https://ecommerceday.com.py/2026/",
     notas: "13ª edición · 09:00 a 14:30 · Gran Teatro del Banco Central del Paraguay (Federación Rusa y Asunción 1767). VTEX es sponsor y Marcos Pueyrredón abre. Samantha Thies (Nueva Americana, cuenta nuestra) es speaker."
   }
@@ -12205,7 +12205,8 @@ function vjEventosEnRango(destId, desde, hasta) {
 }
 function vjEvFecha(ev) {
   const a = fmtDmy(ev.desde), b = ev.hasta && ev.hasta !== ev.desde ? fmtDmy(ev.hasta) : "";
-  return b ? a + "–" + b : a;
+  const h = ev.hIni ? " " + ev.hIni + (ev.hFin ? "–" + ev.hFin : "") : "";
+  return (b ? a + "–" + b : a) + h;
 }
 
 function vjEvAdd() {
@@ -12217,6 +12218,7 @@ function vjEvAdd() {
   l.push({
     id: "e" + Date.now(), nombre: nombre, dest: g("ev-dest") || "asuncion",
     desde: desde, hasta: g("ev-hasta") || desde,
+    hIni: g("ev-hini") || "09:00", hFin: g("ev-hfin") || "18:00",
     prioritario: !!(document.getElementById("ev-prio") || {}).checked,
     url: (g("ev-url") || "").trim(), notas: (g("ev-notas") || "").trim()
   });
@@ -12259,6 +12261,8 @@ function vjEventosPanelHtml() {
         <label style="font-size:11px; color:#6b7280;">Destino<br><select id="ev-dest" style="${inS}">${VJ_DEST.map(d => `<option value="${d.id}">${d.flag} ${escAttr(d.label)}</option>`).join("")}</select></label>
         <label style="font-size:11px; color:#6b7280;">Desde<br><input type="date" id="ev-desde" style="${inS}"></label>
         <label style="font-size:11px; color:#6b7280;">Hasta<br><input type="date" id="ev-hasta" style="${inS}"></label>
+        <label style="font-size:11px; color:#6b7280;">Hora<br><input type="time" id="ev-hini" value="09:00" style="${inS} width:100px;"></label>
+        <label style="font-size:11px; color:#6b7280;">a<br><input type="time" id="ev-hfin" value="18:00" style="${inS} width:100px;"></label>
         <label style="font-size:11px; color:#6b7280;">Link<br><input type="text" id="ev-url" placeholder="https://…" style="${inS} width:150px;"></label>
         <label style="font-size:11px; color:#6b7280;">Nota<br><input type="text" id="ev-notas" placeholder="sede, sponsors, quién habla…" style="${inS} width:200px;"></label>
         <label style="font-size:11.5px; color:#374151; display:inline-flex; align-items:center; gap:5px; padding-bottom:5px;"><input type="checkbox" id="ev-prio" checked> justifica el viaje</label>
@@ -12337,8 +12341,12 @@ function vjSembrarEvento(trip, ev, quien) {
   let guard = 0;
   while (cur <= (ev.hasta || ev.desde) && guard < 14) {
     if (dias.indexOf(cur) >= 0) {
-      const k = [cur, quien || (trip.viajeros || [AGENDA_ME])[0], "09:00"].join("|");
-      if (!planGet(k)) planSet(k, { cli: ev.nombre, tipo: "evento", dur: 330, nota: ev.notas || "", estado: "agendada" });
+      /* El bloque toma el HORARIO REAL del evento. Antes era un `dur: 330` hardcodeado porque el
+         modelo de evento sólo tenía fechas — y en pantalla quedaba un bloque que no coincidía con
+         el horario del evento. Si el evento no trae horas, cae a 09:00–18:00 (día completo). */
+      const hi = ev.hIni || "09:00", hf = ev.hFin || "18:00";
+      const kk = [cur, quien || (trip.viajeros || [AGENDA_ME])[0], hi].join("|");
+      if (!planGet(kk)) planSet(kk, { cli: ev.nombre, tipo: "evento", tStart: hi, tEnd: hf, dur: toMin(hf) - toMin(hi), nota: ev.notas || "", estado: "agendada" });
     }
     cur = vjSumarDias(cur, 1); guard++;
   }
@@ -12871,7 +12879,10 @@ function renderTripSummary(trip) {
     <span class="ag-chip">👤 ${escAttr(names)}</span>
     <span class="ag-chip">⏱ ${trip.slotMin == 90 ? "1 h 30" : "1 h"}</span>
     <button class="fc-btn secondary" onclick="editTrip()">Editar viaje</button>
+    <button class="fc-btn secondary" onclick="vjExportCSV()" title="Descarga la agenda completa como planilla (CSV con acentos y separador para Excel en español)">⬇︎ Planilla</button>
+    <button class="fc-btn secondary" onclick="vjExportCopiar()" title="Copia la tabla al portapapeles: pegala directo en Google Sheets o Excel y se tabula sola">📋 Copiar tabla</button>
     <button class="fc-btn secondary" onclick="archiveCurrentTrip()" title="Guardar este viaje en el historial y empezar uno nuevo">📥 Archivar y nuevo</button>
+    <span id="agenda-status" class="fc-status" style="font-size:11.5px;"></span>
   </div>` + vjEventosDelViajeHtml(trip);
 }
 
@@ -12986,6 +12997,204 @@ function vjBlkMove(key, dia, viajero, ini, fin) {
   return nk;
 }
 
+
+/* ---- EXPORTAR EL VIAJE A UNA PLANILLA (2026-09-17) ---------------------------------------
+   Pedido de German: "que el viaje se pueda descargar en un sheet con formato usable".
+
+   El viaje vive en el dashboard, pero la agenda se COMPARTE: con quien viaja, con Joaquin, con
+   administración para los pasajes. Esa es la única razón por la que los `.xlsm` sobrevivieron
+   tantos años — no eran mejores, eran pasables por mail. Sin exportación, el radar no reemplaza
+   nada.
+
+   Dos salidas, porque son dos usos distintos:
+   · **CSV** para mandar por mail o imprimir. Con **BOM UTF-8** (sin eso Excel come los acentos:
+     "Asunción" sale "AsunciÃ³n") y separador **`;`**, que es lo que espera Excel en español.
+   · **Copiar** en TSV, para pegar directo en una planilla que ya existe. Pegar tabula solo.
+
+   El nombre del archivo es ordenable a propósito — `Agenda_Asuncion_2026-09-23_a_2026-09-25.csv` —
+   contra el caos viejo de `Paraguay_10a12-02-26` vs `Py_06a09.07.26` vs `11 al 12/08-26`. */
+const VJ_EXP_COLS = ["Día", "Fecha", "Desde", "Hasta", "Min", "Tipo", "Título / Cuenta", "Viajero",
+  "Estado", "Dirección", "Nota / Objetivo", "Deals abiertos", "Monto USD", "Ponderado USD",
+  "Resultado", "Próximo paso"];
+
+function vjExportRows(trip) {
+  const all = planAll(), dias = tripDays(trip), out = [];
+  Object.keys(all).forEach(k => {
+    const p = k.split("|");
+    if (dias.indexOf(p[0]) < 0) return;
+    const s = all[k]; if (!s || !s.cli) return;
+    const t = vjBlkTimes(k, s, trip);
+    const def = vjTipoDe(s);
+    const trv = AGENDA_TRAVELERS.find(x => x.id === p[1]);
+    const est = AGENDA_ESTADOS[s.estado || s.status || "propuesto"] || {};
+    const res = (typeof vjResGet === "function") ? vjResGet(k) : {};
+    // Monto y ponderado sólo para reuniones: un almuerzo no tiene pipeline.
+    let monto = 0, pond = 0, nDeals = 0;
+    if ((s.tipo || "reunion") === "reunion") {
+      (vjDealsDe(s.cli) || []).forEach(d => {
+        const dp = d.properties || {};
+        const m = parseFloat(dp.amount || 0) || 0;
+        const pr = getProbability(dp.dealstage, dp.hs_deal_stage_probability);
+        monto += m; pond += m * (isNaN(pr) ? 0 : pr); nDeals++;
+      });
+    }
+    out.push({
+      dia: p[0], ini: t.ini,
+      fila: [
+        fmtDow(p[0]),
+        p[0].split("-").reverse().join("/"),
+        minToHHMM(t.ini),
+        minToHHMM(t.fin),
+        String(t.fin - t.ini),
+        def.l,
+        s.cli || "",
+        trv ? trv.name : p[1],
+        est.label || "Propuesto",
+        s.addr || (getAgendaMeta(s.cli) || {}).direccion || "",
+        s.nota || "",
+        nDeals ? String(nDeals) : "",
+        monto ? String(Math.round(monto)) : "",
+        pond ? String(Math.round(pond)) : "",
+        res.res ? ((VJ_RESULTADOS[res.res] || {}).l || res.res) : "",
+        res.next || ""
+      ]
+    });
+  });
+  out.sort((a, b) => a.dia.localeCompare(b.dia) || a.ini - b.ini);
+  return out.map(x => x.fila);
+}
+
+function vjExportNombre(trip) {
+  const ciudad = String(trip.ciudad || "viaje").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_|_$/g, "");
+  return "Agenda_" + ciudad + "_" + trip.desde + "_a_" + trip.hasta;
+}
+function vjCsvCell(v) {
+  const s = String(v == null ? "" : v);
+  return /[;"\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function vjExportCSV() {
+  const trip = tripGet(); if (!trip || !trip.desde) { alert("Definí primero las fechas del viaje."); return; }
+  const filas = vjExportRows(trip);
+  if (!filas.length) { alert("La agenda está vacía: no hay nada para exportar."); return; }
+  const travs = (trip.viajeros || []).map(id => { const o = AGENDA_TRAVELERS.find(x => x.id === id); return o ? o.name : id; }).join(" · ");
+  const reuniones = filas.filter(f => f[5] === "Reunión").length;
+  const pond = filas.reduce((s, f) => s + (parseFloat(f[13]) || 0), 0);
+  // Encabezado legible + tabla. Excel y Sheets lo abren igual, y el que recibe entiende qué es.
+  const head = [
+    ["Agenda comercial", trip.ciudad || ""],
+    ["Fechas", (trip.desde || "").split("-").reverse().join("/") + " al " + (trip.hasta || "").split("-").reverse().join("/")],
+    ["Viajeros", travs],
+    ["Reuniones", String(reuniones), "Pipeline ponderado USD", String(Math.round(pond))],
+    ["Generado", new Date().toLocaleString("es-AR")],
+    []
+  ];
+  const lineas = head.concat([VJ_EXP_COLS]).concat(filas).map(r => r.map(vjCsvCell).join(";"));
+  // ﻿ = BOM. Sin esto Excel abre "Asunción" como "AsunciÃ³n".
+  const blob = new Blob(["﻿" + lineas.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = vjExportNombre(trip) + ".csv";
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+  agStatus("Descargado: " + a.download);
+}
+
+function vjExportCopiar() {
+  const trip = tripGet(); if (!trip || !trip.desde) return;
+  const filas = vjExportRows(trip);
+  if (!filas.length) { alert("La agenda está vacía."); return; }
+  // TSV: al pegar en Sheets o Excel se tabula solo, sin pasar por importar.
+  const txt = [VJ_EXP_COLS].concat(filas).map(r => r.map(c => String(c == null ? "" : c).replace(/[\t\n\r]/g, " ")).join("\t")).join("\n");
+  const ok = () => agStatus("Copiado: pegá con Ctrl+V (o Cmd+V) en la planilla.");
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(txt).then(ok, () => vjCopiarFallback(txt, ok));
+  } else vjCopiarFallback(txt, ok);
+}
+function vjCopiarFallback(txt, ok) {
+  const ta = document.createElement("textarea");
+  ta.value = txt; ta.style.cssText = "position:fixed; left:-9999px;";
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand("copy"); ok(); } catch (e) { alert("No pude copiar al portapapeles. Usá el botón de descargar CSV."); }
+  ta.remove();
+}
+
+
+/* ---- PANEL DE CANDIDATOS AL LADO DE LA AGENDA (2026-09-17) -------------------------------
+   German: "no me aparece lo del listado de candidatos a la izquierda, me gusta el formato de
+   la derecha" (por el preview).
+
+   El problema era de UBICACIÓN, no de datos: los candidatos se dibujaban arriba de todo, dentro
+   del radar y sólo al tocar "Ver N". Planificar a alguien exige tener la lista AL LADO de la
+   grilla: si hay que scrollear hasta arriba para ver a quién falta agendar, no se usa. */
+function vjPanelCandidatos(trip) {
+  const d = VJ_DEST.find(x => x.label === trip.ciudad);
+  let cands = [];
+  if (d) {
+    if (!VJ_DATA) { try { VJ_DATA = vjCandidatos(); } catch (e) { VJ_DATA = {}; } }
+    cands = (VJ_DATA || {})[d.id] || [];
+  }
+  const all = planAll();
+  const puestos = {};
+  Object.keys(all).forEach(k => { const c = all[k] && all[k].cli; if (c) puestos[vjNorm(c)] = true; });
+  const ico = { cliente: "🏬", deal: "💼", prospecto: "🌱", partner: "🤝" };
+
+  const filas = cands.length ? cands.map((c, i) => {
+    const ya = !!puestos[vjNorm(c.cli)];
+    return `<div class="vj-cand" draggable="true" data-idx="${i}" title="Arrastrala a un hueco de la agenda, o tocá ＋"
+      style="display:flex; justify-content:space-between; align-items:center; gap:7px; border:1px solid ${ya ? "#d1fae5" : "#e5e7eb"}; background:${ya ? "#F6FFFB" : "#fff"}; border-radius:8px; padding:6px 9px; margin-bottom:5px; font-size:12px; cursor:grab;">
+      <span style="min-width:0;">
+        <b>${ico[c.tipo] || ""} ${escAttr(c.cli)}</b>${ya ? ' <span style="font-size:9.5px; color:#047857; font-weight:700;">✓ en agenda</span>' : ""}
+        <div style="font-size:10px; color:#9ca3af; white-space:normal;">${c.pond ? "<b style='color:#047857;'>pond. " + fmtMoneyK(c.pond) + "</b> · " : ""}${escAttr((c.motivos || [c.motivo]).filter(Boolean).join(" · ")).slice(0, 110)}</div>
+      </span>
+      <button class="fc-btn secondary" style="font-size:11px; padding:2px 8px;" onclick="vjAgendarCand(${i})">＋</button>
+    </div>`;
+  }).join("") : `<div style="font-size:12px; color:#9ca3af; font-style:italic; padding:8px 0;">Sin candidatos en ${escAttr(trip.ciudad)}.</div>`;
+
+  return `<div style="border:1px solid #e5e7eb; border-radius:10px; background:#fff; padding:12px;">
+    <div style="font-size:11px; font-weight:800; color:#6b7280; text-transform:uppercase; letter-spacing:.04em; margin-bottom:8px;">
+      Candidatos · por ponderado <span style="color:#c4c4cc; font-weight:600;">(${cands.length})</span>
+    </div>
+    <div style="max-height:620px; overflow:auto; padding-right:2px;">${filas}</div>
+    <div style="font-size:10px; color:#9ca3af; margin-top:8px; line-height:1.4;">Arrastrá a la agenda para elegir la hora, o tocá ＋ y cae en el primer hueco libre.</div>
+  </div>`;
+}
+
+/* Agenda un candidato en el primer hueco libre del día visible. El botón ＋ existe porque el
+   drag no siempre es cómodo (trackpad, pantalla chica) y porque a veces sólo querés que entre. */
+function vjAgendarCand(idx) {
+  const trip = tripGet(); if (!trip || !trip.desde) return;
+  const d = VJ_DEST.find(x => x.label === trip.ciudad); if (!d) return;
+  const c = ((VJ_DATA || {})[d.id] || [])[idx]; if (!c) return;
+  const dia = (window.__vjUltDia && tripDays(trip).indexOf(window.__vjUltDia) >= 0) ? window.__vjUltDia : tripDays(trip)[0];
+  const quien = window.__vjTravFiltro || (trip.viajeros || [AGENDA_ME])[0];
+  const dur = trip.slotMin || 60;
+  const all = planAll();
+  // Primer hueco de 09:00 en adelante que no pise nada de ese día y viajero.
+  let h = 9 * 60;
+  while (h + dur <= 20 * 60) {
+    const choca = Object.keys(all).some(k => {
+      const p = k.split("|");
+      if (p[0] !== dia || p[1] !== quien) return false;
+      const t = vjBlkTimes(k, all[k], trip);
+      return h < t.fin && (h + dur) > t.ini;
+    });
+    if (!choca) break;
+    h += 15;
+  }
+  vjCrearBloqueCand(c, dia, quien, h, h + dur);
+}
+function vjCrearBloqueCand(c, dia, quien, ini, fin) {
+  const k = [dia, quien, minToHHMM(ini)].join("|");
+  planSet(k, {
+    cli: c.cli, tipo: "reunion", tStart: minToHHMM(ini), tEnd: minToHHMM(fin), dur: fin - ini,
+    estado: "propuesto", dealId: c.dealId || null,
+    nota: (c.motivos || [c.motivo]).filter(Boolean)[0] || ""
+  });
+  window.__vjUltDia = dia;
+  renderAgenda();
+}
+
 function renderGrid(trip) {
   const cont = document.getElementById("agenda-grid"); if (!cont) return;
   const dias = tripDays(trip);
@@ -13023,10 +13232,13 @@ function renderGrid(trip) {
         ${Object.keys(VJ_TIPOS).filter(t => t !== "reunion").map(t => `<button class="fc-btn secondary" style="font-size:11px; padding:3px 9px;" onclick="vjAddBlk('${t}')">${VJ_TIPOS[t].ic} ${escAttr(VJ_TIPOS[t].l)}</button>`).join("")}
       </span>
     </div>
-    <div style="display:grid; grid-template-columns:52px repeat(${dias.length}, 1fr); border:1px solid #e5e7eb; border-radius:10px; overflow:hidden; background:#fff;">
-      <div style="border-bottom:1px solid #e5e7eb; background:#fafafa;"></div>${heads}
-      <div>${Array.from({ length: VJ_H1 - VJ_H0 }, (_, i) => `<div style="height:${VJ_PX}px; font-size:9.5px; color:#9ca3af; text-align:right; padding:1px 5px 0 0; border-bottom:1px dashed #f5f5f8;">${String(VJ_H0 + i).padStart(2, "0")}:00</div>`).join("")}</div>
-      ${cols}
+    <div style="display:grid; grid-template-columns:288px 1fr; gap:14px; align-items:start;">
+      ${vjPanelCandidatos(trip)}
+      <div style="display:grid; grid-template-columns:52px repeat(${dias.length}, 1fr); border:1px solid #e5e7eb; border-radius:10px; overflow:hidden; background:#fff;">
+        <div style="border-bottom:1px solid #e5e7eb; background:#fafafa;"></div>${heads}
+        <div>${Array.from({ length: VJ_H1 - VJ_H0 }, (_, i) => `<div style="height:${VJ_PX}px; font-size:9.5px; color:#9ca3af; text-align:right; padding:1px 5px 0 0; border-bottom:1px dashed #f5f5f8;">${String(VJ_H0 + i).padStart(2, "0")}:00</div>`).join("")}</div>
+        ${cols}
+      </div>
     </div>
     <div style="display:flex; gap:12px; flex-wrap:wrap; font-size:11px; color:#6b7280; margin-top:8px;">
       ${Object.keys(VJ_TIPOS).map(t => `<span><i style="display:inline-block; width:11px; height:11px; border-radius:3px; background:${VJ_TIPOS[t].bg}; border:1px solid ${VJ_TIPOS[t].bd}; margin-right:4px; vertical-align:-1px;"></i>${escAttr(VJ_TIPOS[t].l)}</span>`).join("")}
@@ -13056,6 +13268,38 @@ function renderGrid(trip) {
   });
 
   vjWireDrag(cont, trip, dias);
+  vjWireDrop(cont, trip);
+}
+
+/* Arrastre desde la lista de candidatos hacia la grilla. Se usa HTML5 drag & drop (no el mouse
+   a mano como los bloques) porque cruza dos contenedores distintos y el navegador ya resuelve
+   el cursor y el "soltar acá". La hora sale de la Y del drop, con snap de 15 minutos. */
+function vjWireDrop(cont, trip) {
+  const d = VJ_DEST.find(x => x.label === trip.ciudad);
+  cont.querySelectorAll(".vj-cand").forEach(el => {
+    el.addEventListener("dragstart", e => {
+      e.dataTransfer.setData("text/plain", el.dataset.idx);
+      e.dataTransfer.effectAllowed = "copy";
+      el.style.opacity = ".5";
+    });
+    el.addEventListener("dragend", () => { el.style.opacity = ""; });
+  });
+  cont.querySelectorAll(".vj-col").forEach(col => {
+    col.addEventListener("dragover", e => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; col.style.background = "#faf9ff"; });
+    col.addEventListener("dragleave", () => { col.style.background = ""; });
+    col.addEventListener("drop", e => {
+      e.preventDefault(); col.style.background = "";
+      const idx = parseInt(e.dataTransfer.getData("text/plain"), 10);
+      const c = d ? ((VJ_DATA || {})[d.id] || [])[idx] : null;
+      if (!c) return;
+      const r = col.getBoundingClientRect();
+      const snap = VJ_PX * VJ_SNAP / 60;
+      const top = Math.max(0, Math.round((e.clientY - r.top) / snap) * snap);
+      const ini = VJ_H0 * 60 + Math.round(top / VJ_PX * 60);
+      const quien = window.__vjTravFiltro || (trip.viajeros || [AGENDA_ME])[0];
+      vjCrearBloqueCand(c, col.dataset.dia, quien, ini, ini + (trip.slotMin || 60));
+    });
+  });
 }
 
 /* Arrastre y redimensionado. Se hace a mano (sin librería) porque el dashboard no tiene
