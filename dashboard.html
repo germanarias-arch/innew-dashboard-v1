@@ -12381,7 +12381,9 @@ function vjHuecosSinTraslado(trip) {
 }
 function vjInsertarTraslado(dia, viajero, finAnt, de, a) {
   const k = [dia, viajero, minToHHMM(finAnt)].join("|");
-  planSet(k, { cli: "Traslado: " + de + " → " + a, tipo: "traslado", dur: 20, estado: "propuesto" });
+  // 30, no 20: es el único `dur` sembrado que no caía en múltiplo de 15, y media hora de
+  // traslado en Asunción o Buenos Aires es la estimación honesta.
+  planSet(k, { cli: "Traslado: " + de + " → " + a, tipo: "traslado", dur: 30, estado: "propuesto" });
   renderAgenda();
 }
 
@@ -12752,6 +12754,158 @@ async function vjPushNextStep(key) {
   }
 }
 
+/* ============ FICHA DE REUNIÓN: antes y después ============
+   La tabla de Resultados sólo servía para el post-mortem, y German pedía lo de antes: con qué
+   entrás a la reunión. Todo vive en el MISMO registro de `vj_resultados` porque es la misma
+   reunión — separar prep y resultado en dos storages obliga a sincronizar dos claves y a que
+   una quede huérfana si se borra el bloque. */
+const VJ_CUMPLIDO = {
+  "":        { l: "— sin responder", c: "#9ca3af", bg: "#f3f4f6" },
+  si:        { l: "Sí, se cumplió",  c: "#047857", bg: "#ECFDF5" },
+  parcial:   { l: "Parcialmente",    c: "#b45309", bg: "#FFFBEB" },
+  no:        { l: "No se cumplió",   c: "#b91c1c", bg: "#FEF2F2" }
+};
+let VJ_PREP_OPEN = {};   // key → true. En memoria, no en storage: qué tenés desplegado es de esta sesión.
+function vjPrepToggle(k) { VJ_PREP_OPEN[k] = !VJ_PREP_OPEN[k]; renderResultados(tripGet()); }
+
+/* Guarda SIN re-renderizar. Los campos de la ficha no cambian ningún KPI de arriba, y
+   re-renderizar en cada `onchange` te saca el foco del campo siguiente mientras tabulás. */
+function vjPrepSet(k, patch) {
+  const a = vjResAll(); a[k] = Object.assign({}, a[k] || {}, patch);
+  try { localStorage.setItem("vj_resultados", JSON.stringify(a)); } catch (e) {}
+}
+/* El único que sí re-renderiza: cambia el color del chip de la cabecera. */
+function vjCumplidoSet(k, v) { vjPrepSet(k, { cumplido: v }); renderResultados(tripGet()); }
+
+function vjPrepDocAdd(k) {
+  const t = prompt("¿Qué es? (ej: Propuesta Scale, Minuta reu anterior, Deck IACS)"); if (!t) return;
+  const u = prompt("Pegá el link:"); if (!u) return;
+  const r = vjResGet(k); const docs = (r.docs || []).slice();
+  docs.push({ t: t.trim(), u: u.trim() });
+  vjPrepSet(k, { docs: docs }); renderResultados(tripGet());
+}
+function vjPrepDocDel(k, i) {
+  const r = vjResGet(k); const docs = (r.docs || []).slice();
+  if (!docs[i] || !confirm(`¿Sacar "${docs[i].t}" de la documentación?`)) return;
+  docs.splice(i, 1); vjPrepSet(k, { docs: docs }); renderResultados(tripGet());
+}
+
+/* Company de HubSpot cuyo nombre matchea la cuenta del bloque. Devuelve null si es prospecto.
+   Se resuelve por `vjNorm` — el mismo canonizador que fusiona candidatos en el radar — porque
+   los nombres del plan los tipea German y no coinciden carácter a carácter con HubSpot. */
+function vjCompanyDe(cli) {
+  const t = vjNorm(vjNormCuenta(cli || "")); if (!t) return null;
+  return (window.__cuentasData || []).find(c => vjNorm(((c.properties || {}).name || "").trim()) === t) || null;
+}
+
+/* Un link "abrible": si ya es una URL va derecho; si es una dirección, la abre en Google Maps.
+   German carga las dos cosas en el mismo campo y pedirle que distinga sería fricción inútil. */
+function vjLugarHref(v) {
+  const t = String(v || "").trim(); if (!t) return "";
+  return /^https?:\/\//i.test(t) ? t : "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(t);
+}
+
+function vjFichaReunionHtml(k, cli) {
+  const r = vjResGet(k);
+  const kj = k.replace(/'/g, "\\'");
+  const co = vjCompanyDe(cli);
+  const meta = (typeof cuentasGetMeta === "function") ? cuentasGetMeta(cli) : {};
+  const ult = vjUltimaVisita(cli), dias = vjDiasDesde(ult);
+  const inS = "width:100%; padding:4px 7px; font-size:12px; border:1px solid #d1d5db; border-radius:6px; font-family:inherit;";
+  const lbS = "display:block; font-size:10.5px; font-weight:700; color:#6b7280; text-transform:uppercase; letter-spacing:.3px; margin:9px 0 3px;";
+
+  // --- contexto automático: lo que el dashboard ya sabe y no hay que tipear ---
+  const chips = [];
+  if (co) {
+    const cliJs = String(cli).replace(/'/g, "\\'");
+    chips.push(`<a href="#" onclick="setView('clientes'); cliTab('cuentas'); cliFichaOpen('${cliJs}','${co.id}'); return false;" style="display:inline-block; padding:2px 9px; border-radius:20px; background:#F1EFFF; border:1px solid #C7BDFF; color:#4030C8; font-size:10.5px; font-weight:700; text-decoration:none;">👤 Cliente · ver ficha ↗</a>`);
+    chips.push(`<a href="${HUBSPOT_COMPANY(co.id)}" target="_blank" rel="noopener" style="display:inline-block; padding:2px 9px; border-radius:20px; background:#fff; border:1px solid #e5e7eb; color:#6b7280; font-size:10.5px; font-weight:700; text-decoration:none;">HubSpot ↗</a>`);
+  } else {
+    chips.push(`<span style="display:inline-block; padding:2px 9px; border-radius:20px; background:#FFF7ED; border:1px solid #fed7aa; color:#9a3412; font-size:10.5px; font-weight:700;">Prospecto · no es cuenta activa</span>`);
+  }
+  if (meta.semaforo === "riesgo") chips.push(`<span style="display:inline-block; padding:2px 9px; border-radius:20px; background:#FEF2F2; border:1px solid #fecaca; color:#b91c1c; font-size:10.5px; font-weight:700;">⚠ En riesgo</span>`);
+  chips.push(`<span style="display:inline-block; padding:2px 9px; border-radius:20px; background:#fafafa; border:1px solid #e5e7eb; color:#6b7280; font-size:10.5px;">Última visita: ${ult ? fmtDmy(ult) + (dias !== null ? " · hace " + Math.round(dias / 30) + " m" : "") : "nunca"}</span>`);
+
+  const deals = vjDealsDe(cli);
+  const dealsHtml = deals.length
+    ? deals.map(d => {
+        const dp = d.properties || {};
+        return `<a href="${HUBSPOT_DEAL(d.id)}" target="_blank" rel="noopener" title="Abrir el deal en HubSpot" style="display:block; padding:4px 8px; margin-bottom:4px; border:1px solid #e5e7eb; border-radius:7px; background:#fff; text-decoration:none; color:#111827; font-size:11.5px;">
+          <b>${escAttr(dp.dealname || "(sin nombre)")}</b> ↗
+          <span style="color:#6b7280;"> · ${fmtMoneyK(parseFloat(dp.amount || 0))} · ${escAttr(stageLabel(dp.dealstage))}</span></a>`;
+      }).join("")
+    : `<div style="font-size:11.5px; color:#9ca3af; padding:3px 0;">Sin deal abierto en el pipeline de ventas. Si de esta reunión sale uno, cargalo al volver.</div>`;
+
+  const docs = r.docs || [];
+  const docsHtml = docs.length
+    ? docs.map((d, i) => `<div style="display:flex; align-items:center; gap:6px; margin-bottom:3px;">
+        <a href="${escAttr(d.u)}" target="_blank" rel="noopener" style="flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11.5px; color:#4030C8; text-decoration:none;">📎 ${escAttr(d.t)} ↗</a>
+        <span onclick="vjPrepDocDel('${kj}',${i})" title="Sacar" style="flex:0 0 auto; cursor:pointer; color:#d1d5db; font-size:12px;">✕</span></div>`).join("")
+    : `<div style="font-size:11.5px; color:#9ca3af;">Sin documentación cargada.</div>`;
+
+  const href = vjLugarHref(r.lugar);
+  const cum = VJ_CUMPLIDO[r.cumplido || ""];
+
+  return `<tr class="vj-ficha"><td colspan="6" style="background:#fbfbfd; border-top:none; padding:0 0 14px;">
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:18px; padding:4px 10px 0;">
+
+      <div>
+        <div style="font-weight:700; font-size:12px; color:#430C89; border-bottom:1px solid #ece9f7; padding-bottom:5px;">🎯 Antes — con qué entrás</div>
+        <div style="display:flex; flex-wrap:wrap; gap:5px; margin-top:8px;">${chips.join("")}</div>
+
+        <label style="${lbS}">Deals asociados</label>
+        ${dealsHtml}
+
+        <label style="${lbS}">Objetivo de la reunión</label>
+        <textarea rows="2" placeholder="Qué querés llevarte de acá. Uno solo y concreto." onchange="vjPrepSet('${kj}',{obj:this.value})" style="${inS} resize:vertical;">${escAttr(r.obj || "")}</textarea>
+
+        <label style="${lbS}">Contacto principal</label>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:5px;">
+          <input type="text" placeholder="Nombre y rol" value="${escAttr(r.cto || "")}" onchange="vjPrepSet('${kj}',{cto:this.value})" style="${inS}">
+          <input type="text" placeholder="Mail" value="${escAttr(r.ctoMail || "")}" onchange="vjPrepSet('${kj}',{ctoMail:this.value})" style="${inS}">
+        </div>
+        <input type="text" placeholder="Teléfono / WhatsApp" value="${escAttr(r.ctoTel || "")}" onchange="vjPrepSet('${kj}',{ctoTel:this.value})" style="${inS} margin-top:5px;">
+
+        <label style="${lbS}">Dónde es</label>
+        <div style="display:flex; gap:5px;">
+          <input type="text" placeholder="Dirección, o link de Meet/Zoom" value="${escAttr(r.lugar || "")}" onchange="vjPrepSet('${kj}',{lugar:this.value}); renderResultados(tripGet());" style="${inS}">
+          ${href ? `<a href="${escAttr(href)}" target="_blank" rel="noopener" title="Abrir" style="flex:0 0 auto; padding:4px 10px; border:1px solid #C7BDFF; border-radius:6px; background:#F1EFFF; color:#4030C8; font-size:11px; font-weight:700; text-decoration:none;">↗</a>` : ""}
+        </div>
+
+        <label style="${lbS}">Documentación <span onclick="vjPrepDocAdd('${kj}')" style="cursor:pointer; color:#4030C8; font-weight:700; text-transform:none; letter-spacing:0;">＋ link</span></label>
+        ${docsHtml}
+
+        <label style="${lbS}">Info de interés previa</label>
+        <textarea rows="3" placeholder="Lo que conviene tener fresco: qué pasó la última vez, quién manda de verdad, qué no tocar…" onchange="vjPrepSet('${kj}',{notas:this.value})" style="${inS} resize:vertical;">${escAttr(r.notas || "")}</textarea>
+      </div>
+
+      <div>
+        <div style="font-weight:700; font-size:12px; color:#047857; border-bottom:1px solid #e3f2ec; padding-bottom:5px;">✅ Después — qué te llevaste</div>
+
+        <label style="${lbS}">¿Se cumplió el objetivo?</label>
+        <select onchange="vjCumplidoSet('${kj}', this.value)" style="${inS} border-color:${cum.c}; color:${cum.c}; background:${cum.bg}; font-weight:700;">
+          ${Object.keys(VJ_CUMPLIDO).map(x => `<option value="${x}" ${(r.cumplido || "") === x ? "selected" : ""}>${VJ_CUMPLIDO[x].l}</option>`).join("")}
+        </select>
+
+        ${(r.cumplido === "no" || r.cumplido === "parcial") ? `
+        <label style="${lbS}" >Qué lo bloqueó</label>
+        <textarea rows="3" placeholder="El obstáculo real, no el síntoma. ¿Falta presupuesto, falta el que decide, falta una integración, falta confianza?" onchange="vjPrepSet('${kj}',{bloqueo:this.value})" style="${inS} resize:vertical; border-color:#fecaca; background:#fffafa;">${escAttr(r.bloqueo || "")}</textarea>` : ""}
+
+        <label style="${lbS}">Accionable que nos llevamos</label>
+        <textarea rows="3" placeholder="Qué hacemos nosotros, para cuándo. Distinto del próximo paso del deal: acá va todo, aunque no vaya a HubSpot." onchange="vjPrepSet('${kj}',{accionable:this.value})" style="${inS} resize:vertical;">${escAttr(r.accionable || "")}</textarea>
+
+        <label style="${lbS}">Comentarios adicionales</label>
+        <textarea rows="4" placeholder="Todo lo demás: clima de la reunión, quién más apareció, comentarios sueltos que después valen oro." onchange="vjPrepSet('${kj}',{coment:this.value})" style="${inS} resize:vertical;">${escAttr(r.coment || "")}</textarea>
+
+        <div style="font-size:10.5px; color:#9ca3af; margin-top:9px; line-height:1.45;">
+          El <b>resultado</b>, el <b>próximo paso</b> y el <b>pipeline movido</b> se cargan en la fila de arriba —
+          el próximo paso es el único campo que viaja a HubSpot.
+        </div>
+      </div>
+    </div>
+  </td></tr>`;
+}
+
 function renderResultados(trip) {
   const el = document.getElementById("vj-roi"); if (!el) return;
   if (!trip || !trip.ciudad || !trip.desde) { el.innerHTML = ""; return; }
@@ -12777,9 +12931,15 @@ function renderResultados(trip) {
     if (def.mueve && imp) movido += imp;
     const sid = btoa(unescape(encodeURIComponent(k))).replace(/=/g, "");
     const nDeals = vjDealsDe(s.cli).length;
-    return `<tr>
-      <td class="nw" style="font-size:11.5px; color:#6b7280;">${fmtDmy(p[0])} ${p[2]}</td>
-      <td><b>${escAttr(s.cli)}</b></td>
+    const abierto = !!VJ_PREP_OPEN[k];
+    /* Señales al costado del nombre para saber, sin abrir, si la reunión está preparada y si
+       ya la cerraste. Un viaje son 9 reuniones: abrir las 9 para ver cuál falta no escala. */
+    const prep = (r.obj || "").trim() ? `<span title="Objetivo cargado" style="color:#047857;">●</span>` : `<span title="Sin objetivo cargado" style="color:#e5e7eb;">●</span>`;
+    const cumC = VJ_CUMPLIDO[r.cumplido || ""];
+    const cumCh = r.cumplido ? `<span title="${cumC.l}" style="font-size:9.5px; font-weight:800; padding:0 6px; border-radius:8px; background:${cumC.bg}; color:${cumC.c};">${escAttr(cumC.l)}</span>` : "";
+    return `<tr${abierto ? ' style="background:#fbfbfd;"' : ""}>
+      <td class="nw" style="font-size:11.5px; color:#6b7280;"><span onclick="vjPrepToggle('${k.replace(/'/g, "\\'")}')" title="Preparación y cierre de la reunión" style="cursor:pointer; color:#430C89; font-weight:700; margin-right:4px; display:inline-block; width:10px;">${abierto ? "▾" : "▸"}</span>${fmtDmy(p[0])} ${p[2]}</td>
+      <td><span onclick="vjPrepToggle('${k.replace(/'/g, "\\'")}')" style="cursor:pointer;"><b>${escAttr(s.cli)}</b></span> ${prep} ${cumCh}</td>
       <td><select onchange="vjResSet('${k.replace(/'/g, "\\'")}',{res:this.value, cli:${JSON.stringify(s.cli).replace(/"/g, "&quot;")}})" style="font-size:11px; padding:2px 5px; border:1px solid ${def.c}; border-radius:5px; color:${def.c}; background:${def.bg};">${Object.keys(VJ_RESULTADOS).map(x => `<option value="${x}" ${(r.res || "") === x ? "selected" : ""}>${VJ_RESULTADOS[x].l}</option>`).join("")}</select></td>
       <td><input type="text" value="${escAttr(r.next || "")}" placeholder="próximo paso concreto…" onchange="vjResSet('${k.replace(/'/g, "\\'")}',{next:this.value, cli:${JSON.stringify(s.cli).replace(/"/g, "&quot;")}})" style="width:100%; min-width:180px; padding:3px 6px; font-size:12px; border:1px solid #d1d5db; border-radius:5px;"></td>
       <td style="text-align:right;"><input type="number" value="${r.impacto != null ? r.impacto : ""}" placeholder="u$s" title="Pipeline que este encuentro movió o generó. Sólo suma si el resultado es Avanzó o Deal nuevo." onchange="vjResSet('${k.replace(/'/g, "\\'")}',{impacto:this.value})" style="width:95px; padding:3px 6px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; text-align:right;"></td>
@@ -12788,7 +12948,7 @@ function renderResultados(trip) {
         : (nDeals
           ? `<button class="fc-btn secondary" style="font-size:10.5px; padding:2px 8px;" onclick="vjPushNextStep('${k.replace(/'/g, "\\'")}')">↑ al deal</button> <span id="vjns-${sid}" style="font-size:10px;"></span>`
           : '<span style="font-size:10.5px; color:#9ca3af;" title="No hay deal abierto de esta cuenta donde escribir el próximo paso.">sin deal</span>')}</td>
-    </tr>`;
+    </tr>${abierto ? vjFichaReunionHtml(k, s.cli) : ""}`;
   }).join("");
 
   const costo = cuNum(trip.costo);
@@ -12805,7 +12965,7 @@ function renderResultados(trip) {
     <div style="overflow-x:auto;"><table class="std"><thead><tr><th>Cuándo</th><th>Quién</th><th>Qué pasó</th><th>Próximo paso</th><th style="text-align:right;">Movió u$s</th><th class="c">HubSpot</th></tr></thead><tbody>${filas}</tbody></table></div>
     ${caidas.length ? `<div style="margin-top:9px; padding:8px 11px; background:#FFF7ED; border:1px solid #fed7aa; border-radius:8px; font-size:11.5px; color:#9a3412;">
       ↺ <b>No se concretaron:</b> ${caidas.map(k => escAttr((all[k].cli || "") + " (" + ((AGENDA_ESTADOS[all[k].estado] || {}).label || "") + ")")).join(" · ")}. No cuentan como reunión ni suman al pipeline movido.</div>` : ""}
-    <div style="font-size:10.5px; color:#9ca3af; margin-top:8px;">El próximo paso se escribe en <code>hs_next_step</code> del deal abierto de esa cuenta. Si hay más de uno, te pregunta cuál.</div>
+    <div style="font-size:10.5px; color:#9ca3af; margin-top:8px;">▸ Abrí cualquier fila para la <b>ficha de la reunión</b>: objetivo, contacto, lugar, documentación y deals antes de entrar; bloqueo y accionables al salir. El próximo paso se escribe en <code>hs_next_step</code> del deal abierto de esa cuenta — si hay más de uno, te pregunta cuál.</div>
   </div>`;
 }
 
@@ -12983,18 +13143,39 @@ function gapHtml(tid, s, e) {
    horarios reales viven en `tStart`/`tEnd` como siempre (así `agendaCalendar` y el archivado
    siguen funcionando sin tocarse); `dur` es sólo el respaldo para los bloques sembrados. */
 const VJ_H0 = 7, VJ_H1 = 23, VJ_PX = 46;          // 07:00–23:00, 46 px por hora
-const VJ_SNAP = 15;                                // los arrastres caen de a 15 minutos
+const VJ_SNAP = 15;                                // TODA hora de la agenda cae en :00 :15 :30 :45
+const VJ_GAP = 2;                                  // px de aire entre bloques pegados
+
+/* 🪤 Bug encontrado el 17/09 con la agenda de Asunción a la vista: los bloques mostraban horarios
+   imposibles — 08:00–13:51, 11:45–12:42, 15:00–15:48, 16:30–17:57. No era que faltara el snap: el
+   snap de 15 existía y funcionaba **para el inicio**. El final se recalculaba leyendo la ALTURA en
+   píxeles del elemento… y esa altura se dibuja con `- VJ_GAP` para que dos bloques pegados no se
+   toquen. O sea: cada vez que arrastrabas un bloque, la duración volvía del DOM 2 px más corta
+   (~3 minutos) que la real, y se guardaba así. Arrastralo cinco veces y perdés un cuarto de hora.
+
+   Dos arreglos, y los dos hacen falta:
+   1) **Mover ya no recalcula la duración.** Un arrastre lateral cambia CUÁNDO empieza, no cuánto
+      dura — no hay motivo para derivar la duración de píxeles. Sólo el redimensionado la toca, y
+      ahí se le suma de vuelta el `VJ_GAP` antes de convertir.
+   2) **`vjSnapMin` en el punto de LECTURA, no sólo en el de escritura.** Así los bloques que ya
+      quedaron torcidos (los del screenshot de German) se muestran y se comportan en múltiplos de
+      15 desde el primer render, sin migrar nada en `agenda_plan`. */
+function vjSnapMin(m) { return Math.round(Number(m || 0) / VJ_SNAP) * VJ_SNAP; }
 
 function vjBlkTimes(key, s, trip) {
   const kh = toMin(key.split("|")[2] || "09:00");
-  const ini = s && s.tStart ? toMin(s.tStart) : kh;
-  const fin = s && s.tEnd ? toMin(s.tEnd) : ini + ((s && s.dur) || (trip && trip.slotMin) || 60);
-  return { ini: ini, fin: Math.max(ini + 15, fin) };
+  const ini = vjSnapMin(s && s.tStart ? toMin(s.tStart) : kh);
+  const finRaw = s && s.tEnd ? toMin(s.tEnd) : (s && s.tStart ? toMin(s.tStart) : kh) + ((s && s.dur) || (trip && trip.slotMin) || 60);
+  return { ini: ini, fin: Math.max(ini + VJ_SNAP, vjSnapMin(finRaw)) };
 }
-function vjBlkSet(key, ini, fin) { planSet(key, { tStart: minToHHMM(ini), tEnd: minToHHMM(fin), dur: fin - ini }); }
+function vjBlkSet(key, ini, fin) {
+  ini = vjSnapMin(ini); fin = Math.max(ini + VJ_SNAP, vjSnapMin(fin));
+  planSet(key, { tStart: minToHHMM(ini), tEnd: minToHHMM(fin), dur: fin - ini });
+}
 // Mover a otro día o viajero = cambiar la KEY (se borra la vieja y se escribe la nueva).
 function vjBlkMove(key, dia, viajero, ini, fin) {
   const s = planGet(key) || {};
+  ini = vjSnapMin(ini); fin = Math.max(ini + VJ_SNAP, vjSnapMin(fin));
   const nk = [dia, viajero, minToHHMM(ini)].join("|");
   if (nk !== key) planDel(key);
   planSet(nk, Object.assign({}, s, { tStart: minToHHMM(ini), tEnd: minToHHMM(fin), dur: fin - ini }));
@@ -13017,9 +13198,12 @@ function vjBlkMove(key, dia, viajero, ini, fin) {
 
    El nombre del archivo es ordenable a propósito — `Agenda_Asuncion_2026-09-23_a_2026-09-25.csv` —
    contra el caos viejo de `Paraguay_10a12-02-26` vs `Py_06a09.07.26` vs `11 al 12/08-26`. */
+/* El export lleva la ficha entera, no sólo la grilla: es el documento del viaje. Lo que se
+   exporta tiene que servir para prepararse en el avión y para rendir cuentas al volver. */
 const VJ_EXP_COLS = ["Día", "Fecha", "Desde", "Hasta", "Min", "Tipo", "Título / Cuenta", "Viajero",
-  "Estado", "Dirección", "Nota / Objetivo", "Deals abiertos", "Monto USD", "Ponderado USD",
-  "Resultado", "Próximo paso"];
+  "Estado", "Dónde", "Nota del bloque", "Deals abiertos", "Monto USD", "Ponderado USD",
+  "Objetivo de la reunión", "Contacto", "Mail", "Teléfono", "Documentación", "Info previa",
+  "Resultado", "¿Cumplió el objetivo?", "Bloqueo", "Accionable", "Próximo paso", "Comentarios"];
 
 function vjExportRows(trip) {
   const all = planAll(), dias = tripDays(trip), out = [];
@@ -13054,13 +13238,24 @@ function vjExportRows(trip) {
         s.cli || "",
         trv ? trv.name : p[1],
         est.label || "Propuesto",
-        s.addr || (getAgendaMeta(s.cli) || {}).direccion || "",
+        // Lo que cargaste en la ficha de ESTA reunión gana sobre la dirección genérica de la cuenta.
+        res.lugar || s.addr || (getAgendaMeta(s.cli) || {}).direccion || "",
         s.nota || "",
         nDeals ? String(nDeals) : "",
         monto ? String(Math.round(monto)) : "",
         pond ? String(Math.round(pond)) : "",
+        res.obj || "",
+        res.cto || "",
+        res.ctoMail || "",
+        res.ctoTel || "",
+        (res.docs || []).map(d => d.t + ": " + d.u).join(" | "),
+        res.notas || "",
         res.res ? ((VJ_RESULTADOS[res.res] || {}).l || res.res) : "",
-        res.next || ""
+        res.cumplido ? ((VJ_CUMPLIDO[res.cumplido] || {}).l || res.cumplido) : "",
+        res.bloqueo || "",
+        res.accionable || "",
+        res.next || "",
+        res.coment || ""
       ]
     });
   });
@@ -13189,6 +13384,7 @@ function vjAgendarCand(idx) {
   vjCrearBloqueCand(c, dia, quien, h, h + dur);
 }
 function vjCrearBloqueCand(c, dia, quien, ini, fin) {
+  ini = vjSnapMin(ini); fin = Math.max(ini + VJ_SNAP, vjSnapMin(fin));
   const k = [dia, quien, minToHHMM(ini)].join("|");
   planSet(k, {
     cli: c.cli, tipo: "reunion", tStart: minToHHMM(ini), tEnd: minToHHMM(fin), dur: fin - ini,
@@ -13268,7 +13464,7 @@ function renderGrid(trip) {
     /* El color de FONDO dice el tipo (reunión / comida / traslado…) y la FRANJA IZQUIERDA dice el
        estado: verde = confirmado, ámbar = propuesto al cliente, gris = idea. Son dos preguntas
        distintas y meterlas en el mismo color obligaría a elegir cuál se pierde. */
-    el.style.cssText = `position:absolute; left:3px; right:3px; top:${(t.ini - VJ_H0 * 60) / 60 * VJ_PX}px; height:${Math.max(18, (t.fin - t.ini) / 60 * VJ_PX - 2)}px;
+    el.style.cssText = `position:absolute; left:3px; right:3px; top:${(t.ini - VJ_H0 * 60) / 60 * VJ_PX}px; height:${Math.max(18, (t.fin - t.ini) / 60 * VJ_PX - VJ_GAP)}px;
       background:${def.bg}; border:1px solid ${def.bd}; border-left:4px solid ${est.dot}; color:${def.fg}; border-radius:7px; padding:3px 6px 3px 7px; font-size:11px; overflow:hidden; cursor:grab; line-height:1.2;
       ${cancel ? "opacity:.45; text-decoration:line-through;" : ""}`;
     const trv = travs.find(x => x.id === p[1]);
@@ -13311,9 +13507,21 @@ function vjWireDrop(cont, trip) {
       const top = Math.max(0, Math.round((e.clientY - r.top) / snap) * snap);
       const ini = VJ_H0 * 60 + Math.round(top / VJ_PX * 60);
       const quien = window.__vjTravFiltro || (trip.viajeros || [AGENDA_ME])[0];
-      vjCrearBloqueCand(c, col.dataset.dia, quien, ini, ini + (trip.slotMin || 60));
+      vjCrearBloqueCand(c, col.dataset.dia, quien, ini, ini + Math.max(VJ_SNAP, vjSnapMin(trip.slotMin || 60)));
     });
   });
+}
+
+/* px → minutos, en UN solo lugar, para que mover y redimensionar no diverjan.
+   · mover:        el inicio sale de `top`; la duración es la guardada, intacta.
+   · redimensionar: la altura dibujada tiene `- VJ_GAP`, así que hay que devolvérselo antes
+                    de convertir, o cada resize se come ~3 minutos.
+   Todo cae a múltiplos de VJ_SNAP y nunca baja de un tramo. */
+function vjPxTimes(el, mode, durGuardada) {
+  const ini = vjSnapMin(VJ_H0 * 60 + parseFloat(el.style.top) / VJ_PX * 60);
+  let dur = durGuardada;
+  if (mode === "size") dur = vjSnapMin((parseFloat(el.style.height) + VJ_GAP) / VJ_PX * 60);
+  return { ini: ini, fin: ini + Math.max(VJ_SNAP, dur || VJ_SNAP) };
 }
 
 /* Arrastre y redimensionado. Se hace a mano (sin librería) porque el dashboard no tiene
@@ -13323,6 +13531,9 @@ function vjWireDrag(cont, trip, dias) {
   cont.querySelectorAll(".vj-blk").forEach(el => {
     const key = el.dataset.key;
     let mode = null, sy = 0, st = 0, sh = 0, curCol = el.parentElement;
+    /* La duración de verdad sale del registro, no de la pantalla: la pantalla le resta VJ_GAP. */
+    const tOrig = vjBlkTimes(key, planGet(key) || {}, trip);
+    const durOrig = tOrig.fin - tOrig.ini;
 
     el.addEventListener("dblclick", e => { e.preventDefault(); vjBlkEdit(key); });
     /* El ✕ y el chip de estado se atienden en mousedown y CORTAN la propagación: si no, el
@@ -13362,14 +13573,13 @@ function vjWireDrag(cont, trip, dias) {
         const bajo = colEls.find(c => { const r = c.getBoundingClientRect(); return e.clientX >= r.left && e.clientX <= r.right; });
         if (bajo && bajo !== curCol) { curCol = bajo; bajo.appendChild(el); }
       }
-      const ini = VJ_H0 * 60 + Math.round(parseFloat(el.style.top) / VJ_PX * 60);
-      const fin = ini + Math.round(parseFloat(el.style.height) / VJ_PX * 60);
-      const sp = el.querySelector("span"); if (sp) sp.textContent = minToHHMM(ini) + "–" + minToHHMM(fin);
+      const t = vjPxTimes(el, mode, durOrig);
+      const sp = el.querySelector("span"); if (sp) sp.textContent = minToHHMM(t.ini) + "–" + minToHHMM(t.fin);
     };
     const mu = () => {
       if (!mode) return;
-      const ini = VJ_H0 * 60 + Math.round(parseFloat(el.style.top) / VJ_PX * 60);
-      const fin = ini + Math.round(parseFloat(el.style.height) / VJ_PX * 60);
+      const t = vjPxTimes(el, mode, durOrig);
+      const ini = t.ini, fin = t.fin;
       const dia = curCol.dataset.dia, viaj = key.split("|")[1];
       mode = null; el.style.zIndex = ""; el.style.cursor = "grab";
       vjBlkMove(key, dia, viaj, ini, fin);
