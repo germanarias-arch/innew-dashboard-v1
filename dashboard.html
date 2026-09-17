@@ -12859,6 +12859,264 @@ function vjLugarHref(v) {
   return /^https?:\/\//i.test(t) ? t : "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(t);
 }
 
+/* ===== CONTACTOS DE HUBSPOT EN LA FICHA DE REUNIÓN (2026-09-17) =========================
+   German: "quiero que traiga contactos de HubSpot… poder elegir de ahí con cuál contactar, si no
+   está… que permita cargarlo e impacte en HubSpot".
+
+   ⚠️ ESTO NECESITA DOS SCOPES QUE LA APP PRIVADA HOY NO TIENE: `crm.objects.contacts.read` y
+   `crm.objects.contacts.write`. El proxy (`functions/api/hubspot.js`) ya sabe hacer las dos cosas
+   —`doSearch` acepta cualquier objectType y `doManage` ya asocia— así que NO hay cambio de
+   backend: es puro permiso en la app de HubSpot. Sin los scopes, HubSpot devuelve 403 y acá se
+   muestra el texto exacto de qué agregar, en vez de un "no se pudo leer" mudo (regla de debug
+   ganada a los golpes el 09/09).
+
+   🪤 Trampa ya documentada: el conector MCP de HubSpot SÍ lee contactos, así que una consulta
+   puede andar perfecto desde Claude y fallar en el dashboard. Son dos caminos con permisos
+   distintos. Probar desde el MCP NO valida que el dashboard pueda.
+
+   Se busca por `associatedcompanyid` (la company primaria del contacto) en vez de recorrer la
+   tabla de asociaciones: es un filtro de propiedad común, una sola llamada, y es como HubSpot
+   guarda de hecho el vínculo en este portal (verificado 17/09 sobre Ferrex, Bancard y Nueva
+   Americana). Un contacto asociado a DOS companies sólo aparece en la primaria — es la
+   concesión consciente a cambio de no encadenar dos requests por ficha. */
+const HS_SEARCH_TOOL = "mcp__aaaa9eed-76e4-4bc8-a1a2-fad976f54ccb__search_crm_objects";
+const VJ_CTO_PROPS = ["firstname", "lastname", "email", "phone", "mobilephone", "jobtitle", "hs_full_name_or_email"];
+window.__vjCtoCache = window.__vjCtoCache || {};   // companyId → {estado, lista, msg}
+let VJ_CTO_FORM = false;                           // ¿está abierto el alta de contacto nuevo?
+
+function vjCtoScopeMsg(e) {
+  const t = String((e && e.message) || e || "");
+  if (/403|scope/i.test(t)) {
+    return "El dashboard no tiene permiso para leer/escribir contactos en HubSpot. " +
+      "Agregá los alcances crm.objects.contacts.read y crm.objects.contacts.write en " +
+      "Configuración → Integraciones → Apps privadas → la app del dashboard.";
+  }
+  return t.slice(0, 220);
+}
+function vjCtoNombre(c) {
+  const p = c.properties || {};
+  const n = [p.firstname, p.lastname].filter(Boolean).join(" ").trim();
+  return n || p.hs_full_name_or_email || p.email || "(sin nombre)";
+}
+function vjCtoTel(c) { const p = c.properties || {}; return p.mobilephone || p.phone || ""; }
+
+async function vjCtosCargar(companyId, forzar) {
+  const id = String(companyId || ""); if (!id) return;
+  const cache = window.__vjCtoCache;
+  if (!forzar && cache[id] && cache[id].estado !== "error") return;
+  cache[id] = { estado: "cargando", lista: [], msg: "" };
+  if (VJ_FICHA_KEY) vjFichaRender();
+  try {
+    const res = await mcpCall(HS_SEARCH_TOOL, {
+      objectType: "contacts",
+      filterGroups: [{ filters: [{ propertyName: "associatedcompanyid", operator: "EQ", value: id }] }],
+      properties: VJ_CTO_PROPS,
+      limit: 100,
+      chatInsights: { userIntent: "Ficha de reunión: contactos de la cuenta", satisfaction: "NEUTRAL" }
+    });
+    const parsed = typeof res === "string" ? JSON.parse(res) : res;
+    const lista = parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
+    cache[id] = { estado: "ok", lista: lista, msg: "" };
+  } catch (e) {
+    cache[id] = { estado: "error", lista: [], msg: vjCtoScopeMsg(e) };
+    console.error("vjCtosCargar", e);
+  }
+  if (VJ_FICHA_KEY) vjFichaRender();
+}
+
+/* Trae UN contacto por id y lo mete en el cache de la company, aunque su `associatedcompanyid`
+   apunte a otra. Hace falta para el caso de abajo: un contacto que YA existía colgado de otra
+   cuenta, que asociamos a esta, y que la búsqueda por `associatedcompanyid` igual no devuelve
+   porque HubSpot conserva la company primaria original. */
+async function vjCtoTraerUno(companyId, contactId) {
+  try {
+    const res = await mcpCall(HS_SEARCH_TOOL, {
+      objectType: "contacts",
+      filterGroups: [{ filters: [{ propertyName: "hs_object_id", operator: "EQ", value: String(contactId) }] }],
+      properties: VJ_CTO_PROPS, limit: 1,
+      chatInsights: { userIntent: "Ficha de reunión: contacto puntual", satisfaction: "NEUTRAL" }
+    });
+    const parsed = typeof res === "string" ? JSON.parse(res) : res;
+    const uno = (parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [])[0];
+    if (!uno) return false;
+    const c = window.__vjCtoCache[String(companyId)];
+    if (c && c.estado === "ok" && !c.lista.some(x => String(x.id) === String(uno.id))) c.lista.push(uno);
+    return true;
+  } catch (e) { console.error("vjCtoTraerUno", e); return false; }
+}
+
+/* Elegir uno de HubSpot copia sus datos a la ficha y deja anotado el `ctoId`, que es lo que
+   después permite escribirle el teléfono de vuelta al registro correcto. */
+function vjCtoElegir(k, contactId, companyId) {
+  const c = ((window.__vjCtoCache[String(companyId)] || {}).lista || []).find(x => String(x.id) === String(contactId));
+  if (!c) return;
+  const pr = c.properties || {};
+  const rol = pr.jobtitle ? " — " + pr.jobtitle : "";
+  vjPrepSet(k, { ctoId: String(c.id), cto: vjCtoNombre(c) + rol, ctoMail: pr.email || "", ctoTel: vjCtoTel(c) || (vjResGet(k).ctoTel || "") });
+  vjFichaRender(); renderResultados(tripGet());
+}
+function vjCtoDesvincular(k) { vjPrepSet(k, { ctoId: "" }); vjFichaRender(); }
+function vjCtoFormToggle() { VJ_CTO_FORM = !VJ_CTO_FORM; vjFichaRender(); }
+
+/* Alta de contacto NUEVO en HubSpot, asociado a la company de la cuenta.
+   Nada se infiere: ni el mail por dominio ni el apellido. Lo que German no escribe, no se manda. */
+async function vjCtoCrear(k, companyId) {
+  const g = id => ((document.getElementById(id) || {}).value || "");
+  const nombre = g("vjcto-nom").trim(), apellido = g("vjcto-ape").trim();
+  const mail = g("vjcto-mail").trim(), puesto = g("vjcto-rol").trim(), tel = g("vjcto-tel").trim();
+  if (!nombre && !mail) { alert("Poné al menos el nombre o el mail."); return; }
+  const est = document.getElementById("vjcto-est");
+  if (est) { est.textContent = "Creando en HubSpot…"; est.style.color = "#6b7280"; }
+  const props = {};
+  if (nombre) props.firstname = nombre;
+  if (apellido) props.lastname = apellido;
+  if (mail) props.email = mail;
+  if (puesto) props.jobtitle = puesto;
+  if (tel) props.phone = tel;
+  try {
+    const r = await hsWrite({ createRequest: { objects: [{
+      objectType: "contacts", properties: props,
+      associations: [{ targetObjectType: "companies", targetObjectId: Number(companyId) }]
+    }] } });
+    const nuevo = ((r.results || (r.createResults || {}).results || [])[0] || {});
+    const nid = String(nuevo.objectId || (nuevo.object || {}).id || "");
+    await vjCtosCargar(companyId, true);
+    VJ_CTO_FORM = false;
+    if (nid) vjCtoElegir(k, nid, companyId);
+    else { vjPrepSet(k, { cto: [nombre, apellido].filter(Boolean).join(" ") + (puesto ? " — " + puesto : ""), ctoMail: mail, ctoTel: tel }); vjFichaRender(); }
+    renderResultados(tripGet());
+  } catch (e) {
+    /* Caso frecuentísimo: el mail YA existe en HubSpot, colgado de otra cuenta o de ninguna.
+       HubSpot responde 409 con "Contact already exists. Existing ID: 12345". Crear un duplicado
+       sería lo peor posible, así que se ofrece asociar el que ya está. */
+    const txt = String((e && e.message) || e || "");
+    const dup = txt.match(/Existing ID:\s*(\d+)/i);
+    if (dup && est) {
+      est.innerHTML = '<span style="color:#b45309;">Ese mail ya existe en HubSpot.</span> ' +
+        '<span onclick="vjCtoAsociarExistente(\'' + k + '\', \'' + companyId + '\', \'' + dup[1] + '\')" ' +
+        'style="cursor:pointer; color:#4030C8; font-weight:700; text-decoration:underline;">asociar ese contacto a esta cuenta</span>';
+    } else if (est) { est.textContent = "✗ " + vjCtoScopeMsg(e); est.style.color = "#b91c1c"; }
+    console.error("vjCtoCrear", e);
+  }
+}
+
+/* Asocia a la company un contacto que YA existe, sin tocarle un solo dato. Lo que German escribió
+   en el alta no se escribe encima: el contacto viejo puede tener información mejor, y pisarla a
+   ciegas rompe la regla de no completar nada por su cuenta. Si quiere corregirlo, tiene el link
+   "ver en HubSpot". */
+async function vjCtoAsociarExistente(k, companyId, contactId) {
+  const est = document.getElementById("vjcto-est");
+  if (est) { est.textContent = "Asociando…"; est.style.color = "#6b7280"; }
+  try {
+    await hsWrite({ updateRequest: { objects: [{
+      objectType: "contacts", objectId: Number(contactId), properties: {},
+      associations: [{ targetObjectType: "companies", targetObjectId: Number(companyId) }]
+    }] } });
+    await vjCtosCargar(companyId, true);
+    await vjCtoTraerUno(companyId, contactId);   // HubSpot conserva la company primaria: puede no venir en la búsqueda
+    VJ_CTO_FORM = false;
+    vjCtoElegir(k, contactId, companyId);
+    renderResultados(tripGet());
+  } catch (e) {
+    if (est) { est.textContent = "✗ " + vjCtoScopeMsg(e); est.style.color = "#b91c1c"; }
+    console.error("vjCtoAsociarExistente", e);
+  }
+}
+
+/* El teléfono es el dato que HubSpot casi nunca tiene (de 6 contactos de Ferrex, Bancard y Nueva
+   Americana, NINGUNO tenía). Si German lo consigue en la reunión, tiene que volver al CRM: si se
+   queda en el dashboard, el próximo que atienda la cuenta lo pide de nuevo. */
+async function vjCtoGuardarTel(k, companyId) {
+  const r = vjResGet(k);
+  const tel = String(r.ctoTel || "").trim();
+  if (!r.ctoId || !tel) return;
+  const est = document.getElementById("vjcto-tel-est");
+  if (est) { est.textContent = "Guardando…"; est.style.color = "#6b7280"; }
+  try {
+    await hsWrite({ updateRequest: { objects: [{ objectType: "contacts", objectId: Number(r.ctoId), properties: { phone: tel } }] } });
+    await vjCtosCargar(companyId, true);
+    vjFichaRender();
+  } catch (e) {
+    if (est) { est.textContent = "✗ " + vjCtoScopeMsg(e); est.style.color = "#b91c1c"; }
+    console.error("vjCtoGuardarTel", e);
+  }
+}
+
+/* Bloque completo de contacto: selector de HubSpot + campos + alta. */
+function vjCtoBloqueHtml(k, kj, co, r, pais, inS, lbS) {
+  const wa = vjWa(r.ctoTel, pais);
+  const waHtml = wa.vacio
+    ? `<div style="font-size:11px; color:#9ca3af; margin-top:4px;">Se convierte solo a link de WhatsApp. Escribilo con código de país — ej. <b>${escAttr(vjWaEjemplo(pais))}</b>.</div>`
+    : (wa.ok
+      ? `<div style="font-size:11.5px; margin-top:4px;"><a href="https://wa.me/${wa.num}" target="_blank" rel="noopener" style="color:#047857; font-weight:700; text-decoration:none;">💬 Abre wa.me/${wa.num} ↗</a>${wa.aviso ? `<div style="color:#b45309; font-size:11px; margin-top:2px;">⚠ ${escAttr(wa.aviso)}</div>` : ""}</div>`
+      : `<div style="font-size:11.5px; color:#b91c1c; margin-top:4px;">⚠ ${escAttr(wa.msg)}</div>`);
+
+  let selector = "";
+  if (!co) {
+    selector = `<div style="font-size:11.5px; color:#9ca3af; background:#fafafa; border:1px solid #f0f0f4; border-radius:7px; padding:7px 10px; margin-bottom:7px;">
+      Esta cuenta no existe como <i>company</i> en HubSpot, así que no hay de dónde traer contactos ni a qué asociarlos. Cargalo a mano acá.</div>`;
+  } else {
+    const c = window.__vjCtoCache[String(co.id)];
+    if (!c) {
+      selector = `<div style="margin-bottom:7px;"><button onclick="vjCtosCargar('${co.id}')" style="padding:5px 11px; border:1px solid #C7BDFF; background:#F1EFFF; color:#4030C8; border-radius:7px; font-size:11.5px; font-weight:700; cursor:pointer; font-family:inherit;">⟳ Traer contactos de HubSpot</button></div>`;
+    } else if (c.estado === "cargando") {
+      selector = `<div style="font-size:11.5px; color:#9ca3af; margin-bottom:7px;">Trayendo contactos de HubSpot…</div>`;
+    } else if (c.estado === "error") {
+      selector = `<div style="font-size:11.5px; color:#b91c1c; background:#FEF2F2; border:1px solid #fecaca; border-radius:7px; padding:8px 10px; margin-bottom:7px;">
+        ⚠ ${escAttr(c.msg)} <span onclick="vjCtosCargar('${co.id}', true)" style="cursor:pointer; text-decoration:underline; white-space:nowrap;">reintentar</span></div>`;
+    } else {
+      const ops = c.lista.map(x => {
+        const pp = x.properties || {};
+        const et = vjCtoNombre(x) + (pp.jobtitle ? " · " + pp.jobtitle : "") + (vjCtoTel(x) ? " · 📞" : "");
+        return `<option value="${escAttr(String(x.id))}" ${String(r.ctoId || "") === String(x.id) ? "selected" : ""}>${escAttr(et)}</option>`;
+      }).join("");
+      selector = `<div style="display:flex; gap:6px; margin-bottom:7px;">
+        <select onchange="if(this.value) vjCtoElegir('${kj}', this.value, '${co.id}')" style="${inS}">
+          <option value="">${c.lista.length ? "— elegí el contacto de la reunión —" : "— la cuenta no tiene contactos cargados —"}</option>${ops}
+        </select>
+        <button onclick="vjCtosCargar('${co.id}', true)" title="Volver a traer de HubSpot" style="flex:0 0 auto; padding:6px 10px; border:1px solid #e5e7eb; background:#fff; color:#6b7280; border-radius:7px; font-size:12px; cursor:pointer; font-family:inherit;">⟳</button>
+      </div>
+      <div style="margin-bottom:8px;">
+        <span onclick="vjCtoFormToggle()" style="cursor:pointer; color:#4030C8; font-size:11.5px; font-weight:700;">${VJ_CTO_FORM ? "✕ cancelar" : "＋ crear contacto nuevo en HubSpot"}</span>
+        ${r.ctoId ? ` <span onclick="vjCtoDesvincular('${kj}')" style="cursor:pointer; color:#9ca3af; font-size:11px; margin-left:8px;" title="Dejar de vincularlo al contacto de HubSpot y editarlo libre acá">desvincular</span>` : ""}
+      </div>`;
+      if (VJ_CTO_FORM) {
+        selector += `<div style="border:1px solid #C7BDFF; background:#FBFAFF; border-radius:9px; padding:11px; margin-bottom:9px;">
+          <div style="font-size:11.5px; font-weight:800; color:#430C89; margin-bottom:7px;">Nuevo contacto en ${escAttr((co.properties || {}).name || "la cuenta")}</div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+            <input id="vjcto-nom" type="text" placeholder="Nombre" style="${inS}">
+            <input id="vjcto-ape" type="text" placeholder="Apellido" style="${inS}">
+          </div>
+          <input id="vjcto-mail" type="text" placeholder="Mail" style="${inS} margin-top:6px;">
+          <input id="vjcto-rol" type="text" placeholder="Puesto (ej: Gerente de eCommerce)" style="${inS} margin-top:6px;">
+          <input id="vjcto-tel" type="text" placeholder="${escAttr(vjWaEjemplo(pais))}" style="${inS} margin-top:6px;">
+          <div style="display:flex; align-items:center; gap:9px; margin-top:9px;">
+            <button onclick="vjCtoCrear('${kj}', '${co.id}')" style="padding:6px 13px; border:1px solid #430C89; background:#430C89; color:#fff; border-radius:7px; font-size:12px; font-weight:700; cursor:pointer; font-family:inherit;">Crear y asociar</button>
+            <span id="vjcto-est" style="font-size:11px;"></span>
+          </div>
+          <div style="font-size:10.5px; color:#9ca3af; margin-top:7px; line-height:1.45;">Se crea en HubSpot y queda asociado a esta cuenta. Lo que dejes vacío no se manda — nada se completa por vos.</div>
+        </div>`;
+      }
+    }
+  }
+
+  // Si el contacto vino de HubSpot pero allá no tiene teléfono, se ofrece devolvérselo.
+  const ctoHs = co && r.ctoId ? ((window.__vjCtoCache[String(co.id)] || {}).lista || []).find(x => String(x.id) === String(r.ctoId)) : null;
+  const telHs = ctoHs ? vjCtoTel(ctoHs) : "";
+  const telDifiere = ctoHs && (r.ctoTel || "").trim() && vjWa(r.ctoTel, pais).num !== vjWa(telHs, pais).num;
+  const guardarTel = telDifiere
+    ? `<div style="margin-top:5px;"><span onclick="vjCtoGuardarTel('${kj}', '${co.id}')" style="cursor:pointer; color:#4030C8; font-size:11.5px; font-weight:700;">↑ guardar este teléfono en HubSpot</span> <span id="vjcto-tel-est" style="font-size:11px;"></span>
+       <div style="font-size:10.5px; color:#9ca3af;">${telHs ? "En HubSpot figura " + escAttr(telHs) + "." : "El contacto no tiene teléfono en HubSpot."}</div></div>`
+    : "";
+
+  return `<label style="${lbS}">Contacto principal${r.ctoId ? ` <a href="https://app.hubspot.com/contacts/${ACCOUNT_ID}/record/0-1/${escAttr(r.ctoId)}" target="_blank" rel="noopener" style="text-transform:none; letter-spacing:0; color:#4030C8; font-weight:700;">ver en HubSpot ↗</a>` : ""}</label>
+    ${selector}
+    <input type="text" placeholder="Nombre y rol" value="${escAttr(r.cto || "")}" onchange="vjPrepSet('${kj}',{cto:this.value}); renderResultados(tripGet());" style="${inS}">
+    <input type="text" placeholder="Mail" value="${escAttr(r.ctoMail || "")}" onchange="vjPrepSet('${kj}',{ctoMail:this.value})" style="${inS} margin-top:6px;">
+    <input type="text" placeholder="${escAttr(vjWaEjemplo(pais))}" value="${escAttr(r.ctoTel || "")}" onchange="vjPrepSet('${kj}',{ctoTel:this.value}); vjFichaRender(); renderResultados(tripGet());" style="${inS} margin-top:6px;">
+    ${waHtml}${guardarTel}`;
+}
+
 /* ---- LA FICHA VIVE EN UN PANEL LATERAL (2026-09-17, rediseño pedido por German) ----
    Antes era una fila desplegable con un ▸ de 10 px. German: "no es fácil detectar que hay que
    abrir esa ventana... se puede pasar por alto". Tenía razón: el caret no promete nada y no dice
