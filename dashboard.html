@@ -1114,10 +1114,12 @@ table.std tr:hover td { background: #fafafa; }
       .ag-slot-addr{font-size:10px;color:#6b7280;}
     </style>
     <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">🧭 Planificá el viaje: definí ciudad, fechas y quién va; reservá bloques por día y asigná deals de esa ciudad. Al marcar un bloque y crear en Calendar se reserva en tu agenda con la dirección de HubSpot.</div>
+    <div id="vj-radar"></div>
     <div id="agenda-trip"></div>
     <div id="agenda-days"></div>
     <div id="agenda-grid"></div>
     <div id="agenda-deals"></div>
+    <div id="vj-roi"></div>
     <div id="agenda-history"></div>
   </div><!-- /view-agenda -->
 
@@ -11747,7 +11749,10 @@ async function cuentaDealEdit(companyId, dealId, prop, value, el) {
 // ====================================================
 // AGENDA / VIAJES
 // ====================================================
-const AGENDA_CITIES = ["Buenos Aires", "Asunción", "Santiago", "CDMX", "Otra"];
+/* Los 7 destinos que definió German (2026-09-17). Se derivan de VJ_DEST para que no haya dos
+   listas de ciudades que se puedan desincronizar — ése fue el pecado de las 2 pestañas de
+   Clientes que hubo que desarmar el 07/09. "Otra" queda como escape. */
+const AGENDA_CITIES = ["Buenos Aires", "Asunción", "Santiago", "Lima", "CDMX", "São Paulo", "Río de Janeiro", "Otra"];
 const AR_CAPITALS = ["Córdoba", "Rosario", "La Plata", "Mar del Plata", "Mendoza", "Salta", "San Miguel de Tucumán", "Santa Fe", "Paraná", "Resistencia", "Posadas", "Corrientes", "Neuquén", "San Juan", "San Luis", "Santiago del Estero", "San Salvador de Jujuy", "La Rioja", "Santa Rosa", "Formosa", "San Fernando del Valle de Catamarca", "Rawson", "Viedma", "Río Gallegos", "Ushuaia"];
 const AGENDA_ESTADOS = {
   propuesto: { label: "Propuesto", bg: "#f1f1ee", fg: "#5f5e5a", dot: "#9ca3af" },
@@ -11758,7 +11763,10 @@ const CITY_TZ = {
   "Buenos Aires": "America/Argentina/Buenos_Aires",
   "Asunción": "America/Asuncion",
   "Santiago": "America/Santiago",
+  "Lima": "America/Lima",
   "CDMX": "America/Mexico_City",
+  "São Paulo": "America/Sao_Paulo",
+  "Río de Janeiro": "America/Sao_Paulo",
   "Otra": "America/Argentina/Buenos_Aires"
 };
 const AGENDA_CAL = "german.arias@innew.la";
@@ -11825,14 +11833,483 @@ function timeSlots(slotMin) { const out = []; for (let m = 8 * 60; m < 19 * 60; 
 
 function agStatus(msg, err) { const el = document.getElementById("agenda-status"); if (el) { el.className = "fc-status" + (err ? " err" : ""); el.textContent = msg; } }
 
+
+/* ==========================================================================================
+   VIAJES COMERCIALES — RADAR DE CIUDAD (2026-09-17)
+   ------------------------------------------------------------------------------------------
+   Reemplaza los 5 .xlsm sueltos ("Agenda_Comercial_<destino>_<fechas>.xlsm") que vivían en el
+   Drive. El problema de esos archivos no era el formato: era que **el conocimiento no se
+   acumulaba** — nadie podía contestar "¿a quién vimos en Asunción en el último año y qué quedó
+   pendiente?" sin abrir cuatro planillas con nombres inconsistentes.
+
+   Se da vuelta el orden de la vista: **primero la ciudad, después el viaje**. El radar puntúa
+   los 7 destinos, la agenda se arma desde una lista de candidatos priorizada que sale de
+   HubSpot, y al volver cada reunión pide resultado → de ahí sale el ROI del viaje.
+
+   Decisiones cerradas con German antes de construir (2026-09-17):
+   · Candidatos = las CUATRO fuentes: clientes activos + deals abiertos (sean o no customer) +
+     prospectos (`opportunity`) + contactos de partner.
+   · El "próximo paso" de cada reunión **se escribe en `hs_next_step` del deal**, para que el
+     aprendizaje del viaje llegue al CRM y al Asistente Comercial en vez de morir acá.
+   · Argentina = un solo destino (Buenos Aires). Las cuentas del interior se marcan, no se
+     esconden: cuando vas a BsAs ves si vale la pena estirar hasta Resistencia o La Plata.
+
+   ⚠️ Dato que condiciona todo el diseño (verificado el 17/09 con query_crm_data): en HubSpot
+   **`city` está vacío en más de la mitad de las companies** y `country` viene escrito de tres
+   formas distintas (`argentina`, `ar`, `arg`). Por eso el destino se deriva del PAÍS normalizado
+   con `normPais()`, nunca de `city`, y siempre se puede pisar a mano por cuenta.
+   ========================================================================================== */
+
+/* Los 7 destinos. `pais` es el código que devuelve normPais(). Brasil tiene DOS destinos que
+   comparten país: el candidato aparece en los dos y German elige a cuál lo lleva. */
+const VJ_DEST = [
+  { id: "bsas",     label: "Buenos Aires", pais: "AR", flag: "🇦🇷", tz: "America/Argentina/Buenos_Aires", tipo: "cartera" },
+  { id: "asuncion", label: "Asunción",     pais: "PY", flag: "🇵🇾", tz: "America/Asuncion",               tipo: "cartera" },
+  { id: "santiago", label: "Santiago",     pais: "CL", flag: "🇨🇱", tz: "America/Santiago",               tipo: "canal" },
+  { id: "lima",     label: "Lima",         pais: "PE", flag: "🇵🇪", tz: "America/Lima",                   tipo: "semilla" },
+  { id: "cdmx",     label: "CDMX",         pais: "MX", flag: "🇲🇽", tz: "America/Mexico_City",            tipo: "semilla" },
+  { id: "sp",       label: "São Paulo",    pais: "BR", flag: "🇧🇷", tz: "America/Sao_Paulo",              tipo: "partner" },
+  { id: "rj",       label: "Río de Janeiro", pais: "BR", flag: "🇧🇷", tz: "America/Sao_Paulo",            tipo: "partner" }
+];
+const VJ_DEST_BY_ID = {}; VJ_DEST.forEach(d => { VJ_DEST_BY_ID[d.id] = d; });
+const VJ_TIPO_LBL = {
+  cartera: { l: "Cartera viva", d: "Hay clientes y deals: el viaje es para destrabar y retener.", c: "#047857", bg: "#ECFDF5" },
+  canal:   { l: "Canal / reseller", d: "El volumen lo trae el reseller o el partner local, no la cartera propia.", c: "#b45309", bg: "#FFFBEB" },
+  semilla: { l: "Mercado semilla", d: "Todavía no hay cartera: el viaje es para pedir intros y abrir puerta.", c: "#4030C8", bg: "#EEF2FF" },
+  partner: { l: "Partner / HQ", d: "No hay cuentas: se viaja a ver al partner. La agenda es de gente, no de clientes.", c: "#6d28d9", bg: "#F5F3FF" }
+};
+
+/* Contactos de partner: NO salen de HubSpot (no son cuentas). Viven acá, editables, sembrados
+   con el mapa de relacionamiento del Plan H2. Sin esto, Lima / SP / RJ quedarían vacíos y la
+   vista parecería rota justo en los mercados que German quiere abrir. */
+const VJ_PARTNERS_SEED = [
+  { id: "p1", dest: "lima",     nombre: "Manuel Palacios",  org: "VTEX Perú",     rol: "Trajo Wong, Claro, Softys y San Fernando" },
+  { id: "p2", dest: "lima",     nombre: "Nilo Alfaro",      org: "VTEX",          rol: "Leads VTEX Grow + IDP" },
+  { id: "p3", dest: "santiago", nombre: "Gary",             org: "VTEX Chile",    rol: "Político y leads · dueño: Ale Becerra" },
+  { id: "p4", dest: "santiago", nombre: "Alejandro Becerra", org: "Reseller Innew", rol: "KPI: 1 lead por semana" },
+  { id: "p5", dest: "sp",       nombre: "VTEX HQ",          org: "VTEX",          rol: "Casa central · palanca: speaker del evento" },
+  { id: "p6", dest: "rj",       nombre: "VTEX (origen)",    org: "VTEX",          rol: "Sede histórica" },
+  { id: "p7", dest: "cdmx",     nombre: "TNE México",       org: "Tiendanube",    rol: "Dueños: Alfred y German" },
+  { id: "p8", dest: "bsas",     nombre: "Pocho",            org: "Tiendanube",    rol: "Generación de lead IDP + Middleware" },
+  { id: "p9", dest: "bsas",     nombre: "Lucas",            org: "VTEX Arg/Py",   rol: "Leads · dueño: Joaquin" },
+  { id: "p10", dest: "asuncion", nombre: "Luigi · Lucho · Seba", org: "VTEX Arg/Py", rol: "Seguimiento y acciones · dueño: German" }
+];
+function vjPartners() {
+  try {
+    const raw = localStorage.getItem("vj_partners");
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return VJ_PARTNERS_SEED.slice();
+}
+function vjPartnersSave(list) { try { localStorage.setItem("vj_partners", JSON.stringify(list)); } catch (e) {} }
+
+/* ---- destino de una cuenta ----
+   Orden: override manual > país normalizado. Devuelve [] si no se puede ubicar — nunca se
+   inventa un destino, porque una cuenta mal ubicada ensucia el radar de dos ciudades a la vez. */
+function vjDestDeCuenta(cli, countryRaw) {
+  const ov = agendaCityOf(cli);
+  if (ov) { const d = VJ_DEST.find(x => x.label === ov); if (d) return [d.id]; }
+  const p = normPais(countryRaw);
+  if (!p) return [];
+  return VJ_DEST.filter(d => d.pais === p).map(d => d.id);
+}
+// ¿Es una cuenta argentina que NO es de Buenos Aires? Se marca, no se oculta.
+function vjEsInterior(city, countryRaw) {
+  if (normPais(countryRaw) !== "AR") return false;
+  const c = String(city || "").trim().toLowerCase();
+  if (!c) return false;
+  return !(c.includes("buenos aires") || c === "caba" || c.includes("capital federal"));
+}
+
+/* ---- última visita a una cuenta, del historial de viajes ---- */
+function vjUltimaVisita(cli) {
+  let ult = null;
+  (histAll() || []).forEach(r => {
+    const hit = Object.values(r.slots || {}).some(s => String(s.cli || "").trim() === String(cli).trim());
+    if (!hit) return;
+    const f = r.hasta || r.desde;
+    if (f && (ult === null || f > ult)) ult = f;
+  });
+  return ult;
+}
+function vjDiasDesde(iso) {
+  if (!iso) return null;
+  const d = new Date(iso + "T12:00:00");
+  if (isNaN(d)) return null;
+  return Math.round((new Date() - d) / 86400000);
+}
+
+/* ---- CANDIDATOS: las 4 fuentes ----------------------------------------------------------
+   Cada candidato lleva su MOTIVO escrito. Eso es lo que hoy vive en la cabeza de German y se
+   pierde entre viaje y viaje: no alcanza con listar cuentas, hay que decir por qué esa cuenta
+   y no otra. El motivo es lo que convierte una lista en una agenda defendible. */
+let VJ_PROSPECTOS = null;   // cache del fetch de companies en `opportunity`
+
+async function vjFetchProspectos() {
+  if (VJ_PROSPECTOS) return VJ_PROSPECTOS;
+  const all = [];
+  for (let i = 0; i < 2; i++) {
+    try {
+      const res = await mcpCall(HS_SEARCH, {
+        objectType: "companies",
+        filterGroups: [{ filters: [{ propertyName: "lifecyclestage", operator: "EQ", value: "opportunity" }] }],
+        properties: ["name", "country", "city", "csm_asignado", "num_associated_deals"],
+        sorts: [{ propertyName: "name", direction: "ASCENDING" }],
+        limit: 100, offset: i * 100,
+        chatInsights: { userIntent: "Viajes: prospectos por destino", satisfaction: "NEUTRAL" }
+      });
+      const p = typeof res === "string" ? JSON.parse(res) : res;
+      const r = p.results || (p.content && p.content[0] && JSON.parse(p.content[0].text).results) || [];
+      all.push(...r);
+      if (r.length < 100) break;
+    } catch (e) { console.warn("vjFetchProspectos", e); break; }
+  }
+  VJ_PROSPECTOS = all;
+  return all;
+}
+
+/* Arma TODOS los candidatos, agrupados por destino. Un mismo cliente puede aparecer una sola
+   vez aunque tenga deal abierto: se fusiona y se queda con el motivo más fuerte. */
+function vjCandidatos() {
+  const porDest = {}; VJ_DEST.forEach(d => { porDest[d.id] = []; });
+  const push = (dests, c) => dests.forEach(id => { if (porDest[id]) porDest[id].push(c); });
+  const idx = {};   // cli → candidato ya creado, para fusionar
+
+  const add = (dests, c) => {
+    const k = String(c.cli).trim().toLowerCase();
+    const prev = idx[k];
+    if (prev) {
+      // Fusión: el deal manda sobre el cliente, y los motivos se suman.
+      if (c.monto) prev.monto = (prev.monto || 0) + c.monto;
+      if (c.dealId && !prev.dealId) prev.dealId = c.dealId;
+      if (c.motivo && prev.motivos.indexOf(c.motivo) < 0) prev.motivos.push(c.motivo);
+      prev.peso = Math.max(prev.peso, c.peso);
+      if (c.tipo === "deal") prev.tipo = "deal";
+      return;
+    }
+    const nuevo = Object.assign({}, c, { motivos: c.motivo ? [c.motivo] : [] });
+    idx[k] = nuevo;
+    push(dests, nuevo);
+  };
+
+  /* 1) CLIENTES ACTIVOS — la cartera. Motivo: tiempo sin visita, riesgo, peso en el P&L. */
+  (window.__cuentasData || []).forEach(c => {
+    const p = c.properties || {};
+    const cli = (p.name || "").trim(); if (!cli) return;
+    if (cuentasGetMeta(cli).baja) return;
+    const dests = vjDestDeCuenta(cli, p.country); if (!dests.length) return;
+    const meta = cuentasGetMeta(cli);
+    const ult = vjUltimaVisita(cli), dias = vjDiasDesde(ult);
+    const cartR = (typeof cartCliRow === "function") ? cartCliRow(cli) : null;
+    let motivo = "", peso = 10;
+    if (meta.semaforo === "riesgo") { motivo = "Cuenta en riesgo"; peso = 80; }
+    else if (dias === null) { motivo = "Nunca la visitaste"; peso = 45; }
+    else if (dias > 180) { motivo = "Sin visita hace " + Math.round(dias / 30) + " meses"; peso = 55; }
+    else if (dias > 90) { motivo = "Sin visita hace " + Math.round(dias / 30) + " meses"; peso = 30; }
+    else { motivo = "Visitada hace " + Math.round(dias / 30) + " mes(es)"; peso = 8; }
+    if (cartR && cartR.pen !== null && cartR.pen < 0.01) motivo += " · pesás sólo " + (cartR.pen * 100).toFixed(2) + "% de su P&L (hay techo)";
+    add(dests, {
+      cli: cli, tipo: "cliente", companyId: String(c.id), csm: (p.csm_asignado || "").trim(),
+      pais: normPais(p.country), interior: vjEsInterior(p.city, p.country),
+      ultVisita: ult, dias: dias, monto: 0, dealId: null, motivo: motivo, peso: peso
+    });
+  });
+
+  /* 2) DEALS ABIERTOS de cualquier lifecycle. Acá entran Universo y Sueñolar, que NO son
+        customer y con la lógica vieja (`buildAgendaClients` sobre __dailyOpen) quedaban afuera
+        del radar aunque suman USD 71K entre los dos. La geografía sale de `segmento`. */
+  const SEG2PAIS = { AR: "AR", PY: "PY", MX: "MX", CL: "CL", PE: "PE", BR: "BR", UY: "", EC: "", BO: "", CO: "" };
+  (window.__allDeals || []).forEach(d => {
+    const p = d.properties || {};
+    if (p.pipeline === NURTURING_PIPELINE_ID) return;              // Nurturing nunca entra
+    if (CLOSED_STAGES.indexOf(p.dealstage) >= 0) return;
+    const cli = clientNameFromDeal(p.dealname);
+    const seg = String(p.segmento || "").trim().toUpperCase();
+    let dests = vjDestDeCuenta(cli, SEG2PAIS[seg] || "");
+    if (!dests.length && SEG2PAIS[seg]) dests = VJ_DEST.filter(x => x.pais === SEG2PAIS[seg]).map(x => x.id);
+    if (!dests.length) return;
+    const monto = parseFloat(p.amount || 0) || 0;
+    const et = STAGE_LABELS[p.dealstage] || p.dealstage;
+    const dias = p.closedate ? Math.round((new Date(p.closedate) - new Date()) / 86400000) : null;
+    let motivo = et + (monto ? " · " + fmtMoneyK(monto) : "");
+    let peso = 40 + Math.min(60, monto / 1000);
+    if (dias !== null && dias < 0) { motivo += " · cierre vencido hace " + Math.abs(dias) + " d"; peso += 35; }
+    add(dests, {
+      cli: cli, tipo: "deal", companyId: null, csm: "",
+      pais: SEG2PAIS[seg] || "", interior: false,
+      ultVisita: vjUltimaVisita(cli), dias: vjDiasDesde(vjUltimaVisita(cli)),
+      monto: monto, dealId: String(d.id), motivo: motivo, peso: peso
+    });
+  });
+
+  /* 3) PROSPECTOS (`opportunity` sin deal abierto). Son los únicos habitantes de Lima y Brasil. */
+  (VJ_PROSPECTOS || []).forEach(c => {
+    const p = c.properties || {};
+    const cli = (p.name || "").trim(); if (!cli) return;
+    if (idx[cli.toLowerCase()]) return;                             // ya entró por cliente o deal
+    const dests = vjDestDeCuenta(cli, p.country); if (!dests.length) return;
+    add(dests, {
+      cli: cli, tipo: "prospecto", companyId: String(c.id), csm: "",
+      pais: normPais(p.country), interior: vjEsInterior(p.city, p.country),
+      ultVisita: null, dias: null, monto: 0, dealId: null,
+      motivo: "Prospecto sin deal abierto — puerta por abrir", peso: 20
+    });
+  });
+
+  /* 4) CONTACTOS DE PARTNER. No son cuentas: son el motivo del viaje en los mercados semilla. */
+  vjPartners().forEach(pt => {
+    if (!porDest[pt.dest]) return;
+    porDest[pt.dest].push({
+      cli: pt.nombre, tipo: "partner", companyId: null, csm: "", pais: "", interior: false,
+      ultVisita: null, dias: null, monto: 0, dealId: null, partnerId: pt.id,
+      org: pt.org, motivo: pt.rol, motivos: [pt.rol], peso: 35
+    });
+  });
+
+  Object.keys(porDest).forEach(k => porDest[k].sort((a, b) => b.peso - a.peso || String(a.cli).localeCompare(String(b.cli))));
+  return porDest;
+}
+
+/* ---- SCORE de un destino ----
+   Deliberadamente simple y con el desglose SIEMPRE a la vista: un score que German no pueda
+   explicar es un score que no va a usar para decidir un pasaje. Cinco sumandos, tope 100. */
+function vjScore(cands) {
+  const clientes = cands.filter(c => c.tipo === "cliente").length;
+  const pipeline = cands.reduce((s, c) => s + (c.monto || 0), 0);
+  const riesgo = cands.filter(c => (c.motivos || []).some(m => /riesgo/i.test(m))).length;
+  const olvidadas = cands.filter(c => c.tipo === "cliente" && (c.dias === null || c.dias > 90)).length;
+  const vencidos = cands.filter(c => (c.motivos || []).some(m => /vencido/i.test(m))).length;
+  const partes = [
+    { l: "Pipeline abierto", v: Math.min(35, pipeline / 3000), d: fmtMoneyK(pipeline) },
+    { l: "Cuentas sin visita +90d", v: Math.min(25, olvidadas * 5), d: olvidadas + " cuenta(s)" },
+    { l: "Cuentas en riesgo", v: Math.min(20, riesgo * 10), d: riesgo + " en riesgo" },
+    { l: "Deals con cierre vencido", v: Math.min(12, vencidos * 6), d: vencidos + " vencido(s)" },
+    { l: "Tamaño de cartera", v: Math.min(8, clientes), d: clientes + " cliente(s)" }
+  ];
+  const total = Math.round(partes.reduce((s, p) => s + p.v, 0));
+  return { total: total, partes: partes, clientes: clientes, pipeline: pipeline, riesgo: riesgo, olvidadas: olvidadas, vencidos: vencidos };
+}
+
+/* ---- RENDER: el radar de las 7 ciudades ---- */
+let VJ_DATA = null;      // { destId: [candidatos] }
+let VJ_OPEN = null;      // destino desplegado
+
+async function renderRadar() {
+  const el = document.getElementById("vj-radar");
+  if (!el) return;
+  if (!window.__cuentasData) {
+    el.innerHTML = '<div class="loading">Cargando cuentas…</div>';
+    try { window.__cuentasData = await fetchCuentas(); } catch (e) { window.__cuentasData = null; }
+  }
+  if (!VJ_PROSPECTOS) { el.innerHTML = '<div class="loading">Leyendo cartera, deals y prospectos por destino…</div>'; await vjFetchProspectos(); }
+  try { cartInvalidateCli(); } catch (e) {}
+  VJ_DATA = vjCandidatos();
+
+  const trip = tripGet();
+  const cards = VJ_DEST.map(d => {
+    const cands = VJ_DATA[d.id] || [];
+    const sc = vjScore(cands);
+    const tl = VJ_TIPO_LBL[d.tipo];
+    const ultimo = (histAll() || []).filter(r => r.ciudad === d.label).sort((a, b) => String(b.hasta || "").localeCompare(String(a.hasta || "")))[0];
+    const dv = ultimo ? vjDiasDesde(ultimo.hasta || ultimo.desde) : null;
+    const col = sc.total >= 75 ? "#b91c1c" : sc.total >= 50 ? "#b45309" : sc.total >= 25 ? "#4030C8" : "#9ca3af";
+    const activo = trip && trip.ciudad === d.label;
+    return `<div style="border:1px solid ${activo ? "#C7BDFF" : "#e5e7eb"}; border-radius:11px; background:#fff; overflow:hidden; ${activo ? "box-shadow:0 0 0 2px #EDE9FE;" : ""}">
+      <div style="padding:9px 13px; border-bottom:1px solid #eee; display:flex; justify-content:space-between; align-items:center; gap:8px;">
+        <div><b style="font-size:13.5px;">${d.flag} ${escAttr(d.label)}</b>
+          <div><span title="${escAttr(tl.d)}" style="font-size:9.5px; font-weight:600; color:${tl.c}; background:${tl.bg}; border-radius:8px; padding:1px 7px; cursor:help;">${tl.l}</span></div></div>
+        <div style="text-align:right;"><div style="font-size:23px; font-weight:800; color:${col}; line-height:1;">${sc.total}</div><div style="font-size:9px; color:#9ca3af;">cuánto pesa ir</div></div>
+      </div>
+      <div style="padding:8px 13px;">
+        <div style="display:flex; justify-content:space-between; font-size:12px; padding:2px 0;"><span style="color:#6b7280;">Candidatos</span><b>${cands.length}</b></div>
+        <div style="display:flex; justify-content:space-between; font-size:12px; padding:2px 0;"><span style="color:#6b7280;">Pipeline abierto</span><b>${sc.pipeline ? fmtMoneyK(sc.pipeline) : "—"}</b></div>
+        <div style="display:flex; justify-content:space-between; font-size:12px; padding:2px 0;"><span style="color:#6b7280;">Sin visita +90d</span><b style="color:${sc.olvidadas ? "#b45309" : ""};">${sc.olvidadas || "—"}</b></div>
+        <div style="display:flex; justify-content:space-between; font-size:12px; padding:2px 0;"><span style="color:#6b7280;">Última visita</span><b>${dv === null ? '<span style="color:#9ca3af;">nunca</span>' : (dv < 60 ? "hace " + dv + " d" : "hace " + Math.round(dv / 30) + " m")}</b></div>
+        <details style="margin-top:6px;"><summary style="font-size:10.5px; color:#4030C8; cursor:pointer;">cómo se calcula</summary>
+          <div style="margin-top:4px;">${sc.partes.map(p => `<div style="display:flex; justify-content:space-between; font-size:10.5px; color:#6b7280; padding:1px 0;"><span>${p.l} <span style="color:#c4c4cc;">(${p.d})</span></span><b style="color:#374151;">+${Math.round(p.v)}</b></div>`).join("")}</div>
+        </details>
+        <div style="display:flex; gap:6px; margin-top:8px;">
+          <button class="fc-btn secondary" style="font-size:11px; padding:4px 9px; flex:1;" onclick="vjVerCand('${d.id}')">${VJ_OPEN === d.id ? "▾" : "▸"} Ver ${cands.length}</button>
+          <button class="fc-btn" style="font-size:11px; padding:4px 9px;" onclick="vjPlanificar('${d.id}')">${activo ? "Viaje activo" : "Planificar"}</button>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+
+  el.innerHTML = `<div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">🧭 <b>Radar de destinos</b> — empezá por dónde conviene ir, no por la fecha. El puntaje sale de tu pipeline, de las cuentas que hace rato no ves y de los deals vencidos; abrí <i>cómo se calcula</i> para ver el desglose. Después elegís <b>Planificar</b> y la agenda se arma desde los candidatos.</div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(232px,1fr)); gap:11px; margin-bottom:14px;">${cards}</div>
+    <div id="vj-cands"></div>`;
+  if (VJ_OPEN) vjRenderCands(VJ_OPEN);
+}
+
+function vjVerCand(destId) { VJ_OPEN = (VJ_OPEN === destId) ? null : destId; renderRadar(); }
+
+function vjRenderCands(destId) {
+  const el = document.getElementById("vj-cands"); if (!el) return;
+  const d = VJ_DEST_BY_ID[destId]; if (!d) return;
+  const cands = (VJ_DATA || {})[destId] || [];
+  const placed = new Set(Object.values(planAll()).map(s => String(s.cli || "").trim().toLowerCase()));
+  const ico = { cliente: "🏬", deal: "💼", prospecto: "🌱", partner: "🤝" };
+  const lbl = { cliente: "Cliente", deal: "Deal abierto", prospecto: "Prospecto", partner: "Partner" };
+  if (!cands.length) {
+    el.innerHTML = `<div style="border:1px dashed #C7BDFF; border-radius:10px; padding:16px; background:#fbfaff; font-size:12.5px; color:#4030C8;">No hay candidatos en ${escAttr(d.label)}. Para un destino ${VJ_TIPO_LBL[d.tipo].l.toLowerCase()} eso es esperable: sumá contactos de partner con el botón de abajo, o asigná cuentas a esta ciudad desde el panel de asignación.</div>`;
+    return;
+  }
+  el.innerHTML = `<div style="background:#fff; border:1px solid #e5e5e5; border-radius:10px; padding:14px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:9px; flex-wrap:wrap;">
+      <b style="font-size:13px;">${d.flag} Candidatos en ${escAttr(d.label)} <span style="color:#9ca3af; font-weight:400;">· ${cands.length} · ordenados por impacto</span></b>
+      <button class="fc-btn" style="font-size:11px; padding:4px 10px;" onclick="vjPlanificar('${destId}')">Planificar viaje acá</button>
+    </div>
+    <div style="overflow-x:auto;"><table class="std"><thead><tr>
+      <th>Quién</th><th class="c">Tipo</th><th>Por qué ir</th><th style="text-align:right;">Monto</th><th class="c">Última visita</th><th class="c">En la agenda</th>
+    </tr></thead><tbody>${cands.map(c => `<tr>
+      <td><b>${escAttr(c.cli)}</b>${c.org ? ` <span style="font-size:10px; color:#9ca3af;">· ${escAttr(c.org)}</span>` : ""}${c.interior ? ` <span title="Cuenta argentina fuera de Buenos Aires: mirá si vale la pena estirar el viaje." style="font-size:9px; background:#FEF3C7; color:#92400e; border-radius:7px; padding:1px 6px;">interior</span>` : ""}${c.csm ? `<div style="font-size:10px; color:#9ca3af;">CSM ${escAttr(c.csm)}</div>` : ""}</td>
+      <td class="c"><span title="${escAttr(lbl[c.tipo])}" style="font-size:11px;">${ico[c.tipo]}</span></td>
+      <td style="font-size:11.5px; color:#374151; max-width:330px; white-space:normal;">${(c.motivos || [c.motivo]).filter(Boolean).map(escAttr).join(" · ")}</td>
+      <td style="text-align:right; font-variant-numeric:tabular-nums;">${c.monto ? "<b>" + fmtMoneyK(c.monto) + "</b>" : '<span style="color:#d1d5db;">—</span>'}</td>
+      <td class="c" style="font-size:11px; color:${c.dias === null ? "#9ca3af" : c.dias > 180 ? "#b91c1c" : c.dias > 90 ? "#b45309" : "#6b7280"};">${c.dias === null ? (c.tipo === "partner" ? "—" : "nunca") : (c.dias < 60 ? c.dias + " d" : Math.round(c.dias / 30) + " m")}</td>
+      <td class="c">${placed.has(String(c.cli).trim().toLowerCase()) ? '<span style="font-size:11px; color:#047857; font-weight:600;">✓ sí</span>' : '<span style="font-size:11px; color:#9ca3af;">—</span>'}</td>
+    </tr>`).join("")}</tbody></table></div>
+    <div style="font-size:10.5px; color:#9ca3af; margin-top:8px;">🏬 cliente · 💼 deal abierto · 🌱 prospecto · 🤝 partner. Para ponerlos en la agenda, definí el viaje y usá “+ reservar” en cada bloque.</div>
+  </div>`;
+}
+
+/* Prepara el viaje al destino elegido: setea la ciudad en el formulario y baja hasta él. */
+function vjPlanificar(destId) {
+  const d = VJ_DEST_BY_ID[destId]; if (!d) return;
+  const trip = tripGet() || {};
+  if (trip.ciudad && trip.ciudad !== d.label && trip.desde) {
+    if (!confirm(`Ya tenés un viaje activo a ${trip.ciudad}.\n\nSi seguís, el formulario pasa a ${d.label}. El viaje a ${trip.ciudad} no se borra: se archiva recién cuando lo cerrás desde su resumen.`)) return;
+  }
+  VJ_OPEN = destId;
+  tripSet(Object.assign({}, trip, { ciudad: d.label }));
+  renderAgenda();
+  const el = document.getElementById("agenda-trip");
+  if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/* ---- RESULTADOS DEL VIAJE Y ROI ---------------------------------------------------------
+   La planilla vieja te decía a quién ibas a ver; nunca qué salió. Sin eso no hay forma de
+   defender el presupuesto del próximo viaje. Acá cada bloque agendado pide dos cosas: qué pasó
+   y cuál es el próximo paso — y el próximo paso SE ESCRIBE EN HUBSPOT (decisión de German),
+   así el aprendizaje del viaje llega al CRM y al Asistente Comercial. */
+const VJ_RESULTADOS = {
+  "": { l: "— sin cargar", c: "#9ca3af", bg: "#f3f4f6", mueve: 0 },
+  avanzo: { l: "Avanzó", c: "#047857", bg: "#ECFDF5", mueve: 1 },
+  nuevo: { l: "Deal nuevo", c: "#047857", bg: "#ECFDF5", mueve: 1 },
+  igual: { l: "Sin cambio", c: "#6b7280", bg: "#f3f4f6", mueve: 0 },
+  riesgo: { l: "Apareció un riesgo", c: "#b45309", bg: "#FFFBEB", mueve: 0 },
+  perdido: { l: "Se cayó", c: "#b91c1c", bg: "#FEF2F2", mueve: 0 },
+  relacion: { l: "Sólo relación", c: "#4030C8", bg: "#EEF2FF", mueve: 0 }
+};
+function vjResAll() { try { return JSON.parse(localStorage.getItem("vj_resultados") || "{}"); } catch (e) { return {}; } }
+function vjResGet(k) { return vjResAll()[k] || {}; }
+function vjResSet(k, patch) {
+  const a = vjResAll(); a[k] = Object.assign({}, a[k] || {}, patch);
+  try { localStorage.setItem("vj_resultados", JSON.stringify(a)); } catch (e) {}
+  renderResultados(tripGet());
+}
+function vjCostoSet(v) { const t = tripGet(); if (!t) return; t.costo = cuNum(v); tripSet(t); renderResultados(t); }
+
+/* Deals abiertos que matchean el nombre de la cuenta de un bloque. Se resuelve EN EL MOMENTO,
+   no al agendar: entre que agendás y volvés, el deal pudo cerrarse o aparecer otro. */
+function vjDealsDe(cli) {
+  const t = String(cli || "").trim().toLowerCase();
+  if (!t) return [];
+  return (window.__allDeals || []).filter(d => {
+    const p = d.properties || {};
+    if (p.pipeline === NURTURING_PIPELINE_ID) return false;
+    if (CLOSED_STAGES.indexOf(p.dealstage) >= 0) return false;
+    return clientNameFromDeal(p.dealname).trim().toLowerCase() === t;
+  });
+}
+
+async function vjPushNextStep(key) {
+  const r = vjResGet(key);
+  const next = (r.next || "").trim();
+  if (!next) { alert("Escribí primero el próximo paso."); return; }
+  const cli = key.split("|")[3] || "";
+  const deals = vjDealsDe(r.cli || cli);
+  if (!deals.length) { alert(`No encontré ningún deal abierto de "${r.cli || cli}" en el pipeline de ventas.\n\nEl próximo paso queda guardado acá, pero no hay dónde escribirlo en HubSpot. Si corresponde, creá el deal primero.`); return; }
+  let deal = deals[0];
+  if (deals.length > 1) {
+    const lista = deals.map((d, i) => `${i + 1}) ${d.properties.dealname} · ${fmtMoneyK(parseFloat(d.properties.amount || 0))}`).join("\n");
+    const pick = prompt(`"${r.cli || cli}" tiene ${deals.length} deals abiertos. ¿En cuál escribo el próximo paso?\n\n${lista}\n\nNúmero:`, "1");
+    const n = parseInt(pick, 10);
+    if (!n || n < 1 || n > deals.length) return;
+    deal = deals[n - 1];
+  }
+  const st = document.getElementById("vjns-" + btoa(unescape(encodeURIComponent(key))).replace(/=/g, ""));
+  if (st) { st.textContent = "…"; st.style.color = "#9ca3af"; }
+  try {
+    await hsWrite({ updateRequest: { objects: [{ objectType: "deals", objectId: Number(deal.id), properties: { hs_next_step: next } }] } });
+    vjResSet(key, { pushed: deal.id });
+    try { await reloadDaily(); } catch (e) {}
+  } catch (e) {
+    if (st) { st.textContent = "✗ " + String((e && e.message) || e).slice(0, 80); st.style.color = "#dc2626"; }
+    console.error("vjPushNextStep", e);
+  }
+}
+
+function renderResultados(trip) {
+  const el = document.getElementById("vj-roi"); if (!el) return;
+  if (!trip || !trip.ciudad || !trip.desde) { el.innerHTML = ""; return; }
+  const days = tripDays(trip);
+  const all = planAll();
+  const keys = Object.keys(all).filter(k => days.includes(k.split("|")[0]) && all[k] && all[k].cli);
+  if (!keys.length) { el.innerHTML = ""; return; }
+
+  let movido = 0, cargados = 0;
+  const filas = keys.sort().map(k => {
+    const s = all[k], p = k.split("|");
+    const r = vjResGet(k);
+    const def = VJ_RESULTADOS[r.res || ""];
+    if (r.res) cargados++;
+    const imp = cuNum(r.impacto);
+    if (def.mueve && imp) movido += imp;
+    const sid = btoa(unescape(encodeURIComponent(k))).replace(/=/g, "");
+    const nDeals = vjDealsDe(s.cli).length;
+    return `<tr>
+      <td class="nw" style="font-size:11.5px; color:#6b7280;">${fmtDmy(p[0])} ${p[2]}</td>
+      <td><b>${escAttr(s.cli)}</b></td>
+      <td><select onchange="vjResSet('${k.replace(/'/g, "\\'")}',{res:this.value, cli:${JSON.stringify(s.cli).replace(/"/g, "&quot;")}})" style="font-size:11px; padding:2px 5px; border:1px solid ${def.c}; border-radius:5px; color:${def.c}; background:${def.bg};">${Object.keys(VJ_RESULTADOS).map(x => `<option value="${x}" ${(r.res || "") === x ? "selected" : ""}>${VJ_RESULTADOS[x].l}</option>`).join("")}</select></td>
+      <td><input type="text" value="${escAttr(r.next || "")}" placeholder="próximo paso concreto…" onchange="vjResSet('${k.replace(/'/g, "\\'")}',{next:this.value, cli:${JSON.stringify(s.cli).replace(/"/g, "&quot;")}})" style="width:100%; min-width:180px; padding:3px 6px; font-size:12px; border:1px solid #d1d5db; border-radius:5px;"></td>
+      <td style="text-align:right;"><input type="number" value="${r.impacto != null ? r.impacto : ""}" placeholder="u$s" title="Pipeline que este encuentro movió o generó. Sólo suma si el resultado es Avanzó o Deal nuevo." onchange="vjResSet('${k.replace(/'/g, "\\'")}',{impacto:this.value})" style="width:95px; padding:3px 6px; font-size:12px; border:1px solid #d1d5db; border-radius:5px; text-align:right;"></td>
+      <td class="c nw">${r.pushed
+        ? '<span style="font-size:11px; color:#047857; font-weight:600;" title="Escrito en hs_next_step del deal ' + r.pushed + '">✓ en HubSpot</span>'
+        : (nDeals
+          ? `<button class="fc-btn secondary" style="font-size:10.5px; padding:2px 8px;" onclick="vjPushNextStep('${k.replace(/'/g, "\\'")}')">↑ al deal</button> <span id="vjns-${sid}" style="font-size:10px;"></span>`
+          : '<span style="font-size:10.5px; color:#9ca3af;" title="No hay deal abierto de esta cuenta donde escribir el próximo paso.">sin deal</span>')}</td>
+    </tr>`;
+  }).join("");
+
+  const costo = cuNum(trip.costo);
+  const roi = (costo && movido) ? (movido / costo) : null;
+  el.innerHTML = `<div style="background:#fff; border:1px solid #e5e5e5; border-radius:10px; padding:14px; margin-top:16px;">
+    <div style="font-weight:700; font-size:13px; margin-bottom:3px;">📋 Resultados del viaje</div>
+    <div style="font-size:11.5px; color:#6b7280; margin-bottom:10px;">Esto es lo que la planilla nunca tuvo. Cargalo al volver: sin resultado, el viaje no se puede defender ni repetir con criterio.</div>
+    <div class="cue-kpis" style="margin-bottom:10px;">
+      <div class="cue-kpi"><div class="kl">Reuniones</div><div class="kv" style="font-size:20px;">${keys.length}</div><div class="ks">${cargados} con resultado cargado</div></div>
+      <div class="cue-kpi"><div class="kl">Pipeline movido</div><div class="kv" style="font-size:20px; color:${movido ? "#047857" : ""};">${movido ? fmtMoney(movido) : "—"}</div><div class="ks">sólo avanzó / deal nuevo</div></div>
+      <div class="cue-kpi"><div class="kl">Costo del viaje</div><div class="kv" style="font-size:20px;"><input type="number" value="${costo != null ? costo : ""}" placeholder="u$s" onchange="vjCostoSet(this.value)" style="width:110px; font-size:17px; font-weight:700; color:#430C89; border:1px solid #d1d5db; border-radius:6px; padding:2px 6px; text-align:right;"></div><div class="ks">pasajes + hotel + viáticos</div></div>
+      <div class="cue-kpi"><div class="kl">Retorno</div><div class="kv" style="font-size:20px; color:${roi === null ? "#9ca3af" : roi >= 1 ? "#047857" : "#b91c1c"};">${roi === null ? "—" : roi.toFixed(1) + "×"}</div><div class="ks">${roi === null ? "cargá costo e impacto" : "pipeline ÷ costo"}</div></div>
+    </div>
+    <div style="overflow-x:auto;"><table class="std"><thead><tr><th>Cuándo</th><th>Quién</th><th>Qué pasó</th><th>Próximo paso</th><th style="text-align:right;">Movió u$s</th><th class="c">HubSpot</th></tr></thead><tbody>${filas}</tbody></table></div>
+    <div style="font-size:10.5px; color:#9ca3af; margin-top:8px;">El próximo paso se escribe en <code>hs_next_step</code> del deal abierto de esa cuenta. Si hay más de uno, te pregunta cuál.</div>
+  </div>`;
+}
+
 // ====================================================
 function renderAgenda() {
   const trip = tripGet();
+  // El radar va SIEMPRE, haya viaje activo o no: la vista arranca por ciudad, no por fecha.
+  try { renderRadar(); } catch (e) { console.warn("renderRadar", e); }
   if (!trip || !trip.ciudad) {
     renderTripForm(trip);
     document.getElementById("agenda-days").innerHTML = "";
     document.getElementById("agenda-grid").innerHTML = "";
     document.getElementById("agenda-deals").innerHTML = "";
+    const roi = document.getElementById("vj-roi"); if (roi) roi.innerHTML = "";
     renderHistory();
     return;
   }
@@ -11842,6 +12319,7 @@ function renderAgenda() {
   renderDays(trip);
   renderGrid(trip);
   renderCityDeals(trip);
+  renderResultados(trip);
   renderHistory();
 }
 
