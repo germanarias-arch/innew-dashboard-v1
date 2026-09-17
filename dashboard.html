@@ -12026,7 +12026,7 @@ function vjPartners() {
   } catch (e) {}
   return VJ_PARTNERS_SEED.slice();
 }
-function vjPartnersSave(list) { try { localStorage.setItem("vj_partners", JSON.stringify(list)); } catch (e) {} }
+function vjPartnersSave(list) { try { localStorage.setItem("vj_partners", JSON.stringify(list)); } catch (e) {} VJ_PARTNER_IDX = null; }
 
 /* ---- destino de una cuenta ----
    Orden: override manual > país normalizado. Devuelve [] si no se puede ubicar — nunca se
@@ -12891,6 +12891,49 @@ function vjEsCliente(cli) {
   return !!vjCompanyDe(cli);
 }
 
+/* ===== CON QUIÉN ES CADA REUNIÓN (2026-09-17) ==========================================
+   German: "que diga cuántas con clientes y cuántas con prospecto (si es que suma con otro tipo
+   de reuniones también... ej: partner)". Sí suma: el radar ya clasifica candidatos en cuatro
+   tipos y **partner es uno de ellos** — son las personas de VTEX y Tiendanube (Manuel Palacios,
+   Nilo, Gary, Pocho, Lucas…), que no son cuentas de HubSpot y por eso nunca iban a aparecer
+   como cliente. Hasta ahora una reunión con Pocho se contaba como "Prospecto", que es
+   directamente falso: no le vamos a vender a Tiendanube, es el canal que trae los leads.
+
+   Devuelve: "cliente" · "partner" · "prospecto" · null (todavía no sé).
+   ⚠️ El chequeo de partner va PRIMERO y **no depende de `__cuentasData`**, así que es correcto
+   incluso mientras las cuentas están cargando. */
+let VJ_PARTNER_IDX = null;
+function vjPartnerIdx() {
+  if (VJ_PARTNER_IDX) return VJ_PARTNER_IDX;
+  VJ_PARTNER_IDX = {};
+  try { vjPartners().forEach(pt => { const k = vjNorm(pt.nombre); if (k) VJ_PARTNER_IDX[k] = pt; }); } catch (e) {}
+  return VJ_PARTNER_IDX;
+}
+function vjTipoCuenta(cli) {
+  const k = vjNorm(cli || "");
+  if (!k) return null;
+  if (vjPartnerIdx()[k]) return "partner";
+  const esCli = vjEsCliente(cli);
+  if (esCli === null) return null;
+  return esCli ? "cliente" : "prospecto";
+}
+/* Filtro de la tabla de resultados por tipo de reunión. German: "agregale filtrar por eso al
+   clickear… por ejemplo cliqueo partner y me sale".
+   🔒 Decisión: el filtro toca **sólo las filas de la tabla**. El número grande, el pipeline movido
+   y el ROI **siguen siendo los del viaje entero** — un ROI parcial leído como el ROI del viaje es
+   exactamente el tipo de dato que se termina presentando mal en una reunión. El banner lo dice. */
+let VJ_MIX_FILTRO = null;
+function vjMixFiltro(t) {
+  VJ_MIX_FILTRO = (VJ_MIX_FILTRO === t) ? null : t;
+  renderResultados(tripGet());
+}
+
+const VJ_TIPO_CHIP = {
+  cliente:   { t: "Cliente",   bg: "#F1EFFF", bd: "#C7BDFF", fg: "#4030C8" },
+  partner:   { t: "Partner",   bg: "#ECFDF5", bd: "#a7f3d0", fg: "#047857" },
+  prospecto: { t: "Prospecto", bg: "#FFF7ED", bd: "#fed7aa", fg: "#9a3412" }
+};
+
 function vjCompanyDe(cli) {
   const t = vjNorm(vjNormCuenta(cli || "")); if (!t) return null;
   return (window.__cuentasData || []).find(c => vjNorm(((c.properties || {}).name || "").trim()) === t) || null;
@@ -13386,9 +13429,10 @@ function vjFichaRender() {
 
   // --- cabecera: contexto que no se tipea ---
   const chips = [];
-  const esCliF = vjEsCliente(cli);
+  const tipoF = vjTipoCuenta(cli);
   if (co) chips.push(`<a href="#" onclick="vjFichaClose(); setView('clientes'); cliTab('cuentas'); cliFichaOpen('${String(cli).replace(/'/g, "\\'")}','${co.id}'); return false;" style="${chipH}">👤 Cliente · ver ficha ↗</a>`);
-  else if (esCliF === false) chips.push(`<span style="${chipH}">Prospecto</span>`);
+  else if (tipoF === "partner") chips.push(`<span style="${chipH}">🤝 Partner</span>`);
+  else if (tipoF === "prospecto") chips.push(`<span style="${chipH}">Prospecto</span>`);
   else chips.push(`<span style="${chipH}" title="Cargando cuentas de HubSpot…">…</span>`);
   if (meta.semaforo === "riesgo") chips.push(`<span style="${chipH} background:rgba(239,68,68,.32);">⚠ En riesgo</span>`);
   chips.push(`<span style="${chipH}">Última visita: ${ult ? fmtDmy(ult) : "nunca"}${dias !== null ? " · hace " + Math.round(dias / 30) + " m" : ""}</span>`);
@@ -13548,11 +13592,11 @@ function renderResultados(trip) {
         : `<span onclick="vjFichaOpen('${kj}',0)" style="font-size:11px; color:#b91c1c; cursor:pointer; white-space:nowrap;" title="${escAttr(wa.msg)}">⚠ revisar tel</span>`);
 
     const ctxt = [];
-    // tri-estado: mientras no sepamos, no se afirma nada (ver la trampa documentada en vjCanonBuild)
-    const esCli = vjEsCliente(s.cli);
-    if (esCli === true) ctxt.push(`<span style="display:inline-block; padding:1px 8px; border-radius:20px; background:#F1EFFF; border:1px solid #C7BDFF; color:#4030C8; font-size:10px; font-weight:700;">Cliente</span>`);
-    else if (esCli === false) ctxt.push(`<span style="display:inline-block; padding:1px 8px; border-radius:20px; background:#FFF7ED; border:1px solid #fed7aa; color:#9a3412; font-size:10px; font-weight:700;">Prospecto</span>`);
-    else ctxt.push(`<span title="Cargando cuentas de HubSpot…" style="display:inline-block; padding:1px 8px; border-radius:20px; background:#f3f4f6; border:1px solid #e5e7eb; color:#9ca3af; font-size:10px; font-weight:700;">…</span>`);
+    // cliente / partner / prospecto — y si todavía no se sabe, no se afirma nada (ver vjCanonBuild)
+    const ch = VJ_TIPO_CHIP[vjTipoCuenta(s.cli)];
+    ctxt.push(ch
+      ? `<span style="display:inline-block; padding:1px 8px; border-radius:20px; background:${ch.bg}; border:1px solid ${ch.bd}; color:${ch.fg}; font-size:10px; font-weight:700;">${ch.t}</span>`
+      : `<span title="Cargando cuentas de HubSpot…" style="display:inline-block; padding:1px 8px; border-radius:20px; background:#f3f4f6; border:1px solid #e5e7eb; color:#9ca3af; font-size:10px; font-weight:700;">…</span>`);
     if (meta.semaforo === "riesgo") ctxt.push(`<span style="display:inline-block; padding:1px 8px; border-radius:20px; background:#FEF2F2; border:1px solid #fecaca; color:#b91c1c; font-size:10px; font-weight:700;">⚠ En riesgo</span>`);
     if (nDeals) ctxt.push(`<span style="display:inline-block; padding:1px 8px; border-radius:20px; background:#f3f4f6; border:1px solid #e5e7eb; color:#6b7280; font-size:10px; font-weight:700;">${nDeals} deal${nDeals > 1 ? "s" : ""} · ${fmtMoneyK(montoDeals)}</span>`);
 
@@ -13572,15 +13616,55 @@ function renderResultados(trip) {
 
   const costo = cuNum(trip.costo);
   const roi = (costo && movido) ? (movido / costo) : null;
+
+  /* Con quién son las reuniones. German: "que diga cuántas con clientes y cuántas con prospecto".
+     No es cosmético: **9 reuniones con clientes y 9 con prospectos son dos viajes distintos** — uno
+     es retención y el otro es apertura de mercado, y el ROI de cada uno se defiende distinto.
+     Se cuentan sólo las que se concretaron (`keys`), igual que el número grande de arriba.
+     Los buckets en cero no se muestran: ensucian más de lo que informan. */
+  const mixN = { cliente: 0, partner: 0, prospecto: 0, "?": 0 };
+  keys.forEach(k => { mixN[vjTipoCuenta((all[k] || {}).cli) || "?"]++; });
+  const plural = (n, sing, plu) => n + " " + (n === 1 ? sing : plu);
+  /* Cada parte es un botón: filtra la tabla de abajo. Volver a clickearla la limpia. */
+  const mixChip = (tipo, txt) => {
+    const act = VJ_MIX_FILTRO === tipo;
+    const c = VJ_TIPO_CHIP[tipo] || { bg: "#f3f4f6", bd: "#e5e7eb", fg: "#6b7280" };
+    return `<span onclick="vjMixFiltro('${tipo}')" title="${act ? "Quitar el filtro" : "Ver sólo estas reuniones"}"
+      style="cursor:pointer; display:inline-block; padding:0 5px; border-radius:5px; ${act ? `background:${c.bg}; color:${c.fg}; font-weight:800; box-shadow:inset 0 0 0 1px ${c.bd};` : "text-decoration:underline; text-decoration-style:dotted; text-underline-offset:2px;"}">${txt}</span>`;
+  };
+  const mixPartes = [];
+  if (mixN.cliente)   mixPartes.push(mixChip("cliente", plural(mixN.cliente, "cliente", "clientes")));
+  if (mixN.prospecto) mixPartes.push(mixChip("prospecto", plural(mixN.prospecto, "prospecto", "prospectos")));
+  if (mixN.partner)   mixPartes.push(mixChip("partner", plural(mixN.partner, "partner", "partners")));
+  if (mixN["?"])      mixPartes.push(mixChip("?", mixN["?"] + " sin clasificar"));
+  const mix = mixPartes.length ? mixPartes.join(" · ") : "&nbsp;";
+
+  // Si el filtro apunta a un tipo que este viaje ya no tiene, se limpia solo.
+  if (VJ_MIX_FILTRO && !mixN[VJ_MIX_FILTRO]) VJ_MIX_FILTRO = null;
+  const filasVis = VJ_MIX_FILTRO
+    ? filas.filter((_, i) => (vjTipoCuenta((all[keys[i]] || {}).cli) || "?") === VJ_MIX_FILTRO)
+    : filas;
+  const fTxt = { cliente: "clientes", prospecto: "prospectos", partner: "partners", "?": "sin clasificar" }[VJ_MIX_FILTRO] || "";
+  const bannerFiltro = VJ_MIX_FILTRO
+    ? `<div style="margin-bottom:8px; padding:7px 11px; background:#F7F5FF; border:1px solid #E6E1FF; border-radius:8px; font-size:12px; color:#4030C8; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+         <b>Mostrando sólo las reuniones con ${fTxt}</b> (${filasVis.length} de ${keys.length}).
+         <span style="color:#6b7280; font-size:11.5px;">Los números de arriba siguen siendo los del viaje completo.</span>
+         <span onclick="vjMixFiltro('${VJ_MIX_FILTRO}')" style="cursor:pointer; margin-left:auto; font-weight:700; text-decoration:underline;">✕ ver todas</span>
+       </div>`
+    : "";
+
   el.innerHTML = `<div style="background:#fff; border:1px solid #e5e5e5; border-radius:10px; padding:14px; margin-top:16px;">
     <div style="font-weight:700; font-size:13px; margin-bottom:3px;">📋 Resultados del viaje</div>
     <div style="font-size:11.5px; color:#6b7280; margin-bottom:10px;">Esto es lo que la planilla nunca tuvo. Cargalo al volver: sin resultado, el viaje no se puede defender ni repetir con criterio.</div>
     <div class="cue-kpis" style="margin-bottom:10px;">
-      <div class="cue-kpi"><div class="kl">Reuniones</div><div class="kv" style="font-size:20px;">${keys.length}</div><div class="ks">${cargados} con resultado${caidas.length ? " · " + caidas.length + " no se concretó" : ""}</div></div>
+      <div class="cue-kpi"><div class="kl">Reuniones</div><div class="kv" style="font-size:20px;">${keys.length}</div>
+        <div class="ks">${mix}</div>
+        <div class="ks">${cargados} con resultado${caidas.length ? " · " + caidas.length + " no se concretó" : ""}</div></div>
       <div class="cue-kpi"><div class="kl">Pipeline movido</div><div class="kv" style="font-size:20px; color:${movido ? "#047857" : ""};">${movido ? fmtMoney(movido) : "—"}</div><div class="ks">sólo avanzó / deal nuevo</div></div>
       <div class="cue-kpi"><div class="kl">Costo del viaje</div><div class="kv" style="font-size:20px;"><input type="number" value="${costo != null ? costo : ""}" placeholder="u$s" onchange="vjCostoSet(this.value)" style="width:110px; font-size:17px; font-weight:700; color:#430C89; border:1px solid #d1d5db; border-radius:6px; padding:2px 6px; text-align:right;"></div><div class="ks">pasajes + hotel + viáticos</div></div>
       <div class="cue-kpi"><div class="kl">Retorno</div><div class="kv" style="font-size:20px; color:${roi === null ? "#9ca3af" : roi >= 1 ? "#047857" : "#b91c1c"};">${roi === null ? "—" : roi.toFixed(1) + "×"}</div><div class="ks">${roi === null ? "cargá costo e impacto" : "pipeline ÷ costo"}</div></div>
     </div>
+    ${bannerFiltro}
     <div style="overflow-x:auto;"><table class="std" style="table-layout:fixed; width:100%; min-width:840px;"><thead><tr>
       <th style="width:96px;">Cuándo</th>
       <th>Reunión · con quién y dónde</th>
@@ -13588,7 +13672,7 @@ function renderResultados(trip) {
       <th style="width:132px;">Qué pasó</th>
       <th style="width:96px; text-align:right;">Movió u$s</th>
       <th style="width:152px; text-align:right;">Ficha</th>
-    </tr></thead><tbody>${filas}</tbody></table></div>
+    </tr></thead><tbody>${filasVis.join("")}</tbody></table></div>
     ${caidas.length ? `<div style="margin-top:9px; padding:8px 11px; background:#FFF7ED; border:1px solid #fed7aa; border-radius:8px; font-size:11.5px; color:#9a3412;">
       ↺ <b>No se concretaron:</b> ${caidas.map(k => escAttr((all[k].cli || "") + " (" + ((AGENDA_ESTADOS[all[k].estado] || {}).label || "") + ")")).join(" · ")}. No cuentan como reunión ni suman al pipeline movido.</div>` : ""}
     ${faltan ? `<div style="margin-top:9px; padding:8px 11px; background:#FFFBEB; border:1px solid #fde68a; border-radius:8px; font-size:12px; color:#854F0B;">
