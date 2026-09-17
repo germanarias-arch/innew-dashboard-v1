@@ -12880,6 +12880,62 @@ function vjLugarHref(v) {
    Americana). Un contacto asociado a DOS companies sólo aparece en la primaria — es la
    concesión consciente a cambio de no encadenar dos requests por ficha. */
 const HS_SEARCH_TOOL = "mcp__aaaa9eed-76e4-4bc8-a1a2-fad976f54ccb__search_crm_objects";
+
+/* 🪤 TRAMPA QUE COSTÓ UN DEPLOY (2026-09-17). `vjCompanyDe()` busca en `window.__cuentasData`, que
+   `fetchCuentas()` llena filtrando **`lifecyclestage = 'customer'`**: o sea, SÓLO clientes activos.
+   La primera versión de este bloque usaba esa función para decidir si había company, así que en
+   toda cuenta PROSPECTO —Ferrex, por ejemplo, que tiene 3 deals abiertos y contactos cargados—
+   concluía "esta cuenta no existe como company en HubSpot" y no mostraba nada. Justo al revés de
+   lo que hace falta: un viaje se arma para ir a ver prospectos.
+
+   Por eso la company se resuelve en tres pasos, del más barato al más caro:
+     1. `vjCompanyDe` — instantáneo, pero sólo cubre clientes activos.
+     2. Los **deals abiertos** de la cuenta → `resolveDealCompany` (ya cacheado en localStorage).
+        Es el vínculo más confiable que hay: lo declaró HubSpot, no un match de texto.
+     3. Búsqueda por nombre, y **sólo se acepta si no hay ambigüedad** (match exacto normalizado, o
+        un único resultado). Con dos "Ferrex" distintos preferimos no ofrecer nada antes que crear
+        un contacto colgado de la empresa equivocada: eso ensucia el CRM y es difícil de deshacer. */
+window.__vjCoCuenta = window.__vjCoCuenta || {};   // cuenta normalizada → {estado, co}
+function vjCoKey(cli) { return vjNorm(vjNormCuenta(cli || "")); }
+function vjCoDeCuenta(cli) {
+  const local = vjCompanyDe(cli);
+  if (local) return { estado: "listo", co: local };
+  return window.__vjCoCuenta[vjCoKey(cli)] || { estado: "", co: null };
+}
+async function vjCoResolver(cli, forzar) {
+  const key = vjCoKey(cli); if (!key) return;
+  if (vjCompanyDe(cli)) return;                                  // ya lo teníamos local
+  if (!forzar && window.__vjCoCuenta[key]) return;               // resuelto o en curso
+  window.__vjCoCuenta[key] = { estado: "buscando", co: null };
+  if (VJ_FICHA_KEY) vjFichaRender();
+  let co = null;
+  try {
+    // (2) por los deals abiertos de la cuenta
+    const deals = (typeof vjDealsDe === "function") ? vjDealsDe(cli) : [];
+    for (const d of deals.slice(0, 3)) {
+      const v = await resolveDealCompany(d.id);
+      if (v && v.companyId) { co = { id: String(v.companyId), properties: { name: v.name || cli } }; break; }
+    }
+    // (3) por nombre, sin aceptar ambigüedad
+    if (!co) {
+      const res = await mcpCall(HS_SEARCH_TOOL, {
+        objectType: "companies", properties: ["name", "lifecyclestage"],
+        filterGroups: [{ filters: [{ propertyName: "name", operator: "CONTAINS_TOKEN", value: String(cli).trim() }] }],
+        limit: 10,
+        chatInsights: { userIntent: "Ficha de reunión: identificar la company de la cuenta", satisfaction: "NEUTRAL" }
+      });
+      const parsed = typeof res === "string" ? JSON.parse(res) : res;
+      const lista = parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
+      const exactos = lista.filter(c => vjNorm(((c.properties || {}).name || "").trim()) === key);
+      if (exactos.length === 1) co = exactos[0];
+      else if (exactos.length === 0 && lista.length === 1) co = lista[0];
+      else if (exactos.length > 1) co = null;                    // homónimos: mejor no adivinar
+    }
+  } catch (e) { console.error("vjCoResolver", e); }
+  window.__vjCoCuenta[key] = { estado: "listo", co: co };
+  if (VJ_FICHA_KEY) vjFichaRender();
+  if (co) vjCtosCargar(co.id);
+}
 const VJ_CTO_PROPS = ["firstname", "lastname", "email", "phone", "mobilephone", "jobtitle", "hs_full_name_or_email"];
 window.__vjCtoCache = window.__vjCtoCache || {};   // companyId → {estado, lista, msg}
 let VJ_CTO_FORM = false;                           // ¿está abierto el alta de contacto nuevo?
@@ -13043,7 +13099,7 @@ async function vjCtoGuardarTel(k, companyId) {
 }
 
 /* Bloque completo de contacto: selector de HubSpot + campos + alta. */
-function vjCtoBloqueHtml(k, kj, co, r, pais, inS, lbS) {
+function vjCtoBloqueHtml(k, kj, co, r, pais, inS, lbS, coEstado, cli) {
   const wa = vjWa(r.ctoTel, pais);
   const waHtml = wa.vacio
     ? `<div style="font-size:11px; color:#9ca3af; margin-top:4px;">Se convierte solo a link de WhatsApp. Escribilo con código de país — ej. <b>${escAttr(vjWaEjemplo(pais))}</b>.</div>`
@@ -13053,8 +13109,16 @@ function vjCtoBloqueHtml(k, kj, co, r, pais, inS, lbS) {
 
   let selector = "";
   if (!co) {
-    selector = `<div style="font-size:11.5px; color:#9ca3af; background:#fafafa; border:1px solid #f0f0f4; border-radius:7px; padding:7px 10px; margin-bottom:7px;">
-      Esta cuenta no existe como <i>company</i> en HubSpot, así que no hay de dónde traer contactos ni a qué asociarlos. Cargalo a mano acá.</div>`;
+    const cj = String(cli || "").replace(/'/g, "\\'");
+    selector = coEstado === "buscando"
+      ? `<div style="font-size:11.5px; color:#9ca3af; margin-bottom:7px;">Identificando la cuenta en HubSpot…</div>`
+      : (coEstado === "listo"
+        ? `<div style="font-size:11.5px; color:#9ca3af; background:#fafafa; border:1px solid #f0f0f4; border-radius:7px; padding:7px 10px; margin-bottom:7px;">
+             No pude identificar <b>${escAttr(cli || "esta cuenta")}</b> como una empresa única en HubSpot — o no está, o hay varias con ese nombre.
+             Prefiero no adivinar antes que dejarte un contacto colgado de la empresa equivocada. Cargalo a mano acá, o
+             <span onclick="vjCoResolver('${cj}', true)" style="cursor:pointer; color:#4030C8; font-weight:700; text-decoration:underline;">reintentar</span>.
+           </div>`
+        : `<div style="margin-bottom:7px;"><button onclick="vjCoResolver('${cj}', true)" style="padding:5px 11px; border:1px solid #C7BDFF; background:#F1EFFF; color:#4030C8; border-radius:7px; font-size:11.5px; font-weight:700; cursor:pointer; font-family:inherit;">⟳ Buscar esta cuenta en HubSpot</button></div>`);
   } else {
     const c = window.__vjCtoCache[String(co.id)];
     if (!c) {
@@ -13139,8 +13203,10 @@ function vjFichaOpen(k, tab) {
   vjFichaRender();
   /* Los contactos se traen al abrir, una vez por company y cacheados: si esperara a que German
      apriete un botón, el 90% de las veces la ficha se usaría sin ellos. */
-  const co = vjCompanyDe((planGet(k) || {}).cli);
-  if (co && !window.__vjCtoCache[String(co.id)]) { try { vjCtosCargar(co.id); } catch (e) {} }
+  const cli = (planGet(k) || {}).cli || "";
+  const co = vjCompanyDe(cli);
+  if (co) { if (!window.__vjCtoCache[String(co.id)]) { try { vjCtosCargar(co.id); } catch (e) {} } }
+  else { try { vjCoResolver(cli); } catch (e) {} }   // prospecto: hay que ir a buscarla
 }
 function vjFichaClose() { VJ_FICHA_KEY = null; vjFichaRender(); renderResultados(tripGet()); }
 function vjFichaTab(i) { VJ_FICHA_TAB = i; vjFichaRender(); }
@@ -13164,6 +13230,9 @@ function vjFichaRender() {
   const cli = s.cli || "";
   const t = vjBlkTimes(k, s, trip);
   const co = vjCompanyDe(cli);
+  /* `co` sigue siendo "cliente activo" (es lo que decide el chip Cliente/Prospecto).
+     `coCto` es la company real para contactos: incluye prospectos. No son lo mismo. */
+  const coRes = vjCoDeCuenta(cli), coCto = coRes.co, coEstado = coRes.estado;
   const meta = (typeof cuentasGetMeta === "function") ? cuentasGetMeta(cli) : {};
   const ult = vjUltimaVisita(cli), dias = vjDiasDesde(ult);
   const trv = AGENDA_TRAVELERS.find(x => x.id === p[1]);
@@ -13208,7 +13277,7 @@ function vjFichaRender() {
     ${dealsHtml}
     <label style="${lbS}">Objetivo de la reunión</label>
     <textarea rows="2" placeholder="Qué querés llevarte de acá. Uno solo y concreto." onchange="vjPrepSet('${kj}',{obj:this.value}); renderResultados(tripGet());" style="${inS} resize:vertical;${(r.obj || "").trim() ? "" : " border-color:#EF9F27; background:#FFFCF5;"}">${escAttr(r.obj || "")}</textarea>
-    ${vjCtoBloqueHtml(k, kj, co, r, pais, inS, lbS)}
+    ${vjCtoBloqueHtml(k, kj, coCto, r, pais, inS, lbS, coEstado, cli)}
     <label style="${lbS}">Dónde es</label>
     <div style="display:flex; gap:6px;">
       <input type="text" placeholder="Dirección, o link de Meet/Zoom" value="${escAttr(r.lugar || "")}" onchange="vjPrepSet('${kj}',{lugar:this.value}); vjFichaRender(); renderResultados(tripGet());" style="${inS}${(r.lugar || "").trim() ? "" : " border-color:#EF9F27; background:#FFFCF5;"}">
