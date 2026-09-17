@@ -11755,10 +11755,14 @@ async function cuentaDealEdit(companyId, dealId, prop, value, el) {
    Clientes que hubo que desarmar el 07/09. "Otra" queda como escape. */
 const AGENDA_CITIES = ["Buenos Aires", "Asunción", "Santiago", "Lima", "CDMX", "São Paulo", "Río de Janeiro", "Otra"];
 const AR_CAPITALS = ["Córdoba", "Rosario", "La Plata", "Mar del Plata", "Mendoza", "Salta", "San Miguel de Tucumán", "Santa Fe", "Paraná", "Resistencia", "Posadas", "Corrientes", "Neuquén", "San Juan", "San Luis", "Santiago del Estero", "San Salvador de Jujuy", "La Rioja", "Santa Rosa", "Formosa", "San Fernando del Valle de Catamarca", "Rawson", "Viedma", "Río Gallegos", "Ushuaia"];
+/* Estados de un bloque. German los nombró el 17/09: Idea · Propuesto al cliente · Confirmado.
+   ⚠️ Se renombraron los LABELS conservando las CLAVES (`propuesto`/`a_agendar`/`agendada`): así
+   todo lo que ya estaba cargado en `agenda_plan` sigue siendo válido y no hizo falta migrar
+   nada. Cambiar las claves habría dejado los bloques viejos con un estado inexistente. */
 const AGENDA_ESTADOS = {
-  propuesto: { label: "Propuesto", bg: "#f1f1ee", fg: "#5f5e5a", dot: "#9ca3af" },
-  a_agendar: { label: "Para agendar", bg: "#FAEEDA", fg: "#854F0B", dot: "#EF9F27" },
-  agendada:  { label: "Agendada", bg: "#E1F5EE", fg: "#085041", dot: "#1D9E75" },
+  propuesto: { label: "Idea", bg: "#f1f1ee", fg: "#5f5e5a", dot: "#9ca3af" },
+  a_agendar: { label: "Propuesto al cliente", bg: "#FAEEDA", fg: "#854F0B", dot: "#EF9F27" },
+  agendada:  { label: "Confirmado", bg: "#E1F5EE", fg: "#085041", dot: "#1D9E75" },
   /* Agregados el 17/09: "suele reprogramarse". Una reunión que se cayó o se movió NO puede
      contar como reunión hecha en los resultados del viaje — por eso son estados, no un borrado. */
   reprogramada: { label: "Reprogramada", bg: "#FFF7ED", fg: "#9a3412", dot: "#fb923c" },
@@ -13242,7 +13246,11 @@ function renderGrid(trip) {
     </div>
     <div style="display:flex; gap:12px; flex-wrap:wrap; font-size:11px; color:#6b7280; margin-top:8px;">
       ${Object.keys(VJ_TIPOS).map(t => `<span><i style="display:inline-block; width:11px; height:11px; border-radius:3px; background:${VJ_TIPOS[t].bg}; border:1px solid ${VJ_TIPOS[t].bd}; margin-right:4px; vertical-align:-1px;"></i>${escAttr(VJ_TIPOS[t].l)}</span>`).join("")}
-      <span style="color:#9ca3af;">· arrastrá para mover · estirá el borde de abajo para durar más · doble clic para editar</span>
+    </div>
+    <div style="display:flex; gap:12px; flex-wrap:wrap; font-size:11px; color:#6b7280; margin-top:5px;">
+      <span style="font-weight:700; color:#374151;">Estado (franja izquierda):</span>
+      ${["propuesto", "a_agendar", "agendada", "reprogramada", "cancelada"].map(x => `<span><i style="display:inline-block; width:4px; height:12px; border-radius:2px; background:${AGENDA_ESTADOS[x].dot}; margin-right:4px; vertical-align:-2px;"></i>${escAttr(AGENDA_ESTADOS[x].label)}</span>`).join("")}
+      <span style="color:#9ca3af;">· clic en el chip para avanzar el estado · ✕ borra · arrastrá para mover · estirá el borde de abajo · doble clic para editar</span>
     </div>`;
 
   // ---- pintar los bloques ----
@@ -13257,12 +13265,18 @@ function renderGrid(trip) {
     const cancel = (s.estado === "cancelada");
     const el = document.createElement("div");
     el.className = "vj-blk"; el.dataset.key = k;
+    /* El color de FONDO dice el tipo (reunión / comida / traslado…) y la FRANJA IZQUIERDA dice el
+       estado: verde = confirmado, ámbar = propuesto al cliente, gris = idea. Son dos preguntas
+       distintas y meterlas en el mismo color obligaría a elegir cuál se pierde. */
     el.style.cssText = `position:absolute; left:3px; right:3px; top:${(t.ini - VJ_H0 * 60) / 60 * VJ_PX}px; height:${Math.max(18, (t.fin - t.ini) / 60 * VJ_PX - 2)}px;
-      background:${def.bg}; border:1px solid ${def.bd}; color:${def.fg}; border-radius:7px; padding:3px 6px; font-size:11px; overflow:hidden; cursor:grab; line-height:1.2;
+      background:${def.bg}; border:1px solid ${def.bd}; border-left:4px solid ${est.dot}; color:${def.fg}; border-radius:7px; padding:3px 6px 3px 7px; font-size:11px; overflow:hidden; cursor:grab; line-height:1.2;
       ${cancel ? "opacity:.45; text-decoration:line-through;" : ""}`;
     const trv = travs.find(x => x.id === p[1]);
-    el.innerHTML = `<b style="display:block; font-size:11.5px;">${def.ic ? def.ic + " " : ""}${escAttr(s.cli || "(sin cuenta)")}</b>
-      <span style="font-size:9.5px; opacity:.85;">${minToHHMM(t.ini)}–${minToHHMM(t.fin)}${trv && travs.length > 1 ? " · " + escAttr(trv.name.split(" ")[0]) : ""}${s.estado && s.estado !== "propuesto" ? " · " + escAttr((AGENDA_ESTADOS[s.estado] || {}).label || s.estado) : ""}</span>
+    const alto = (t.fin - t.ini) / 60 * VJ_PX;
+    el.innerHTML = `<b style="display:block; font-size:11.5px; padding-right:16px;">${def.ic ? def.ic + " " : ""}${escAttr(s.cli || "(sin cuenta)")}</b>
+      <span style="font-size:9.5px; opacity:.85;">${minToHHMM(t.ini)}–${minToHHMM(t.fin)}${trv && travs.length > 1 ? " · " + escAttr(trv.name.split(" ")[0]) : ""}</span>
+      ${alto >= 40 ? `<div class="vj-est" title="Clic para cambiar: Idea → Propuesto al cliente → Confirmado" style="display:inline-block; margin-top:2px; font-size:9px; font-weight:800; border-radius:8px; padding:0 6px; background:${est.bg}; color:${est.fg}; cursor:pointer;">${escAttr(est.label)}</div>` : ""}
+      <div class="vj-del" title="Borrar este bloque" style="position:absolute; top:2px; right:3px; width:15px; height:15px; line-height:14px; text-align:center; border-radius:4px; font-size:11px; color:${def.fg}; opacity:.35; cursor:pointer;">✕</div>
       <div class="vj-rs" style="position:absolute; left:0; right:0; bottom:0; height:6px; cursor:ns-resize;"></div>`;
     col.appendChild(el);
   });
@@ -13311,6 +13325,21 @@ function vjWireDrag(cont, trip, dias) {
     let mode = null, sy = 0, st = 0, sh = 0, curCol = el.parentElement;
 
     el.addEventListener("dblclick", e => { e.preventDefault(); vjBlkEdit(key); });
+    /* El ✕ y el chip de estado se atienden en mousedown y CORTAN la propagación: si no, el
+       primer movimiento del mouse arrancaba el drag y el clic nunca llegaba. Era justo lo que
+       reportó German — "sólo deja moverlo". */
+    const del = el.querySelector(".vj-del");
+    if (del) {
+      del.addEventListener("mouseenter", () => { del.style.opacity = "1"; del.style.background = "rgba(185,28,28,.12)"; });
+      del.addEventListener("mouseleave", () => { del.style.opacity = ".35"; del.style.background = ""; });
+      del.addEventListener("mousedown", e => { e.stopPropagation(); e.preventDefault(); });
+      del.addEventListener("click", e => { e.stopPropagation(); vjBlkDel(key); });
+    }
+    const chip = el.querySelector(".vj-est");
+    if (chip) {
+      chip.addEventListener("mousedown", e => { e.stopPropagation(); e.preventDefault(); });
+      chip.addEventListener("click", e => { e.stopPropagation(); vjBlkCiclarEstado(key); });
+    }
     el.addEventListener("mousedown", e => {
       if (e.button !== 0) return;
       mode = e.target.classList.contains("vj-rs") ? "size" : "move";
@@ -13433,6 +13462,16 @@ function vjBlkDel(key) {
   const s = planGet(key) || {};
   if (!confirm(`¿Borrar "${s.cli || "el bloque"}" de la agenda?`)) return;
   planDel(key); vjTripClose(); renderAgenda();
+}
+/* Ciclo rápido de estado desde el chip del bloque: Idea → Propuesto al cliente → Confirmado →
+   Idea. Reprogramada y cancelada NO entran en el ciclo — ésas se eligen a mano en el editor,
+   porque son decisiones, no un paso más del avance natural. */
+const VJ_CICLO = ["propuesto", "a_agendar", "agendada"];
+function vjBlkCiclarEstado(key) {
+  const s = planGet(key) || {};
+  const i = VJ_CICLO.indexOf(s.estado || "propuesto");
+  planSet(key, { estado: VJ_CICLO[(i + 1) % VJ_CICLO.length] });
+  renderAgenda();
 }
 function vjBlkSave(key) {
   const g = i => { const el = document.getElementById(i); return el ? el.value : ""; };
@@ -13586,7 +13625,7 @@ function renderHistory() {
   h.forEach(r => {
     const names = (r.viajeros || []).map(id => { const o = AGENDA_TRAVELERS.find(x => x.id === id); return o ? o.name.split(" ")[0] : id; }).join(" · ");
     const keys = Object.keys(r.slots || {}).sort();
-    const slotList = keys.length ? keys.map(k => { const s = r.slots[k]; const p = k.split("|"); const est = AGENDA_ESTADOS[s.status || "propuesto"]; const tr = AGENDA_TRAVELERS.find(x => x.id === p[1]); return `<div style="font-size:12px; padding:3px 0; border-top:1px solid #f0f0f0; display:flex; justify-content:space-between; gap:8px;"><span>${fmtDmy(p[0])} ${p[2]}${tr ? " · " + tr.name.split(" ")[0] : ""} · ${escAttr(s.cli || "")}</span><span style="color:${est.fg}; background:${est.bg}; padding:0 6px; border-radius:4px; font-size:10px; white-space:nowrap;">${est.label}</span></div>`; }).join("") : `<div style="font-size:12px; color:#9ca3af;">Sin bloques cargados.</div>`;
+    const slotList = keys.length ? keys.map(k => { const s = r.slots[k]; const p = k.split("|"); const est = AGENDA_ESTADOS[s.estado || s.status || "propuesto"] || AGENDA_ESTADOS.propuesto; const tr = AGENDA_TRAVELERS.find(x => x.id === p[1]); return `<div style="font-size:12px; padding:3px 0; border-top:1px solid #f0f0f0; display:flex; justify-content:space-between; gap:8px;"><span>${fmtDmy(p[0])} ${p[2]}${tr ? " · " + tr.name.split(" ")[0] : ""} · ${escAttr(s.cli || "")}</span><span style="color:${est.fg}; background:${est.bg}; padding:0 6px; border-radius:4px; font-size:10px; white-space:nowrap;">${est.label}</span></div>`; }).join("") : `<div style="font-size:12px; color:#9ca3af;">Sin bloques cargados.</div>`;
     html += `<div style="background:#fff; border:1px solid #e5e5e5; border-radius:10px; padding:12px; margin-bottom:8px;">
       <div style="display:flex; justify-content:space-between; align-items:center;"><span style="font-weight:500; font-size:13px;">📍 ${escAttr(r.ciudad)} · ${fmtDmy(r.desde)}–${fmtDmy(r.hasta)}</span><button onclick="histDel('${r.id}')" title="Borrar del historial" style="font-size:11px; border:1px solid #d1d5db; background:#fff; border-radius:4px; padding:1px 6px; cursor:pointer;">✕</button></div>
       <div style="font-size:11px; color:#6b7280; margin:2px 0 6px;">👤 ${escAttr(names)}</div>${slotList}
