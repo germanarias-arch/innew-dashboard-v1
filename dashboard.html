@@ -13612,7 +13612,8 @@ function renderResultados(trip) {
       <td style="vertical-align:top; padding-top:12px; text-align:right; font-weight:700; color:${imp && def.mueve ? "#047857" : "#d1d5db"}; white-space:nowrap;">${imp ? fmtMoney(imp) : "—"}</td>
       <td style="vertical-align:top; padding-top:10px; text-align:right;">${btn}</td>
     </tr>`;
-  }).join("");
+  });   /* ⚠️ ARRAY, no string — antes acá había un .join("") y el filtro por tipo necesita
+         poder filtrar por índice. Se une recién al pintar, en `filasVis.join("")`. */
 
   const costo = cuNum(trip.costo);
   const roi = (costo && movido) ? (movido / costo) : null;
