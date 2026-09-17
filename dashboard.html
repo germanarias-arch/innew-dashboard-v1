@@ -12073,12 +12073,16 @@ function vjCandidatos() {
 /* ---- SCORE de un destino ----
    Deliberadamente simple y con el desglose SIEMPRE a la vista: un score que German no pueda
    explicar es un score que no va a usar para decidir un pasaje. Cinco sumandos, tope 100. */
-function vjScore(cands) {
+function vjScore(cands, destId) {
   const clientes = cands.filter(c => c.tipo === "cliente").length;
   const pipeline = cands.reduce((s, c) => s + (c.monto || 0), 0);
   const riesgo = cands.filter(c => (c.motivos || []).some(m => /riesgo/i.test(m))).length;
   const olvidadas = cands.filter(c => c.tipo === "cliente" && (c.dias === null || c.dias > 90)).length;
   const vencidos = cands.filter(c => (c.motivos || []).some(m => /vencido/i.test(m))).length;
+  /* El evento entra como un sumando más, no como una excepción: así el radar sigue teniendo
+     UNA sola fórmula explicable. Un evento que "justifica el viaje" pesa más que cualquier
+     otro componente — que es exactamente lo que dijo German que pasa en la realidad. */
+  const evTop = destId ? vjEventoTop(destId) : null;
   const partes = [
     { l: "Pipeline abierto", v: Math.min(35, pipeline / 3000), d: fmtMoneyK(pipeline) },
     { l: "Cuentas sin visita +90d", v: Math.min(25, olvidadas * 5), d: olvidadas + " cuenta(s)" },
@@ -12086,8 +12090,127 @@ function vjScore(cands) {
     { l: "Deals con cierre vencido", v: Math.min(12, vencidos * 6), d: vencidos + " vencido(s)" },
     { l: "Tamaño de cartera", v: Math.min(8, clientes), d: clientes + " cliente(s)" }
   ];
+  if (evTop) partes.unshift({ l: (evTop.ev.prioritario ? "Evento que justifica el viaje" : "Evento secundario"), v: evTop.peso, d: evTop.ev.nombre + " · " + vjEvFecha(evTop.ev) });
   const total = Math.round(partes.reduce((s, p) => s + p.v, 0));
-  return { total: total, partes: partes, clientes: clientes, pipeline: pipeline, riesgo: riesgo, olvidadas: olvidadas, vencidos: vencidos };
+  return { total: total, partes: partes, clientes: clientes, pipeline: pipeline, riesgo: riesgo, olvidadas: olvidadas, vencidos: vencidos, evento: evTop };
+}
+
+
+/* ---- EVENTOS: la tercera razón para viajar (2026-09-17) ---------------------------------
+   German: "otra cosa que hace que hagamos viajes son los eventos… ir a los eventos generalmente
+   justifica el viaje y luego armamos agenda. Hay veces que armamos agenda y luego miramos si
+   además hay eventos que podamos asistir pero no son prioritarios."
+
+   Son DOS flujos distintos y la vista tiene que servir a los dos:
+   · **Evento primero** — el evento justifica el viaje. Un evento prioritario empuja fuerte el
+     score del destino y precarga las fechas del viaje.
+   · **Agenda primero** — armás el viaje por cartera y recién ahí mirás si cae algún evento.
+     Para eso, cuando las fechas del viaje pisan un evento de esa ciudad, el resumen lo avisa.
+
+   El peso DECAE con la distancia: un evento a 5 meses no debería mover la decisión de hoy.
+   Y un evento pasado vale 0 pero se conserva — sirve para saber a qué se fue el año anterior. */
+const VJ_EVENTOS_SEED = [
+  {
+    id: "ed-py-2026", nombre: "eCommerce Day Paraguay", dest: "asuncion",
+    desde: "2026-09-24", hasta: "2026-09-24", prioritario: true,
+    url: "https://ecommerceday.com.py/2026/",
+    notas: "13ª edición · 09:00 a 14:30 · Gran Teatro del Banco Central del Paraguay (Federación Rusa y Asunción 1767). VTEX es sponsor y Marcos Pueyrredón abre. Samantha Thies (Nueva Americana, cuenta nuestra) es speaker."
+  }
+];
+function vjEventos() {
+  try { const r = localStorage.getItem("vj_eventos"); if (r) return JSON.parse(r); } catch (e) {}
+  return VJ_EVENTOS_SEED.slice();
+}
+function vjEventosSave(l) { try { localStorage.setItem("vj_eventos", JSON.stringify(l)); } catch (e) {} }
+function vjEvDias(ev) { return vjDiasDesde(ev.desde) === null ? null : -vjDiasDesde(ev.desde); }  // + = falta, − = ya pasó
+
+/* Peso del evento en el score del destino. Explicable en una línea, que es el requisito de
+   todo el radar: prioritario 40 · secundario 8 · a más de 90 días vale la mitad · a más de 180
+   o ya pasado, cero. */
+function vjEventoPeso(ev) {
+  const d = vjEvDias(ev);
+  if (d === null || d < -1 || d > 180) return 0;
+  let base = ev.prioritario ? 40 : 8;
+  if (d > 90) base = Math.round(base / 2);
+  return base;
+}
+// El evento más pesado de un destino (el que manda en el score) y la lista completa vigente.
+function vjEventosDe(destId) {
+  return vjEventos().filter(e => e.dest === destId).sort((a, b) => String(a.desde).localeCompare(String(b.desde)));
+}
+function vjEventoTop(destId) {
+  let best = null, bw = 0;
+  vjEventosDe(destId).forEach(e => { const w = vjEventoPeso(e); if (w > bw) { bw = w; best = e; } });
+  return best ? { ev: best, peso: bw } : null;
+}
+// ¿Las fechas del viaje pisan un evento de esa ciudad? (flujo "agenda primero")
+function vjEventosEnRango(destId, desde, hasta) {
+  if (!desde || !hasta) return [];
+  return vjEventosDe(destId).filter(e => !(String(e.hasta || e.desde) < desde || String(e.desde) > hasta));
+}
+function vjEvFecha(ev) {
+  const a = fmtDmy(ev.desde), b = ev.hasta && ev.hasta !== ev.desde ? fmtDmy(ev.hasta) : "";
+  return b ? a + "–" + b : a;
+}
+
+function vjEvAdd() {
+  const g = i => { const el = document.getElementById(i); return el ? el.value : ""; };
+  const nombre = (g("ev-nombre") || "").trim();
+  const desde = g("ev-desde");
+  if (!nombre || !desde) { alert("Cargá al menos el nombre y la fecha de inicio."); return; }
+  const l = vjEventos().slice();
+  l.push({
+    id: "e" + Date.now(), nombre: nombre, dest: g("ev-dest") || "asuncion",
+    desde: desde, hasta: g("ev-hasta") || desde,
+    prioritario: !!(document.getElementById("ev-prio") || {}).checked,
+    url: (g("ev-url") || "").trim(), notas: (g("ev-notas") || "").trim()
+  });
+  vjEventosSave(l); renderRadar();
+}
+function vjEvDel(id) {
+  const e = vjEventos().find(x => x.id === id);
+  if (e && !confirm(`¿Borrar el evento "${e.nombre}"?`)) return;
+  vjEventosSave(vjEventos().filter(x => x.id !== id)); renderRadar();
+}
+function vjEvPrio(id, val) {
+  const l = vjEventos().map(x => x.id === id ? Object.assign({}, x, { prioritario: !!val }) : x);
+  vjEventosSave(l); renderRadar();
+}
+
+function vjEventosPanelHtml() {
+  const evs = vjEventos().slice().sort((a, b) => String(a.desde).localeCompare(String(b.desde)));
+  const inS = "padding:4px 7px; font-size:12px; border:1px solid #d1d5db; border-radius:5px;";
+  const filas = evs.length ? evs.map(e => {
+    const d = vjEvDias(e), pasado = d !== null && d < -1;
+    const dest = VJ_DEST_BY_ID[e.dest];
+    return `<tr style="${pasado ? "opacity:.5;" : ""}">
+      <td><b>${e.url ? `<a href="${escAttr(e.url)}" target="_blank" rel="noopener noreferrer" style="color:#430C89;">${escAttr(e.nombre)}</a>` : escAttr(e.nombre)}</b>${e.notas ? `<div style="font-size:10.5px; color:#9ca3af; max-width:420px; white-space:normal;">${escAttr(e.notas)}</div>` : ""}</td>
+      <td class="nw">${dest ? dest.flag + " " + escAttr(dest.label) : "—"}</td>
+      <td class="nw">${escAttr(vjEvFecha(e))}</td>
+      <td class="nw" style="font-size:11.5px; color:${pasado ? "#9ca3af" : d <= 14 ? "#b91c1c" : d <= 45 ? "#b45309" : "#6b7280"}; font-weight:${!pasado && d <= 14 ? "700" : "400"};">${d === null ? "—" : pasado ? "ya pasó" : d === 0 ? "es hoy" : "en " + d + " d"}</td>
+      <td class="c"><label style="font-size:11px; cursor:pointer; white-space:nowrap;"><input type="checkbox" ${e.prioritario ? "checked" : ""} onchange="vjEvPrio('${e.id}',this.checked)"> justifica el viaje</label></td>
+      <td class="c nw">${pasado ? "—" : "<b>+" + vjEventoPeso(e) + "</b>"}</td>
+      <td class="c"><a href="#" onclick="vjEvDel('${e.id}'); return false;" style="font-size:11px; color:#dc2626;">borrar</a></td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="7" style="padding:10px; font-size:12px; color:#9ca3af; font-style:italic;">Sin eventos cargados.</td></tr>`;
+
+  return `<details id="vj-ev-box" ${window.__vjEvOpen ? "open" : ""} ontoggle="window.__vjEvOpen=this.open" style="margin-bottom:14px;">
+    <summary style="cursor:pointer; font-size:12.5px; color:#4030C8; font-weight:600;">📅 Eventos (${evs.filter(e => vjEventoPeso(e) > 0).length} vigentes) — los que justifican un viaje suman al score</summary>
+    <div style="background:#fff; border:1px solid #e5e5e5; border-radius:10px; padding:13px; margin-top:8px;">
+      <div style="overflow-x:auto;"><table class="std"><thead><tr><th>Evento</th><th>Destino</th><th>Fecha</th><th>Falta</th><th class="c">Prioridad</th><th class="c">Suma</th><th></th></tr></thead><tbody>${filas}</tbody></table></div>
+      <div style="display:flex; gap:7px; align-items:flex-end; flex-wrap:wrap; margin-top:11px; padding-top:11px; border-top:1px solid #eee;">
+        <label style="font-size:11px; color:#6b7280;">Evento<br><input type="text" id="ev-nombre" placeholder="eCommerce Day…" style="${inS} width:190px;"></label>
+        <label style="font-size:11px; color:#6b7280;">Destino<br><select id="ev-dest" style="${inS}">${VJ_DEST.map(d => `<option value="${d.id}">${d.flag} ${escAttr(d.label)}</option>`).join("")}</select></label>
+        <label style="font-size:11px; color:#6b7280;">Desde<br><input type="date" id="ev-desde" style="${inS}"></label>
+        <label style="font-size:11px; color:#6b7280;">Hasta<br><input type="date" id="ev-hasta" style="${inS}"></label>
+        <label style="font-size:11px; color:#6b7280;">Link<br><input type="text" id="ev-url" placeholder="https://…" style="${inS} width:150px;"></label>
+        <label style="font-size:11px; color:#6b7280;">Nota<br><input type="text" id="ev-notas" placeholder="sede, sponsors, quién habla…" style="${inS} width:200px;"></label>
+        <label style="font-size:11.5px; color:#374151; display:inline-flex; align-items:center; gap:5px; padding-bottom:5px;"><input type="checkbox" id="ev-prio" checked> justifica el viaje</label>
+        <button class="fc-btn" onclick="vjEvAdd()" style="font-size:12px;">＋ Agregar</button>
+      </div>
+      <div style="font-size:10.5px; color:#9ca3af; margin-top:7px;">“Justifica el viaje” suma <b>+40</b> al destino; un evento secundario suma <b>+8</b>. A más de 90 días vale la mitad; a más de 180, o ya pasado, no suma. Los pasados quedan como historial.</div>
+    </div>
+  </details>`;
 }
 
 /* ---- RENDER: el radar de las 7 ciudades ---- */
@@ -12106,9 +12229,16 @@ async function renderRadar() {
   VJ_DATA = vjCandidatos();
 
   const trip = tripGet();
-  const cards = VJ_DEST.map(d => {
-    const cands = VJ_DATA[d.id] || [];
-    const sc = vjScore(cands);
+  /* Se calcula el score de los 7, se ORDENA por peso y se esconden los que dan 0: una tarjeta en
+     cero no aporta nada a la decisión y empuja hacia abajo a las que sí. Pero no desaparecen —
+     quedan en una tira al pie con su botón de Planificar, porque un viaje a un mercado sin
+     actividad (Brasil = VTEX HQ) es una decisión legítima, sólo que no la sugiere el radar. */
+  const conScore = VJ_DEST.map(d => ({ d: d, cands: VJ_DATA[d.id] || [], sc: vjScore(VJ_DATA[d.id] || [], d.id) }))
+    .sort((a, b) => b.sc.total - a.sc.total || a.d.label.localeCompare(b.d.label));
+  const visibles = conScore.filter(x => x.sc.total > 0);
+  const ocultos = conScore.filter(x => x.sc.total === 0);
+  const cards = visibles.map(x => {
+    const d = x.d, cands = x.cands, sc = x.sc;
     const tl = VJ_TIPO_LBL[d.tipo];
     const ultimo = (histAll() || []).filter(r => r.ciudad === d.label).sort((a, b) => String(b.hasta || "").localeCompare(String(a.hasta || "")))[0];
     const dv = ultimo ? vjDiasDesde(ultimo.hasta || ultimo.desde) : null;
@@ -12121,6 +12251,10 @@ async function renderRadar() {
         <div style="text-align:right;"><div style="font-size:23px; font-weight:800; color:${col}; line-height:1;">${sc.total}</div><div style="font-size:9px; color:#9ca3af;">cuánto pesa ir</div></div>
       </div>
       <div style="padding:8px 13px;">
+        ${sc.evento ? `<div style="margin:-2px 0 6px; padding:5px 8px; border-radius:7px; background:${sc.evento.ev.prioritario ? "#FEF2F2" : "#F1EFFF"}; border:1px solid ${sc.evento.ev.prioritario ? "#fecaca" : "#C7BDFF"};">
+          <div style="font-size:11px; font-weight:700; color:${sc.evento.ev.prioritario ? "#b91c1c" : "#4030C8"};">📅 ${escAttr(sc.evento.ev.nombre)}</div>
+          <div style="font-size:10px; color:#6b7280;">${escAttr(vjEvFecha(sc.evento.ev))}${(() => { const dd = vjEvDias(sc.evento.ev); return dd === null ? "" : dd === 0 ? " · es hoy" : dd > 0 ? " · en " + dd + " d" : ""; })()}${sc.evento.ev.prioritario ? " · justifica el viaje" : " · secundario"}</div>
+        </div>` : ""}
         <div style="display:flex; justify-content:space-between; font-size:12px; padding:2px 0;"><span style="color:#6b7280;">Candidatos</span><b>${cands.length}</b></div>
         <div style="display:flex; justify-content:space-between; font-size:12px; padding:2px 0;"><span style="color:#6b7280;">Pipeline abierto</span><b>${sc.pipeline ? fmtMoneyK(sc.pipeline) : "—"}</b></div>
         <div style="display:flex; justify-content:space-between; font-size:12px; padding:2px 0;"><span style="color:#6b7280;">Sin visita +90d</span><b style="color:${sc.olvidadas ? "#b45309" : ""};">${sc.olvidadas || "—"}</b></div>
@@ -12136,8 +12270,17 @@ async function renderRadar() {
     </div>`;
   }).join("");
 
-  el.innerHTML = `<div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">🧭 <b>Radar de destinos</b> — empezá por dónde conviene ir, no por la fecha. El puntaje sale de tu pipeline, de las cuentas que hace rato no ves y de los deals vencidos; abrí <i>cómo se calcula</i> para ver el desglose. Después elegís <b>Planificar</b> y la agenda se arma desde los candidatos.</div>
-    <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(232px,1fr)); gap:11px; margin-bottom:14px;">${cards}</div>
+  /* Tira de destinos sin actividad. No es un cajón de basura: es el acceso para el viaje que
+     decidís por otra razón (un evento, una intro del partner, abrir mercado). */
+  const tiraOcultos = ocultos.length ? `<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:9px 13px; background:#fbfbfe; border:1px dashed #d8d4ea; border-radius:10px; margin-bottom:14px;">
+      <span style="font-size:11.5px; color:#6b7280;"><b>Sin actividad hoy:</b> el radar no los sugiere, pero podés viajar igual —</span>
+      ${ocultos.map(x => `<button class="fc-btn secondary" style="font-size:11px; padding:3px 10px;" title="${escAttr(x.d.label + " — " + VJ_TIPO_LBL[x.d.tipo].d + (x.cands.length ? " Hay " + x.cands.length + " candidato(s) cargado(s)." : " Todavía no hay candidatos: sumá contactos de partner."))}" onclick="vjPlanificar('${x.d.id}')">${x.d.flag} ${escAttr(x.d.label)}${x.cands.length ? ` <span style="opacity:.55;">(${x.cands.length})</span>` : ""}</button>`).join("")}
+    </div>` : "";
+
+  el.innerHTML = `<div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">🧭 <b>Radar de destinos</b> — ordenados por <b>cuánto pesa ir</b>, no por la fecha. El puntaje sale de tu pipeline, de las cuentas que hace rato no ves y de los deals vencidos; abrí <i>cómo se calcula</i> para ver el desglose. Después elegís <b>Planificar</b> y la agenda se arma desde los candidatos.</div>
+    ${vjEventosPanelHtml()}
+    ${visibles.length ? `<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(232px,1fr)); gap:11px; margin-bottom:14px;">${cards}</div>` : `<div style="border:1px dashed #C7BDFF; border-radius:10px; padding:16px; background:#fbfaff; font-size:12.5px; color:#4030C8; margin-bottom:14px;">Ningún destino tiene actividad para sugerir todavía. Elegí uno de abajo para planificar igual.</div>`}
+    ${tiraOcultos}
     <div id="vj-cands"></div>`;
   if (VJ_OPEN) vjRenderCands(VJ_OPEN);
 }
@@ -12182,7 +12325,16 @@ function vjPlanificar(destId) {
     if (!confirm(`Ya tenés un viaje activo a ${trip.ciudad}.\n\nSi seguís, el formulario pasa a ${d.label}. El viaje a ${trip.ciudad} no se borra: se archiva recién cuando lo cerrás desde su resumen.`)) return;
   }
   VJ_OPEN = destId;
-  tripSet(Object.assign({}, trip, { ciudad: d.label }));
+  /* Flujo "evento primero": si el destino tiene un evento vigente y el viaje todavía no tiene
+     fechas, se precargan las del evento. Es lo que German hace a mano cada vez. */
+  const patch = { ciudad: d.label };
+  const ev = vjEventoTop(destId);
+  if (ev && !trip.desde && !trip.hasta) {
+    patch.desde = ev.ev.desde;
+    patch.hasta = ev.ev.hasta || ev.ev.desde;
+    patch.evento = ev.ev.nombre;
+  }
+  tripSet(Object.assign({}, trip, patch));
   renderAgenda();
   const el = document.getElementById("agenda-trip");
   if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -12375,6 +12527,34 @@ function renderTripSummary(trip) {
     <span class="ag-chip">⏱ ${trip.slotMin == 90 ? "1 h 30" : "1 h"}</span>
     <button class="fc-btn secondary" onclick="editTrip()">Editar viaje</button>
     <button class="fc-btn secondary" onclick="archiveCurrentTrip()" title="Guardar este viaje en el historial y empezar uno nuevo">📥 Archivar y nuevo</button>
+  </div>` + vjEventosDelViajeHtml(trip);
+}
+
+/* Flujo "agenda primero": armaste el viaje por cartera y recién ahora mirás si cae algún evento.
+   Si las fechas pisan uno de esa ciudad, se avisa acá — sin empujar, porque en este flujo el
+   evento es un extra, no el motivo. Si NO pisa ninguno pero hay uno cerca, también se dice:
+   correr el viaje dos días para pescar un evento es una decisión que conviene tomar a tiempo. */
+function vjEventosDelViajeHtml(trip) {
+  const d = VJ_DEST.find(x => x.label === trip.ciudad);
+  if (!d) return "";
+  const dentro = vjEventosEnRango(d.id, trip.desde, trip.hasta);
+  if (dentro.length) {
+    return `<div style="margin-top:8px; padding:8px 12px; background:#F1EFFF; border:1px solid #C7BDFF; border-radius:9px; font-size:12.5px; color:#4030C8;">
+      📅 <b>Durante este viaje hay ${dentro.length === 1 ? "un evento" : dentro.length + " eventos"}:</b>
+      ${dentro.map(e => `${e.url ? `<a href="${escAttr(e.url)}" target="_blank" rel="noopener noreferrer" style="color:#430C89; font-weight:700;">${escAttr(e.nombre)}</a>` : "<b>" + escAttr(e.nombre) + "</b>"} (${escAttr(vjEvFecha(e))})${e.notas ? ` <span style="color:#6b7280; font-weight:400;">— ${escAttr(e.notas)}</span>` : ""}`).join(" · ")}
+      <div style="font-size:11px; color:#6b7280; margin-top:3px;">Reservale el bloque en la agenda para que no se te superponga con una reunión.</div>
+    </div>`;
+  }
+  // No cae dentro: ¿hay alguno cerca al que valga la pena estirar o correr el viaje?
+  const cerca = vjEventosDe(d.id).filter(e => {
+    const dd = vjEvDias(e);
+    if (dd === null || dd < 0 || dd > 120) return false;
+    return String(e.desde) > String(trip.hasta || "") || String(e.hasta || e.desde) < String(trip.desde || "");
+  });
+  if (!cerca.length) return "";
+  const e = cerca[0];
+  return `<div style="margin-top:8px; padding:8px 12px; background:#FFFBEB; border:1px solid #FDE68A; border-radius:9px; font-size:12.5px; color:#92400e;">
+    📅 <b>${escAttr(e.nombre)}</b> es el ${escAttr(vjEvFecha(e))} en ${escAttr(trip.ciudad)} — <b>fuera</b> de las fechas de este viaje. Si te sirve, mové el viaje y lo pescás.
   </div>`;
 }
 
