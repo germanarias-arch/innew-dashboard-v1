@@ -12956,6 +12956,56 @@ function vjCtoNombre(c) {
 }
 function vjCtoTel(c) { const p = c.properties || {}; return p.mobilephone || p.phone || ""; }
 
+/* ===== NOMBRE / APELLIDO / CARGO POR SEPARADO (2026-09-17) ==============================
+   German: "en nombre y rol… capaz conviene separarlo si va a cargar en hubspot… ver si rol no
+   es una variable ya predefinida en HubSpot". Las dos cosas eran correctas.
+
+   Lo que hay en HubSpot son DOS propiedades distintas, y conviene no confundirlas:
+     · `jobtitle` — label **"Cargo"**, texto libre. Es la que se usa de verdad en este portal:
+       +500 valores distintos ("ecommerce manager" 34, "ceo" 14, "dueño" 13, "gerente comercial" 12…).
+       **Es la que escribe el dashboard.**
+     · `hs_role` — label "Rol dentro de la Empresa", **enum cerrado** de HubSpot. Está prácticamente
+       vacía: **4.405 contactos en "Unassigned"** contra ~250 asignados. Sirve para segmentar en
+       serio, pero obligaría a elegir de una lista justo antes de entrar a una reunión, así que NO
+       va en esta ficha. Queda anotada por si algún día se quiere normalizar la base.
+
+   Un solo campo "Nombre y rol" servía como nota local, pero es veneno para escribir en el CRM:
+   `firstname`, `lastname` y `jobtitle` son tres columnas separadas y partir un string a ojo en el
+   momento del push es exactamente el tipo de inferencia que German pidió no hacer. */
+function vjCtoComponer(r) {
+  const nom = [r.ctoNom, r.ctoApe].filter(Boolean).join(" ").trim();
+  const rol = String(r.ctoRol || "").trim();
+  if (!nom && !rol) return String(r.cto || "").trim();   // todavía sin migrar
+  return nom + (rol ? " — " + rol : "");
+}
+
+/* Migración de lo ya cargado a mano. Se corre una sola vez por reunión, en el render, y es
+   conservadora: parte por el separador que usa el propio dashboard (" — ") o los que German
+   escribiría a mano, y toma el PRIMER token como nombre. No es infalible —"Maria Jose Perez"
+   deja "Maria" / "Jose Perez"— pero queda a la vista en tres inputs editables, que es mucho mejor
+   que romperlo recién en el momento de escribir a HubSpot, cuando ya no se ve. */
+function vjCtoMigrar(k, r) {
+  const legacy = String(r.cto || "").trim();
+  if (!legacy) return r;
+  if (r.ctoNom || r.ctoApe || r.ctoRol) return r;        // ya migrado
+  const m = legacy.split(/\s+[—–-]\s+|,\s+/);
+  const nombreCompleto = (m[0] || "").trim();
+  const rol = (m.slice(1).join(", ") || "").trim();
+  const partes = nombreCompleto.split(/\s+/);
+  const patch = { ctoNom: partes[0] || "", ctoApe: partes.slice(1).join(" "), ctoRol: rol };
+  vjPrepSet(k, patch);
+  return Object.assign({}, r, patch);
+}
+
+/* Cualquier edición de los tres campos recompone `cto`, que es el string que siguen leyendo la
+   fila de la agenda, el tooltip de WhatsApp y la exportación. Así se parte el dato sin romper
+   nada de lo que ya lo consumía. */
+function vjCtoCampo(k, campo, valor) {
+  const r = Object.assign({}, vjResGet(k), { [campo]: valor });
+  vjPrepSet(k, { [campo]: valor, cto: vjCtoComponer(r) });
+  vjFichaRender(); renderResultados(tripGet());
+}
+
 async function vjCtosCargar(companyId, forzar) {
   const id = String(companyId || ""); if (!id) return;
   const cache = window.__vjCtoCache;
@@ -13007,8 +13057,16 @@ function vjCtoElegir(k, contactId, companyId) {
   const c = ((window.__vjCtoCache[String(companyId)] || {}).lista || []).find(x => String(x.id) === String(contactId));
   if (!c) return;
   const pr = c.properties || {};
-  const rol = pr.jobtitle ? " — " + pr.jobtitle : "";
-  vjPrepSet(k, { ctoId: String(c.id), cto: vjCtoNombre(c) + rol, ctoMail: pr.email || "", ctoTel: vjCtoTel(c) || (vjResGet(k).ctoTel || "") });
+  const campos = {
+    ctoId: String(c.id),
+    ctoNom: pr.firstname || "", ctoApe: pr.lastname || "", ctoRol: pr.jobtitle || "",
+    ctoMail: pr.email || "", ctoTel: vjCtoTel(c) || (vjResGet(k).ctoTel || "")
+  };
+  // Si en HubSpot no hay firstname/lastname (pasa: varios contactos son sólo un mail), el nombre
+  // visible cae al que arma vjCtoNombre, para no dejar la ficha en blanco.
+  if (!campos.ctoNom && !campos.ctoApe) campos.ctoNom = vjCtoNombre(c);
+  campos.cto = vjCtoComponer(campos);
+  vjPrepSet(k, campos);
   vjFichaRender(); renderResultados(tripGet());
 }
 function vjCtoDesvincular(k) { vjPrepSet(k, { ctoId: "" }); vjFichaRender(); }
@@ -13082,24 +13140,54 @@ async function vjCtoAsociarExistente(k, companyId, contactId) {
 /* El teléfono es el dato que HubSpot casi nunca tiene (de 6 contactos de Ferrex, Bancard y Nueva
    Americana, NINGUNO tenía). Si German lo consigue en la reunión, tiene que volver al CRM: si se
    queda en el dashboard, el próximo que atienda la cuenta lo pide de nuevo. */
-async function vjCtoGuardarTel(k, companyId) {
+const VJ_CTO_LABEL = { firstname: "Nombre", lastname: "Apellido", jobtitle: "Cargo", email: "Mail", phone: "Teléfono" };
+
+/* Qué cambió respecto de HubSpot. Sólo mira los campos que German completó: **un campo vacío en la
+   ficha nunca borra el dato de HubSpot**. Borrar a mano se hace en HubSpot, no de rebote acá. */
+function vjCtoDiff(r, ctoHs, pais) {
+  const p = ctoHs.properties || {}, out = {};
+  const cmp = (prop, valor, hs) => {
+    const v = String(valor || "").trim();
+    if (!v || v === String(hs || "").trim()) return;
+    out[prop] = { hs: String(hs || ""), nuevo: v };
+  };
+  cmp("firstname", r.ctoNom, p.firstname);
+  cmp("lastname", r.ctoApe, p.lastname);
+  cmp("jobtitle", r.ctoRol, p.jobtitle);
+  cmp("email", r.ctoMail, p.email);
+  // El teléfono se compara normalizado: "+595 981 1" y "0981-1" no son un cambio real.
+  const telNuevo = String(r.ctoTel || "").trim();
+  if (telNuevo && vjWa(telNuevo, pais).num !== vjWa(vjCtoTel(ctoHs), pais).num) {
+    out.phone = { hs: vjCtoTel(ctoHs), nuevo: telNuevo };
+  }
+  return out;
+}
+
+async function vjCtoGuardarCambios(k, companyId) {
   const r = vjResGet(k);
-  const tel = String(r.ctoTel || "").trim();
-  if (!r.ctoId || !tel) return;
+  if (!r.ctoId) return;
+  const ctoHs = ((window.__vjCtoCache[String(companyId)] || {}).lista || []).find(x => String(x.id) === String(r.ctoId));
+  if (!ctoHs) return;
+  const trip = tripGet() || {};
+  const dif = vjCtoDiff(r, ctoHs, vjPaisTrip(trip));
+  const props = {};
+  Object.keys(dif).forEach(f => { props[f] = dif[f].nuevo; });
+  if (!Object.keys(props).length) return;
   const est = document.getElementById("vjcto-tel-est");
   if (est) { est.textContent = "Guardando…"; est.style.color = "#6b7280"; }
   try {
-    await hsWrite({ updateRequest: { objects: [{ objectType: "contacts", objectId: Number(r.ctoId), properties: { phone: tel } }] } });
+    await hsWrite({ updateRequest: { objects: [{ objectType: "contacts", objectId: Number(r.ctoId), properties: props }] } });
     await vjCtosCargar(companyId, true);
     vjFichaRender();
   } catch (e) {
     if (est) { est.textContent = "✗ " + vjCtoScopeMsg(e); est.style.color = "#b91c1c"; }
-    console.error("vjCtoGuardarTel", e);
+    console.error("vjCtoGuardarCambios", e);
   }
 }
 
 /* Bloque completo de contacto: selector de HubSpot + campos + alta. */
 function vjCtoBloqueHtml(k, kj, co, r, pais, inS, lbS, coEstado, cli) {
+  r = vjCtoMigrar(k, r);                 // parte el viejo "Nombre y rol" la primera vez
   const wa = vjWa(r.ctoTel, pais);
   const waHtml = wa.vacio
     ? `<div style="font-size:11px; color:#9ca3af; margin-top:4px;">Se convierte solo a link de WhatsApp. Escribilo con código de país — ej. <b>${escAttr(vjWaEjemplo(pais))}</b>.</div>`
@@ -13152,7 +13240,7 @@ function vjCtoBloqueHtml(k, kj, co, r, pais, inS, lbS, coEstado, cli) {
             <input id="vjcto-ape" type="text" placeholder="Apellido" style="${inS}">
           </div>
           <input id="vjcto-mail" type="text" placeholder="Mail" style="${inS} margin-top:6px;">
-          <input id="vjcto-rol" type="text" placeholder="Puesto (ej: Gerente de eCommerce)" style="${inS} margin-top:6px;">
+          <input id="vjcto-rol" type="text" placeholder="Cargo (ej: Gerente de eCommerce)" style="${inS} margin-top:6px;">
           <input id="vjcto-tel" type="text" placeholder="${escAttr(vjWaEjemplo(pais))}" style="${inS} margin-top:6px;">
           <div style="display:flex; align-items:center; gap:9px; margin-top:9px;">
             <button onclick="vjCtoCrear('${kj}', '${co.id}')" style="padding:6px 13px; border:1px solid #430C89; background:#430C89; color:#fff; border-radius:7px; font-size:12px; font-weight:700; cursor:pointer; font-family:inherit;">Crear y asociar</button>
@@ -13164,21 +13252,31 @@ function vjCtoBloqueHtml(k, kj, co, r, pais, inS, lbS, coEstado, cli) {
     }
   }
 
-  // Si el contacto vino de HubSpot pero allá no tiene teléfono, se ofrece devolvérselo.
+  /* Si el contacto vino de HubSpot y German le corrigió algo acá, se ofrece devolvérselo. Antes
+     esto era sólo para el teléfono; ahora que hay nombre, apellido y cargo separados, cada uno de
+     esos campos puede corregirse en una reunión y merece volver al CRM. Se listan por nombre los
+     que cambiaron, para que German sepa exactamente qué va a pisar antes de apretar. */
   const ctoHs = co && r.ctoId ? ((window.__vjCtoCache[String(co.id)] || {}).lista || []).find(x => String(x.id) === String(r.ctoId)) : null;
-  const telHs = ctoHs ? vjCtoTel(ctoHs) : "";
-  const telDifiere = ctoHs && (r.ctoTel || "").trim() && vjWa(r.ctoTel, pais).num !== vjWa(telHs, pais).num;
-  const guardarTel = telDifiere
-    ? `<div style="margin-top:5px;"><span onclick="vjCtoGuardarTel('${kj}', '${co.id}')" style="cursor:pointer; color:#4030C8; font-size:11.5px; font-weight:700;">↑ guardar este teléfono en HubSpot</span> <span id="vjcto-tel-est" style="font-size:11px;"></span>
-       <div style="font-size:10.5px; color:#9ca3af;">${telHs ? "En HubSpot figura " + escAttr(telHs) + "." : "El contacto no tiene teléfono en HubSpot."}</div></div>`
+  const dif = ctoHs ? vjCtoDiff(r, ctoHs, pais) : {};
+  const nDif = Object.keys(dif).length;
+  const guardarCambios = nDif
+    ? `<div style="margin-top:7px; background:#FBFAFF; border:1px solid #E6E1FF; border-radius:7px; padding:7px 9px;">
+         <span onclick="vjCtoGuardarCambios('${kj}', '${co.id}')" style="cursor:pointer; color:#4030C8; font-size:11.5px; font-weight:700;">↑ guardar ${nDif === 1 ? "este cambio" : "estos " + nDif + " cambios"} en HubSpot</span>
+         <span id="vjcto-tel-est" style="font-size:11px;"></span>
+         <div style="font-size:10.5px; color:#6b7280; margin-top:4px; line-height:1.5;">${Object.keys(dif).map(f => `<b>${escAttr(VJ_CTO_LABEL[f] || f)}</b>: ${dif[f].hs ? escAttr(dif[f].hs) : "(vacío)"} → ${escAttr(dif[f].nuevo)}`).join("<br>")}</div>
+       </div>`
     : "";
 
   return `<label style="${lbS}">Contacto principal${r.ctoId ? ` <a href="https://app.hubspot.com/contacts/${ACCOUNT_ID}/record/0-1/${escAttr(r.ctoId)}" target="_blank" rel="noopener" style="text-transform:none; letter-spacing:0; color:#4030C8; font-weight:700;">ver en HubSpot ↗</a>` : ""}</label>
     ${selector}
-    <input type="text" placeholder="Nombre y rol" value="${escAttr(r.cto || "")}" onchange="vjPrepSet('${kj}',{cto:this.value}); renderResultados(tripGet());" style="${inS}">
-    <input type="text" placeholder="Mail" value="${escAttr(r.ctoMail || "")}" onchange="vjPrepSet('${kj}',{ctoMail:this.value})" style="${inS} margin-top:6px;">
-    <input type="text" placeholder="${escAttr(vjWaEjemplo(pais))}" value="${escAttr(r.ctoTel || "")}" onchange="vjPrepSet('${kj}',{ctoTel:this.value}); vjFichaRender(); renderResultados(tripGet());" style="${inS} margin-top:6px;">
-    ${waHtml}${guardarTel}`;
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+      <input type="text" placeholder="Nombre" value="${escAttr(r.ctoNom || "")}" onchange="vjCtoCampo('${kj}','ctoNom',this.value)" style="${inS}">
+      <input type="text" placeholder="Apellido" value="${escAttr(r.ctoApe || "")}" onchange="vjCtoCampo('${kj}','ctoApe',this.value)" style="${inS}">
+    </div>
+    <input type="text" placeholder="Cargo (ej: Gerente de eCommerce)" value="${escAttr(r.ctoRol || "")}" onchange="vjCtoCampo('${kj}','ctoRol',this.value)" style="${inS} margin-top:6px;">
+    <input type="text" placeholder="Mail" value="${escAttr(r.ctoMail || "")}" onchange="vjCtoCampo('${kj}','ctoMail',this.value)" style="${inS} margin-top:6px;">
+    <input type="text" placeholder="${escAttr(vjWaEjemplo(pais))}" value="${escAttr(r.ctoTel || "")}" onchange="vjCtoCampo('${kj}','ctoTel',this.value)" style="${inS} margin-top:6px;">
+    ${waHtml}${guardarCambios}`;
 }
 
 /* ---- LA FICHA VIVE EN UN PANEL LATERAL (2026-09-17, rediseño pedido por German) ----
