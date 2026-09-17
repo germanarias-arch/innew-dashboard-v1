@@ -1114,6 +1114,7 @@ table.std tr:hover td { background: #fafafa; }
       .ag-slot-addr{font-size:10px;color:#6b7280;}
     </style>
     <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">🧭 Planificá el viaje: definí ciudad, fechas y quién va; reservá bloques por día y asigná deals de esa ciudad. Al marcar un bloque y crear en Calendar se reserva en tu agenda con la dirección de HubSpot.</div>
+    <div id="vj-modal-host"></div>
     <div id="vj-radar"></div>
     <div id="agenda-trip"></div>
     <div id="agenda-days"></div>
@@ -10997,7 +10998,7 @@ async function fetchCuentas() {
   }
   return all;
 }
-function reloadCuentas() { window.__cuentasData = null; renderCuentas(); }
+function reloadCuentas() { window.__cuentasData = null; VJ_CANON = null; renderCuentas(); }
 function onCuentasSearch() { const el = document.getElementById("cue-search"); window.__cuentasSearch = el ? el.value : ""; renderCuentas(); }
 /* ===== CSM asignado: enum REAL de HubSpot =================================================
    Leído de la property `csm_asignado` de companies el **2026-09-10** con get_properties.
@@ -11757,7 +11758,11 @@ const AR_CAPITALS = ["Córdoba", "Rosario", "La Plata", "Mar del Plata", "Mendoz
 const AGENDA_ESTADOS = {
   propuesto: { label: "Propuesto", bg: "#f1f1ee", fg: "#5f5e5a", dot: "#9ca3af" },
   a_agendar: { label: "Para agendar", bg: "#FAEEDA", fg: "#854F0B", dot: "#EF9F27" },
-  agendada:  { label: "Agendada", bg: "#E1F5EE", fg: "#085041", dot: "#1D9E75" }
+  agendada:  { label: "Agendada", bg: "#E1F5EE", fg: "#085041", dot: "#1D9E75" },
+  /* Agregados el 17/09: "suele reprogramarse". Una reunión que se cayó o se movió NO puede
+     contar como reunión hecha en los resultados del viaje — por eso son estados, no un borrado. */
+  reprogramada: { label: "Reprogramada", bg: "#FFF7ED", fg: "#9a3412", dot: "#fb923c" },
+  cancelada:    { label: "Cancelada", bg: "#FEF2F2", fg: "#991b1b", dot: "#ef4444" }
 };
 const CITY_TZ = {
   "Buenos Aires": "America/Argentina/Buenos_Aires",
@@ -11802,7 +11807,45 @@ function planSet(k, v) { const p = planAll(); p[k] = Object.assign({}, p[k] || {
 function planDel(k) { const p = planAll(); delete p[k]; try { localStorage.setItem("agenda_plan", JSON.stringify(p)); } catch (e) {} }
 
 // ---- helpers ----
-function clientNameFromDeal(name) { if (!name) return "(sin nombre)"; return (String(name).split(" - ")[0] || name).trim(); }
+/* Nombre de la cuenta a partir del nombre del deal.
+   Antes cortaba SÓLO por " - " (guion corto con espacios) y eso partía cuentas en varias filas:
+   visto en producción el 17/09, **Guatapora ocupaba 4 de las 21 filas de Asunción** porque sus
+   deals usan guion LARGO — "Guatapora & Optima — Upsell: Automation" no colapsaba con
+   "Guatapora", ni con el cliente "Guatapora & Optima". El monto de la cuenta quedaba repartido y
+   el orden por impacto, mal. Ahora corta por cualquiera de los separadores que usa German y,
+   además, se fusiona contra los nombres REALES de company (vjNormCuenta). */
+const VJ_SEPS = /\s(?:[-–—]|\|)\s|\s?:\s/;
+function clientNameFromDeal(name) {
+  if (!name) return "(sin nombre)";
+  const t = String(name).trim();
+  const corte = t.split(VJ_SEPS)[0];
+  return (corte || t).trim();
+}
+/* Devuelve el nombre canónico de la cuenta: si lo que quedó tras el corte es el prefijo de una
+   company real (o al revés), se usa el de la company. Así "Guatapora" y "Guatapora & Optima"
+   terminan siendo la misma fila. Se compara sin acentos, sin símbolos y en minúsculas. */
+function vjNorm(t) { return String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, " ").trim(); }
+let VJ_CANON = null;
+function vjCanonBuild() {
+  VJ_CANON = [];
+  (window.__cuentasData || []).forEach(c => {
+    const n = ((c.properties || {}).name || "").trim();
+    if (n) VJ_CANON.push({ n: n, k: vjNorm(n) });
+  });
+  VJ_CANON.sort((a, b) => b.k.length - a.k.length);   // el más específico primero
+}
+function vjNormCuenta(cli) {
+  if (!VJ_CANON) vjCanonBuild();
+  const k = vjNorm(cli);
+  if (!k) return cli;
+  for (let i = 0; i < VJ_CANON.length; i++) {
+    const c = VJ_CANON[i];
+    if (c.k === k) return c.n;
+    // uno es prefijo del otro por PALABRA completa (evita que "Bilder" pegue con "Bild")
+    if (k.indexOf(c.k + " ") === 0 || c.k.indexOf(k + " ") === 0) return c.n;
+  }
+  return cli;
+}
 function buildAgendaClients() {
   const open = (window.__dailyOpen || window.__dailyDeals || []).filter(d => d && d.properties);
   const map = {};
@@ -11976,11 +12019,13 @@ function vjCandidatos() {
   const idx = {};   // cli → candidato ya creado, para fusionar
 
   const add = (dests, c) => {
-    const k = String(c.cli).trim().toLowerCase();
+    c.cli = vjNormCuenta(c.cli);                // canoniza ANTES de indexar: es lo que fusiona
+    const k = vjNorm(c.cli);
     const prev = idx[k];
     if (prev) {
       // Fusión: el deal manda sobre el cliente, y los motivos se suman.
       if (c.monto) prev.monto = (prev.monto || 0) + c.monto;
+      if (c.pond) prev.pond = (prev.pond || 0) + c.pond;
       if (c.dealId && !prev.dealId) prev.dealId = c.dealId;
       if (c.motivo && prev.motivos.indexOf(c.motivo) < 0) prev.motivos.push(c.motivo);
       prev.peso = Math.max(prev.peso, c.peso);
@@ -12011,7 +12056,7 @@ function vjCandidatos() {
     add(dests, {
       cli: cli, tipo: "cliente", companyId: String(c.id), csm: (p.csm_asignado || "").trim(),
       pais: normPais(p.country), interior: vjEsInterior(p.city, p.country),
-      ultVisita: ult, dias: dias, monto: 0, dealId: null, motivo: motivo, peso: peso
+      ultVisita: ult, dias: dias, monto: 0, pond: 0, dealId: null, motivo: motivo, peso: peso
     });
   });
 
@@ -12029,6 +12074,12 @@ function vjCandidatos() {
     if (!dests.length && SEG2PAIS[seg]) dests = VJ_DEST.filter(x => x.pais === SEG2PAIS[seg]).map(x => x.id);
     if (!dests.length) return;
     const monto = parseFloat(p.amount || 0) || 0;
+    /* PONDERADO = monto × probabilidad de la etapa (HubSpot manda; la tabla local es respaldo).
+       Es el orden que pidió German y cambia la lista por completo: por bruto, Sueñolar (30.000
+       en Propuesta, con el cierre vencido hace 231 días) encabezaba; por ponderado encabeza
+       Bancard (17.514 en Verbal Commit), que es el que está a un empujón de firmar. */
+    const prob = getProbability(p.dealstage, p.hs_deal_stage_probability);
+    const pond = monto * (isNaN(prob) ? 0 : prob);
     const et = STAGE_LABELS[p.dealstage] || p.dealstage;
     const dias = p.closedate ? Math.round((new Date(p.closedate) - new Date()) / 86400000) : null;
     let motivo = et + (monto ? " · " + fmtMoneyK(monto) : "");
@@ -12038,7 +12089,7 @@ function vjCandidatos() {
       cli: cli, tipo: "deal", companyId: null, csm: "",
       pais: SEG2PAIS[seg] || "", interior: false,
       ultVisita: vjUltimaVisita(cli), dias: vjDiasDesde(vjUltimaVisita(cli)),
-      monto: monto, dealId: String(d.id), motivo: motivo, peso: peso
+      monto: monto, pond: pond, dealId: String(d.id), motivo: motivo, peso: peso
     });
   });
 
@@ -12051,7 +12102,7 @@ function vjCandidatos() {
     add(dests, {
       cli: cli, tipo: "prospecto", companyId: String(c.id), csm: "",
       pais: normPais(p.country), interior: vjEsInterior(p.city, p.country),
-      ultVisita: null, dias: null, monto: 0, dealId: null,
+      ultVisita: null, dias: null, monto: 0, pond: 0, dealId: null,
       motivo: "Prospecto sin deal abierto — puerta por abrir", peso: 20
     });
   });
@@ -12061,12 +12112,16 @@ function vjCandidatos() {
     if (!porDest[pt.dest]) return;
     porDest[pt.dest].push({
       cli: pt.nombre, tipo: "partner", companyId: null, csm: "", pais: "", interior: false,
-      ultVisita: null, dias: null, monto: 0, dealId: null, partnerId: pt.id,
+      ultVisita: null, dias: null, monto: 0, pond: 0, dealId: null, partnerId: pt.id,
       org: pt.org, motivo: pt.rol, motivos: [pt.rol], peso: 35
     });
   });
 
-  Object.keys(porDest).forEach(k => porDest[k].sort((a, b) => b.peso - a.peso || String(a.cli).localeCompare(String(b.cli))));
+  /* Orden: PONDERADO primero (es lo que mueve el número), y recién después el peso del motivo
+     — así los clientes y prospectos sin monto quedan abajo pero siguen ordenados entre sí por
+     urgencia (riesgo, tiempo sin visita). */
+  Object.keys(porDest).forEach(k => porDest[k].sort((a, b) =>
+    (b.pond || 0) - (a.pond || 0) || b.peso - a.peso || String(a.cli).localeCompare(String(b.cli))));
   return porDest;
 }
 
@@ -12190,14 +12245,15 @@ function vjEventosPanelHtml() {
       <td class="nw" style="font-size:11.5px; color:${pasado ? "#9ca3af" : d <= 14 ? "#b91c1c" : d <= 45 ? "#b45309" : "#6b7280"}; font-weight:${!pasado && d <= 14 ? "700" : "400"};">${d === null ? "—" : pasado ? "ya pasó" : d === 0 ? "es hoy" : "en " + d + " d"}</td>
       <td class="c"><label style="font-size:11px; cursor:pointer; white-space:nowrap;"><input type="checkbox" ${e.prioritario ? "checked" : ""} onchange="vjEvPrio('${e.id}',this.checked)"> justifica el viaje</label></td>
       <td class="c nw">${pasado ? "—" : "<b>+" + vjEventoPeso(e) + "</b>"}</td>
+      <td class="c nw">${pasado ? "" : `<button class="fc-btn secondary" style="font-size:10.5px; padding:2px 8px;" title="Reserva el bloque del evento en la agenda del viaje activo" onclick="vjEvAlViaje('${e.id}')">＋ al viaje</button>`}</td>
       <td class="c"><a href="#" onclick="vjEvDel('${e.id}'); return false;" style="font-size:11px; color:#dc2626;">borrar</a></td>
     </tr>`;
-  }).join("") : `<tr><td colspan="7" style="padding:10px; font-size:12px; color:#9ca3af; font-style:italic;">Sin eventos cargados.</td></tr>`;
+  }).join("") : `<tr><td colspan="8" style="padding:10px; font-size:12px; color:#9ca3af; font-style:italic;">Sin eventos cargados.</td></tr>`;
 
   return `<details id="vj-ev-box" ${window.__vjEvOpen ? "open" : ""} ontoggle="window.__vjEvOpen=this.open" style="margin-bottom:14px;">
     <summary style="cursor:pointer; font-size:12.5px; color:#4030C8; font-weight:600;">📅 Eventos (${evs.filter(e => vjEventoPeso(e) > 0).length} vigentes) — los que justifican un viaje suman al score</summary>
     <div style="background:#fff; border:1px solid #e5e5e5; border-radius:10px; padding:13px; margin-top:8px;">
-      <div style="overflow-x:auto;"><table class="std"><thead><tr><th>Evento</th><th>Destino</th><th>Fecha</th><th>Falta</th><th class="c">Prioridad</th><th class="c">Suma</th><th></th></tr></thead><tbody>${filas}</tbody></table></div>
+      <div style="overflow-x:auto;"><table class="std"><thead><tr><th>Evento</th><th>Destino</th><th>Fecha</th><th>Falta</th><th class="c">Prioridad</th><th class="c">Suma</th><th class="c">Agenda</th><th></th></tr></thead><tbody>${filas}</tbody></table></div>
       <div style="display:flex; gap:7px; align-items:flex-end; flex-wrap:wrap; margin-top:11px; padding-top:11px; border-top:1px solid #eee;">
         <label style="font-size:11px; color:#6b7280;">Evento<br><input type="text" id="ev-nombre" placeholder="eCommerce Day…" style="${inS} width:190px;"></label>
         <label style="font-size:11px; color:#6b7280;">Destino<br><select id="ev-dest" style="${inS}">${VJ_DEST.map(d => `<option value="${d.id}">${d.flag} ${escAttr(d.label)}</option>`).join("")}</select></label>
@@ -12211,6 +12267,301 @@ function vjEventosPanelHtml() {
       <div style="font-size:10.5px; color:#9ca3af; margin-top:7px;">“Justifica el viaje” suma <b>+40</b> al destino; un evento secundario suma <b>+8</b>. A más de 90 días vale la mitad; a más de 180, o ya pasado, no suma. Los pasados quedan como historial.</div>
     </div>
   </details>`;
+}
+
+
+/* ---- Bloques de COMIDA, TRASLADO, VUELO y EVENTO ----------------------------------------
+   Pedido de German: "importante poder sumar horarios de refrigerio (almuerzo, cena, desayuno,
+   merienda)" y "horario de traslado (viaje de ciudad a ciudad y luego en la ciudad de lugar a
+   lugar)".
+
+   Se guardan en el MISMO `agenda_plan` que las reuniones (key `dia|viajero|HH:MM`), con un
+   campo `tipo`. Así todo lo que ya existe —archivar el viaje, el historial, los resultados—
+   sigue funcionando sin tocarse; sólo hay que saber distinguir los tipos donde importa. */
+const VJ_TIPOS = {
+  reunion:  { l: "Reunión",  ic: "",   bg: "#EDE9FE", bd: "#C7BDFF", fg: "#3b1470", cuenta: true },
+  comida:   { l: "Comida",   ic: "🍽", bg: "#FEF3C7", bd: "#FDE68A", fg: "#854d0e", cuenta: false },
+  traslado: { l: "Traslado", ic: "🚕", bg: "#E0F2FE", bd: "#bae6fd", fg: "#075985", cuenta: false },
+  vuelo:    { l: "Vuelo",    ic: "✈️", bg: "#E0E7FF", bd: "#c7d2fe", fg: "#3730a3", cuenta: false },
+  evento:   { l: "Evento",   ic: "📅", bg: "#FEE2E2", bd: "#fecaca", fg: "#991b1b", cuenta: false },
+  /* Operativo (17/09, pedido de German): lo que no es comercial pero ocupa el día igual — ir al
+     banco, migraciones, check-in del hotel, un trámite. Si no está en la agenda, el día parece
+     tener huecos que en realidad no existen y terminás sobre-agendando reuniones. */
+  operativo: { l: "Operativo", ic: "🏦", bg: "#F1F5F9", bd: "#cbd5e1", fg: "#334155", cuenta: false }
+};
+/* Sugerencias para el bloque operativo: no son una lista cerrada, sólo evitan la hoja en blanco. */
+const VJ_OPERATIVOS = ["Ir al banco", "Check-in hotel", "Check-out hotel", "Migraciones / aduana", "Trámite", "Compras", "Tiempo de trabajo", "Descanso"];
+function vjTipoDe(s) { return VJ_TIPOS[(s && s.tipo) || "reunion"] || VJ_TIPOS.reunion; }
+
+/* Horarios por defecto de las comidas. Son EDITABLES como cualquier bloque: esto es una
+   semilla para no arrancar de una hoja en blanco, no una regla. */
+const VJ_COMIDAS = [
+  { n: "Desayuno", h: "08:00", dur: 60 },
+  { n: "Almuerzo", h: "13:00", dur: 90 },
+  { n: "Merienda", h: "17:00", dur: 45 },
+  { n: "Cena",     h: "21:00", dur: 120 }
+];
+function vjSembrarComidas(trip) {
+  const dias = tripDays(trip), quien = (trip.viajeros || [AGENDA_ME])[0];
+  dias.forEach(dia => VJ_COMIDAS.forEach(c => {
+    const k = [dia, quien, c.h].join("|");
+    if (!planGet(k)) planSet(k, { cli: c.n, tipo: "comida", dur: c.dur, estado: "propuesto" });
+  }));
+}
+/* Suma un evento de la lista a la agenda del viaje activo. Antes esto sólo pasaba al CREAR el
+   viaje (con el check del modal); German pidió poder hacerlo después — que es lo normal: el
+   evento aparece o te confirman la invitación cuando el viaje ya estaba armado. */
+function vjEvAlViaje(id) {
+  const ev = vjEventos().find(x => x.id === id); if (!ev) return;
+  const trip = tripGet();
+  const d = VJ_DEST_BY_ID[ev.dest];
+  if (!trip || !trip.ciudad || !trip.desde) { alert(`Primero definí el viaje a ${d ? d.label : "la ciudad"}.\n\nUsá "Planificar" en la tarjeta del destino.`); return; }
+  if (!d || trip.ciudad !== d.label) { alert(`"${ev.nombre}" es en ${d ? d.label : "otra ciudad"} y tu viaje activo es a ${trip.ciudad}.`); return; }
+  const dias = tripDays(trip);
+  const cae = dias.some(x => String(ev.desde) <= x && x <= String(ev.hasta || ev.desde));
+  if (!cae) {
+    alert(`"${ev.nombre}" es el ${vjEvFecha(ev)} y tu viaje va del ${fmtDmy(trip.desde)} al ${fmtDmy(trip.hasta)}.\n\nNo se superponen: ajustá las fechas del viaje con "Editar viaje" y volvé a intentar.`);
+    return;
+  }
+  const antes = Object.keys(planAll()).length;
+  vjSembrarEvento(trip, ev, (trip.viajeros || [AGENDA_ME])[0]);
+  const nuevos = Object.keys(planAll()).length - antes;
+  renderAgenda();
+  const box = document.getElementById("agenda-grid");
+  if (box && box.scrollIntoView) box.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (!nuevos) alert(`"${ev.nombre}" ya estaba en la agenda.`);
+}
+function vjSembrarEvento(trip, ev, quien) {
+  const dias = tripDays(trip);
+  let cur = ev.desde;
+  let guard = 0;
+  while (cur <= (ev.hasta || ev.desde) && guard < 14) {
+    if (dias.indexOf(cur) >= 0) {
+      const k = [cur, quien || (trip.viajeros || [AGENDA_ME])[0], "09:00"].join("|");
+      if (!planGet(k)) planSet(k, { cli: ev.nombre, tipo: "evento", dur: 330, nota: ev.notas || "", estado: "agendada" });
+    }
+    cur = vjSumarDias(cur, 1); guard++;
+  }
+}
+
+/* ---- Detección de traslado faltante ----
+   El error clásico de la planilla: agendar 11:00 y 12:00 en dos puntas de Asunción. Si dos
+   REUNIONES consecutivas del mismo día y viajero quedan pegadas (menos de 20 min entre el fin
+   de una y el inicio de la otra), se avisa. No se inserta nada solo: se ofrece. */
+function vjHuecosSinTraslado(trip) {
+  if (!trip || !trip.desde) return [];
+  const all = planAll(), out = [];
+  tripDays(trip).forEach(dia => {
+    (trip.viajeros || []).forEach(v => {
+      const items = Object.keys(all)
+        .filter(k => { const p = k.split("|"); return p[0] === dia && p[1] === v; })
+        .map(k => ({ k: k, ini: toMin(k.split("|")[2]), s: all[k] }))
+        .filter(x => (x.s.tipo || "reunion") === "reunion")
+        .sort((a, b) => a.ini - b.ini);
+      for (let i = 1; i < items.length; i++) {
+        const finAnt = items[i - 1].ini + (items[i - 1].s.dur || trip.slotMin || 60);
+        const gap = items[i].ini - finAnt;
+        if (gap >= 0 && gap < 20) out.push({ dia: dia, viajero: v, de: items[i - 1].s.cli, a: items[i].s.cli, gap: gap, finAnt: finAnt, key: items[i].k });
+      }
+    });
+  });
+  return out;
+}
+function vjInsertarTraslado(dia, viajero, finAnt, de, a) {
+  const k = [dia, viajero, minToHHMM(finAnt)].join("|");
+  planSet(k, { cli: "Traslado: " + de + " → " + a, tipo: "traslado", dur: 20, estado: "propuesto" });
+  renderAgenda();
+}
+
+/* ==========================================================================================
+   MODAL DEL VIAJE — crear y EDITAR (2026-09-17)
+   ------------------------------------------------------------------------------------------
+   German: "que el paso 1 sea editable... puede pasar" y "suele reprogramarse".
+
+   🪤 Bug que esto arregla, y era serio: `defineTrip` **archivaba el viaje** apenas cambiabas una
+   fecha (`if (prev && ... prev.desde !== desde) archiveTrip(prev)`). O sea: correr el viaje dos
+   días te vaciaba la agenda y mandaba todo al historial. Editar ahora EDITA; archivar es una
+   acción explícita ("📥 Archivar y nuevo").
+
+   Y lo que importa de verdad: **cuando se corren las fechas, los bloques se corren con ellas.**
+   Si el rango se achica, se avisa cuáles quedan afuera y se ofrece moverlos al día más cercano.
+   Nunca se borra nada en silencio. */
+let VJ_TRIP_DRAFT = null;
+
+function vjTripOpen(destId, editando) {
+  const t = tripGet() || {};
+  const d = destId ? VJ_DEST_BY_ID[destId] : VJ_DEST.find(x => x.label === t.ciudad);
+  const ciudad = d ? d.label : (t.ciudad || "Buenos Aires");
+  const ev = d ? vjEventoTop(d.id) : null;
+  // Sugerencia de fechas: si hay evento vigente y el viaje no tiene fechas, se precargan.
+  const desde = t.desde || (ev ? ev.ev.desde : "");
+  const hasta = t.hasta || (ev ? (ev.ev.hasta || ev.ev.desde) : "");
+  VJ_TRIP_DRAFT = { editando: !!editando, destId: d ? d.id : null, prev: t.ciudad ? t : null };
+
+  const inS = "padding:6px 9px; font-size:13px; border:1px solid #d1d5db; border-radius:7px; font-family:inherit; width:100%;";
+  const trav = t.viajeros || [AGENDA_ME];
+  const host = document.getElementById("vj-modal-host");
+  if (!host) return;
+  host.innerHTML = `
+  <div onclick="if(event.target===this) vjTripClose()" style="position:fixed; inset:0; background:rgba(17,24,39,.45); z-index:8500; display:flex; align-items:flex-start; justify-content:center; padding:44px 18px; overflow:auto;">
+    <div style="background:#fff; border-radius:13px; width:100%; max-width:560px; box-shadow:0 16px 44px rgba(0,0,0,.26); overflow:hidden;">
+      <div style="background:#430C89; color:#fff; padding:12px 17px; font-weight:800; font-size:15px; display:flex; justify-content:space-between; align-items:center;">
+        <span>${d ? d.flag + " " : ""}${editando ? "Editar viaje a " : "Planificar viaje a "}${escAttr(ciudad)}</span>
+        <button onclick="vjTripClose()" style="background:rgba(255,255,255,.15); border:none; color:#fff; border-radius:6px; padding:2px 9px; font-size:15px; cursor:pointer;">✕</button>
+      </div>
+      <div style="padding:16px 17px;">
+        ${ev ? `<div style="background:${ev.ev.prioritario ? "#FEF2F2" : "#F1EFFF"}; border:1px solid ${ev.ev.prioritario ? "#fecaca" : "#C7BDFF"}; border-radius:8px; padding:8px 11px; font-size:12px; color:${ev.ev.prioritario ? "#991b1b" : "#4030C8"}; margin-bottom:14px;">
+          📅 <b>${escAttr(ev.ev.nombre)}</b> es el <b>${escAttr(vjEvFecha(ev.ev))}</b>${(() => { const dd = vjEvDias(ev.ev); return dd === null ? "" : dd > 0 ? " (en " + dd + " días)" : dd === 0 ? " (es hoy)" : ""; })()}${ev.ev.prioritario ? " — justifica el viaje." : " — secundario."}
+          ${ev.ev.notas ? `<div style="font-size:11px; color:#6b7280; margin-top:3px;">${escAttr(ev.ev.notas)}</div>` : ""}
+        </div>` : ""}
+        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:13px;">
+          <label style="font-size:11.5px; color:#6b7280;">Desde<input type="date" id="vjt-desde" value="${escAttr(desde)}" style="${inS}"></label>
+          <label style="font-size:11.5px; color:#6b7280;">Hasta<input type="date" id="vjt-hasta" value="${escAttr(hasta)}" style="${inS}"></label>
+          <label style="font-size:11.5px; color:#6b7280;">Bloque<select id="vjt-slot" style="${inS}"><option value="60" ${t.slotMin != 90 ? "selected" : ""}>1 h</option><option value="90" ${t.slotMin == 90 ? "selected" : ""}>1 h 30</option></select></label>
+        </div>
+        <div style="font-size:11.5px; color:#6b7280; margin-bottom:4px;">Viajeros (máx 3)</div>
+        <div style="display:flex; gap:13px; flex-wrap:wrap; font-size:12.5px; color:#374151; margin-bottom:14px;">
+          ${AGENDA_TRAVELERS.map(o => `<label style="display:inline-flex; gap:5px; align-items:center;"><input type="checkbox" class="vjt-trav" value="${o.id}" ${trav.includes(o.id) ? "checked" : ""} onchange="vjTravLimit(this)"> ${escAttr(o.name.split(" ")[0])}</label>`).join("")}
+        </div>
+        ${editando ? "" : `<label style="font-size:12.5px; color:#374151; display:flex; gap:6px; align-items:center; margin-bottom:7px;"><input type="checkbox" id="vjt-comidas" checked> Sembrar <b>comidas</b> del día (desayuno, almuerzo, merienda, cena)</label>
+        ${ev ? `<label style="font-size:12.5px; color:#374151; display:flex; gap:6px; align-items:center; margin-bottom:7px;"><input type="checkbox" id="vjt-evento" checked> Reservar el bloque de <b>${escAttr(ev.ev.nombre)}</b></label>` : ""}`}
+        <div id="vjt-aviso"></div>
+        <div style="display:flex; gap:8px; justify-content:space-between; align-items:center; margin-top:14px;">
+          <span id="vjt-st" class="fc-status" style="font-size:11.5px;"></span>
+          <span style="display:flex; gap:8px;">
+            <button class="fc-btn secondary" onclick="vjTripClose()">Cancelar</button>
+            <button class="fc-btn" onclick="vjTripSave()">${editando ? "Guardar cambios" : "Crear viaje y armar agenda →"}</button>
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>`;
+  if (editando) vjTripPreviewCambio();
+  ["vjt-desde", "vjt-hasta"].forEach(i => { const el = document.getElementById(i); if (el) el.addEventListener("change", vjTripPreviewCambio); });
+}
+function vjTripClose() { VJ_TRIP_DRAFT = null; const h = document.getElementById("vj-modal-host"); if (h) h.innerHTML = ""; }
+function vjTravLimit(cb) { const c = [...document.querySelectorAll(".vjt-trav:checked")]; if (c.length > 3) cb.checked = false; }
+
+function vjDiasEntre(a, b) { return Math.round((new Date(b + "T12:00:00") - new Date(a + "T12:00:00")) / 86400000); }
+function vjSumarDias(iso, n) { const d = new Date(iso + "T12:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); }
+
+/* Bloques del viaje anterior que caerían FUERA del rango nuevo. Es la única razón por la que
+   cambiar fechas puede perder información, así que se calcula y se muestra ANTES de guardar. */
+function vjBloquesFuera(prev, desde, hasta, delta) {
+  if (!prev || !prev.desde) return [];
+  const viejos = tripDays(prev), nuevos = tripDays({ desde: desde, hasta: hasta });
+  const all = planAll();
+  return Object.keys(all).filter(k => {
+    const dia = k.split("|")[0];
+    if (viejos.indexOf(dia) < 0) return false;
+    const destino = delta ? vjSumarDias(dia, delta) : dia;
+    return nuevos.indexOf(destino) < 0;
+  }).map(k => ({ k: k, dia: k.split("|")[0], hora: k.split("|")[2], cli: (all[k] || {}).cli || "(sin cuenta)" }));
+}
+
+// Aviso en vivo dentro del modal: qué va a pasar con los bloques si guardás así.
+function vjTripPreviewCambio() {
+  const box = document.getElementById("vjt-aviso"); if (!box) return;
+  const prev = VJ_TRIP_DRAFT && VJ_TRIP_DRAFT.prev;
+  const desde = (document.getElementById("vjt-desde") || {}).value;
+  const hasta = (document.getElementById("vjt-hasta") || {}).value;
+  if (!prev || !prev.desde || !desde || !hasta || hasta < desde) { box.innerHTML = ""; return; }
+  const nBloques = Object.keys(planAll()).filter(k => tripDays(prev).indexOf(k.split("|")[0]) >= 0).length;
+  if (!nBloques) { box.innerHTML = ""; return; }
+  const delta = vjDiasEntre(prev.desde, desde);
+  const mismaDur = vjDiasEntre(prev.desde, prev.hasta) === vjDiasEntre(desde, hasta);
+  if (delta === 0 && mismaDur) { box.innerHTML = ""; return; }
+  if (mismaDur && delta !== 0) {
+    box.innerHTML = `<div style="background:#ECFDF5; border:1px solid #6EE7B7; border-radius:8px; padding:8px 11px; font-size:12px; color:#065f46;">
+      ↔️ El viaje se corre <b>${Math.abs(delta)} día(s) ${delta > 0 ? "adelante" : "atrás"}</b>. Los <b>${nBloques} bloques</b> se corren con él, manteniendo el horario.</div>`;
+    return;
+  }
+  const fuera = vjBloquesFuera(prev, desde, hasta, 0);
+  box.innerHTML = fuera.length
+    ? `<div style="background:#FFFBEB; border:1px solid #FDE68A; border-radius:8px; padding:8px 11px; font-size:12px; color:#92400e;">
+        ⚠ Con este rango, <b>${fuera.length} bloque(s)</b> quedan fuera del viaje:
+        ${fuera.slice(0, 5).map(f => escAttr(fmtDmy(f.dia) + " " + f.hora + " " + f.cli)).join(" · ")}${fuera.length > 5 ? " …" : ""}.
+        <div style="margin-top:3px;">Al guardar te pregunto si los <b>movés al día más cercano</b> o los dejás donde están.</div></div>`
+    : `<div style="background:#F1EFFF; border:1px solid #C7BDFF; border-radius:8px; padding:8px 11px; font-size:12px; color:#4030C8;">Los ${nBloques} bloques cargados entran en el rango nuevo.</div>`;
+}
+
+/* Corre todos los bloques del viaje N días. Se hace en dos pasadas (leer y después escribir)
+   para no pisar una key con otra cuando el desplazamiento es de 1 día. */
+function vjShiftPlan(prev, delta) {
+  if (!delta) return 0;
+  const dias = tripDays(prev), all = planAll(), mover = [];
+  Object.keys(all).forEach(k => { if (dias.indexOf(k.split("|")[0]) >= 0) mover.push(k); });
+  const buf = mover.map(k => { const p = k.split("|"); return { nk: [vjSumarDias(p[0], delta), p[1], p[2]].join("|"), v: all[k] }; });
+  mover.forEach(k => delete all[k]);
+  buf.forEach(b => { all[b.nk] = b.v; });
+  try { localStorage.setItem("agenda_plan", JSON.stringify(all)); } catch (e) {}
+  return buf.length;
+}
+// Reubica en el día más cercano del rango nuevo los bloques que quedaron afuera.
+function vjReubicarFuera(fuera, desde, hasta) {
+  const all = planAll();
+  fuera.forEach(f => {
+    const destino = f.dia < desde ? desde : hasta;
+    const p = f.k.split("|");
+    const nk = [destino, p[1], p[2]].join("|");
+    if (!all[nk]) { all[nk] = all[f.k]; }
+    delete all[f.k];
+  });
+  try { localStorage.setItem("agenda_plan", JSON.stringify(all)); } catch (e) {}
+}
+
+function vjTripSave() {
+  const st = document.getElementById("vjt-st");
+  const desde = document.getElementById("vjt-desde").value;
+  const hasta = document.getElementById("vjt-hasta").value;
+  const slotMin = parseInt(document.getElementById("vjt-slot").value, 10) || 60;
+  const viajeros = [...document.querySelectorAll(".vjt-trav:checked")].map(c => c.value);
+  const say = (m, err) => { if (st) { st.className = "fc-status" + (err ? " err" : ""); st.textContent = m; } };
+  if (!desde || !hasta || hasta < desde) { say("Revisá las fechas (hasta ≥ desde).", true); return; }
+  if (!viajeros.length) { say("Elegí al menos un viajero.", true); return; }
+
+  const dr = VJ_TRIP_DRAFT || {};
+  const d = dr.destId ? VJ_DEST_BY_ID[dr.destId] : null;
+  const prev = dr.prev;
+  const ciudad = d ? d.label : (prev ? prev.ciudad : "Buenos Aires");
+
+  /* Cambio de ciudad con un viaje vivo: es el único caso donde archivar tiene sentido, y se
+     pregunta. Antes se archivaba solo, y encima al cambiar una FECHA. */
+  if (prev && prev.ciudad && prev.ciudad !== ciudad) {
+    const nB = Object.keys(planAll()).filter(k => tripDays(prev).indexOf(k.split("|")[0]) >= 0).length;
+    if (!confirm(`Tenés un viaje activo a ${prev.ciudad}${nB ? " con " + nB + " bloque(s)" : ""}.\n\nAl cambiar el destino a ${ciudad} ese viaje se archiva en el historial (no se pierde).\n\n¿Seguimos?`)) return;
+    archiveTrip(prev);
+  } else if (prev && prev.desde) {
+    // Misma ciudad: EDITAR. Nunca archivar por cambiar una fecha.
+    const delta = vjDiasEntre(prev.desde, desde);
+    const mismaDur = vjDiasEntre(prev.desde, prev.hasta) === vjDiasEntre(desde, hasta);
+    if (mismaDur && delta !== 0) {
+      const n = Object.keys(planAll()).filter(k => tripDays(prev).indexOf(k.split("|")[0]) >= 0).length;
+      if (n && confirm(`El viaje se corre ${Math.abs(delta)} día(s) ${delta > 0 ? "adelante" : "atrás"}.\n\n¿Corro también los ${n} bloques de la agenda, manteniendo el horario?\n\nAceptar = se mueven con el viaje · Cancelar = quedan en sus fechas actuales.`)) {
+        vjShiftPlan(prev, delta);
+      }
+    } else {
+      const fuera = vjBloquesFuera(prev, desde, hasta, 0);
+      if (fuera.length) {
+        const lista = fuera.slice(0, 8).map(f => "· " + fmtDmy(f.dia) + " " + f.hora + " — " + f.cli).join("\n");
+        if (confirm(`${fuera.length} bloque(s) quedan fuera del rango nuevo:\n\n${lista}${fuera.length > 8 ? "\n…" : ""}\n\nAceptar = los muevo al día más cercano del viaje\nCancelar = los dejo en su fecha (van a quedar fuera de la grilla, pero NO se borran)`)) {
+          vjReubicarFuera(fuera, desde, hasta);
+        }
+      }
+    }
+  }
+
+  const t = Object.assign({}, prev || {}, { ciudad: ciudad, desde: desde, hasta: hasta, slotMin: slotMin, viajeros: viajeros });
+  const sembrar = !dr.editando;
+  tripSet(t);
+  if (sembrar) {
+    if ((document.getElementById("vjt-comidas") || {}).checked) vjSembrarComidas(t);
+    const evChk = document.getElementById("vjt-evento");
+    if (evChk && evChk.checked && d) { const ev = vjEventoTop(d.id); if (ev) vjSembrarEvento(t, ev.ev, viajeros[0]); }
+  }
+  vjTripClose();
+  window.__agendaDay = null; window.__busyCache = {};
+  renderAgenda();
 }
 
 /* ---- RENDER: el radar de las 7 ciudades ---- */
@@ -12300,16 +12651,17 @@ function vjRenderCands(destId) {
   }
   el.innerHTML = `<div style="background:#fff; border:1px solid #e5e5e5; border-radius:10px; padding:14px;">
     <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:9px; flex-wrap:wrap;">
-      <b style="font-size:13px;">${d.flag} Candidatos en ${escAttr(d.label)} <span style="color:#9ca3af; font-weight:400;">· ${cands.length} · ordenados por impacto</span></b>
+      <b style="font-size:13px;">${d.flag} Candidatos en ${escAttr(d.label)} <span style="color:#9ca3af; font-weight:400;">· ${cands.length} · ordenados por <b>ponderado</b></span></b>
       <button class="fc-btn" style="font-size:11px; padding:4px 10px;" onclick="vjPlanificar('${destId}')">Planificar viaje acá</button>
     </div>
     <div style="overflow-x:auto;"><table class="std"><thead><tr>
-      <th>Quién</th><th class="c">Tipo</th><th>Por qué ir</th><th style="text-align:right;">Monto</th><th class="c">Última visita</th><th class="c">En la agenda</th>
+      <th>Quién</th><th class="c">Tipo</th><th>Por qué ir</th><th style="text-align:right;" title="Monto × probabilidad de la etapa en HubSpot. Es el orden de esta tabla: mide lo que el viaje puede mover de verdad, no el monto nominal.">Ponderado</th><th style="text-align:right;" title="Monto nominal, sin probabilidad.">Bruto</th><th class="c">Última visita</th><th class="c">En la agenda</th>
     </tr></thead><tbody>${cands.map(c => `<tr>
       <td><b>${escAttr(c.cli)}</b>${c.org ? ` <span style="font-size:10px; color:#9ca3af;">· ${escAttr(c.org)}</span>` : ""}${c.interior ? ` <span title="Cuenta argentina fuera de Buenos Aires: mirá si vale la pena estirar el viaje." style="font-size:9px; background:#FEF3C7; color:#92400e; border-radius:7px; padding:1px 6px;">interior</span>` : ""}${c.csm ? `<div style="font-size:10px; color:#9ca3af;">CSM ${escAttr(c.csm)}</div>` : ""}</td>
       <td class="c"><span title="${escAttr(lbl[c.tipo])}" style="font-size:11px;">${ico[c.tipo]}</span></td>
       <td style="font-size:11.5px; color:#374151; max-width:330px; white-space:normal;">${(c.motivos || [c.motivo]).filter(Boolean).map(escAttr).join(" · ")}</td>
-      <td style="text-align:right; font-variant-numeric:tabular-nums;">${c.monto ? "<b>" + fmtMoneyK(c.monto) + "</b>" : '<span style="color:#d1d5db;">—</span>'}</td>
+      <td style="text-align:right; font-variant-numeric:tabular-nums;">${c.pond ? '<b style="color:#047857;">' + fmtMoneyK(c.pond) + "</b>" : '<span style="color:#d1d5db;">—</span>'}</td>
+      <td style="text-align:right; font-variant-numeric:tabular-nums; color:#6b7280;">${c.monto ? fmtMoneyK(c.monto) : '<span style="color:#d1d5db;">—</span>'}</td>
       <td class="c" style="font-size:11px; color:${c.dias === null ? "#9ca3af" : c.dias > 180 ? "#b91c1c" : c.dias > 90 ? "#b45309" : "#6b7280"};">${c.dias === null ? (c.tipo === "partner" ? "—" : "nunca") : (c.dias < 60 ? c.dias + " d" : Math.round(c.dias / 30) + " m")}</td>
       <td class="c">${placed.has(String(c.cli).trim().toLowerCase()) ? '<span style="font-size:11px; color:#047857; font-weight:600;">✓ sí</span>' : '<span style="font-size:11px; color:#9ca3af;">—</span>'}</td>
     </tr>`).join("")}</tbody></table></div>
@@ -12320,24 +12672,9 @@ function vjRenderCands(destId) {
 /* Prepara el viaje al destino elegido: setea la ciudad en el formulario y baja hasta él. */
 function vjPlanificar(destId) {
   const d = VJ_DEST_BY_ID[destId]; if (!d) return;
-  const trip = tripGet() || {};
-  if (trip.ciudad && trip.ciudad !== d.label && trip.desde) {
-    if (!confirm(`Ya tenés un viaje activo a ${trip.ciudad}.\n\nSi seguís, el formulario pasa a ${d.label}. El viaje a ${trip.ciudad} no se borra: se archiva recién cuando lo cerrás desde su resumen.`)) return;
-  }
   VJ_OPEN = destId;
-  /* Flujo "evento primero": si el destino tiene un evento vigente y el viaje todavía no tiene
-     fechas, se precargan las del evento. Es lo que German hace a mano cada vez. */
-  const patch = { ciudad: d.label };
-  const ev = vjEventoTop(destId);
-  if (ev && !trip.desde && !trip.hasta) {
-    patch.desde = ev.ev.desde;
-    patch.hasta = ev.ev.hasta || ev.ev.desde;
-    patch.evento = ev.ev.nombre;
-  }
-  tripSet(Object.assign({}, trip, patch));
-  renderAgenda();
-  const el = document.getElementById("agenda-trip");
-  if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  // Paso 1: pedir las fechas en un modal (con el evento precargado si lo hay).
+  vjTripOpen(destId, false);
 }
 
 /* ---- RESULTADOS DEL VIAJE Y ROI ---------------------------------------------------------
@@ -12408,8 +12745,15 @@ function renderResultados(trip) {
   if (!trip || !trip.ciudad || !trip.desde) { el.innerHTML = ""; return; }
   const days = tripDays(trip);
   const all = planAll();
-  const keys = Object.keys(all).filter(k => days.includes(k.split("|")[0]) && all[k] && all[k].cli);
-  if (!keys.length) { el.innerHTML = ""; return; }
+  /* Sólo entran las REUNIONES: comidas, traslados y vuelos no son encuentros comerciales.
+     Y las canceladas / reprogramadas se listan aparte — contar como "reunión hecha" algo que no
+     pasó es la forma más fácil de inflar el ROI del viaje y mentirse. */
+  const esReunion = k => (all[k].tipo || "reunion") === "reunion";
+  const noPaso = k => ["cancelada", "reprogramada"].indexOf(all[k].estado) >= 0;
+  const todas = Object.keys(all).filter(k => days.includes(k.split("|")[0]) && all[k] && all[k].cli && esReunion(k));
+  const caidas = todas.filter(noPaso);
+  const keys = todas.filter(k => !noPaso(k));
+  if (!todas.length) { el.innerHTML = ""; return; }
 
   let movido = 0, cargados = 0;
   const filas = keys.sort().map(k => {
@@ -12441,12 +12785,14 @@ function renderResultados(trip) {
     <div style="font-weight:700; font-size:13px; margin-bottom:3px;">📋 Resultados del viaje</div>
     <div style="font-size:11.5px; color:#6b7280; margin-bottom:10px;">Esto es lo que la planilla nunca tuvo. Cargalo al volver: sin resultado, el viaje no se puede defender ni repetir con criterio.</div>
     <div class="cue-kpis" style="margin-bottom:10px;">
-      <div class="cue-kpi"><div class="kl">Reuniones</div><div class="kv" style="font-size:20px;">${keys.length}</div><div class="ks">${cargados} con resultado cargado</div></div>
+      <div class="cue-kpi"><div class="kl">Reuniones</div><div class="kv" style="font-size:20px;">${keys.length}</div><div class="ks">${cargados} con resultado${caidas.length ? " · " + caidas.length + " no se concretó" : ""}</div></div>
       <div class="cue-kpi"><div class="kl">Pipeline movido</div><div class="kv" style="font-size:20px; color:${movido ? "#047857" : ""};">${movido ? fmtMoney(movido) : "—"}</div><div class="ks">sólo avanzó / deal nuevo</div></div>
       <div class="cue-kpi"><div class="kl">Costo del viaje</div><div class="kv" style="font-size:20px;"><input type="number" value="${costo != null ? costo : ""}" placeholder="u$s" onchange="vjCostoSet(this.value)" style="width:110px; font-size:17px; font-weight:700; color:#430C89; border:1px solid #d1d5db; border-radius:6px; padding:2px 6px; text-align:right;"></div><div class="ks">pasajes + hotel + viáticos</div></div>
       <div class="cue-kpi"><div class="kl">Retorno</div><div class="kv" style="font-size:20px; color:${roi === null ? "#9ca3af" : roi >= 1 ? "#047857" : "#b91c1c"};">${roi === null ? "—" : roi.toFixed(1) + "×"}</div><div class="ks">${roi === null ? "cargá costo e impacto" : "pipeline ÷ costo"}</div></div>
     </div>
     <div style="overflow-x:auto;"><table class="std"><thead><tr><th>Cuándo</th><th>Quién</th><th>Qué pasó</th><th>Próximo paso</th><th style="text-align:right;">Movió u$s</th><th class="c">HubSpot</th></tr></thead><tbody>${filas}</tbody></table></div>
+    ${caidas.length ? `<div style="margin-top:9px; padding:8px 11px; background:#FFF7ED; border:1px solid #fed7aa; border-radius:8px; font-size:11.5px; color:#9a3412;">
+      ↺ <b>No se concretaron:</b> ${caidas.map(k => escAttr((all[k].cli || "") + " (" + ((AGENDA_ESTADOS[all[k].estado] || {}).label || "") + ")")).join(" · ")}. No cuentan como reunión ni suman al pipeline movido.</div>` : ""}
     <div style="font-size:10.5px; color:#9ca3af; margin-top:8px;">El próximo paso se escribe en <code>hs_next_step</code> del deal abierto de esa cuenta. Si hay más de uno, te pregunta cuál.</div>
   </div>`;
 }
@@ -12507,16 +12853,15 @@ function defineTrip() {
   if (!desde || !hasta || hasta < desde) { st.className = "fc-status err"; st.textContent = "Revisá las fechas (hasta ≥ desde)."; return; }
   if (!viajeros.length) { st.className = "fc-status err"; st.textContent = "Elegí al menos un viajero."; return; }
   const prev = tripGet();
-  if (prev && prev.ciudad && (prev.ciudad !== ciudad || prev.desde !== desde || prev.hasta !== hasta)) archiveTrip(prev);
+  /* Sólo se archiva si cambia el DESTINO. Antes también archivaba al cambiar una fecha, y eso
+     vaciaba la agenda del viaje en curso — el bug que German reportó el 17/09. */
+  if (prev && prev.ciudad && prev.ciudad !== ciudad) archiveTrip(prev);
   tripSet({ ciudad, desde, hasta, slotMin, viajeros });
   window.__agendaDay = null; window.__busyCache = {}; renderAgenda();
 }
-function editTrip() {
-  renderTripForm(tripGet());
-  document.getElementById("agenda-days").innerHTML = "";
-  document.getElementById("agenda-grid").innerHTML = "";
-  document.getElementById("agenda-deals").innerHTML = "";
-}
+/* Editar = abrir el mismo modal en modo edición. Antes vaciaba la grilla y mostraba el
+   formulario viejo, que al guardar ARCHIVABA el viaje si habías tocado una fecha. */
+function editTrip() { vjTripOpen(null, true); }
 
 function renderTripSummary(trip) {
   const names = trip.viajeros.map(id => { const o = AGENDA_TRAVELERS.find(x => x.id === id); return o ? o.name.split(" ")[0] : id; }).join(" · ");
@@ -12558,7 +12903,14 @@ function vjEventosDelViajeHtml(trip) {
   </div>`;
 }
 
+/* El selector de día quedó sin sentido cuando la grilla pasó a mostrar TODOS los días del viaje
+   en columnas (17/09). Se vacía en vez de borrarse, para no romper a quien lo llame. */
 function renderDays(trip) {
+  const el = document.getElementById("agenda-days");
+  if (el) el.innerHTML = "";
+  return;
+}
+function renderDaysViejo(trip) {
   const days = tripDays(trip);
   document.getElementById("agenda-days").innerHTML = `<div style="display:flex; gap:6px; flex-wrap:wrap; margin:16px 0 10px;">${days.map(d => `<button onclick="setAgendaDay('${d}')" class="ag-day ${d === window.__agendaDay ? "on" : ""}">${fmtDow(d)}</button>`).join("")}</div>`;
 }
@@ -12600,68 +12952,252 @@ function gapHtml(tid, s, e) {
   const te = Math.min(s + (trip.slotMin || 60), e);
   return `<div style="margin:4px 0; border:1px dashed #d8d8d8; border-radius:6px; padding:6px 8px; display:flex; justify-content:space-between; align-items:center; gap:6px;"><span style="font-size:11px; color:#9ca3af;">Libre ${minToHHMM(s)}–${minToHHMM(e)} · ${fmtDur(e - s)}</span><button class="ag-add" onclick="agendaPickAt('${tid}','${minToHHMM(s)}','${minToHHMM(te)}')">+ reservar</button></div>`;
 }
-function renderGrid(trip) {
-  const day = window.__agendaDay; if (!day) return;
-  ensureBusy(day, trip);
-  const busy = (window.__busyCache || {})[day] || [];
-  const travs = trip.viajeros.map(id => AGENDA_TRAVELERS.find(o => o.id === id)).filter(Boolean);
-  const all = planAll();
-  const colHtml = travs.map(t => {
-    const items = [];
-    Object.keys(all).forEach(k => {
-      const p = k.split("|");
-      if (p[0] === day && p[1] === t.id) {
-        const s = all[k];
-        const st = toMin(s.tStart || "09:00");
-        const en = toMin(s.tEnd || minToHHMM(st + (trip.slotMin || 60)));
-        items.push({ type: "slot", key: k, slot: s, start: st, end: en });
-      }
-    });
-    if (t.id === AGENDA_ME) busy.forEach(b => {
-      const st = b.start.getHours() * 60 + b.start.getMinutes();
-      const en = b.end.getHours() * 60 + b.end.getMinutes();
-      items.push({ type: "busy", start: st, end: en, summary: b.summary });
-    });
-    items.sort((a, b) => a.start - b.start || a.end - b.end);
-    let body = ""; let cursor = AG_DAY_S;
-    items.forEach(it => {
-      if (it.start > cursor) body += gapHtml(t.id, cursor, it.start);
-      if (it.type === "slot") body += `<div style="margin:4px 0;">${slotCard(it.key, it.slot)}</div>`;
-      else body += `<div style="margin:4px 0; background:#fafafa; border:1px solid #eee; border-radius:6px; padding:6px 8px;"><span class="ag-busy" title="${escAttr(it.summary)}">${minToHHMM(it.start)}–${minToHHMM(it.end)} · ${escAttr(it.summary)}</span></div>`;
-      if (it.end > cursor) cursor = it.end;
-    });
-    if (cursor < AG_DAY_E) body += gapHtml(t.id, cursor, AG_DAY_E);
-    const tag = t.id === AGENDA_ME ? "(tu agenda)" : "(manual)";
-    return `<div style="flex:1 1 240px; min-width:220px; border:1px solid #e5e5e5; border-radius:10px; overflow:hidden; background:#fff;"><div class="ag-th" style="padding:8px 10px;">${t.name.split(" ")[0]} <span style="font-weight:400;color:#9ca3af;font-size:10px;">${tag}</span></div><div style="padding:8px;">${body}</div></div>`;
-  }).join("");
-  document.getElementById("agenda-grid").innerHTML = `<div style="display:flex; gap:10px; align-items:flex-start; flex-wrap:wrap;">${colHtml}</div>
-    <div style="display:flex; gap:14px; font-size:11px; color:#6b7280; flex-wrap:wrap; margin:8px 2px 0;">
-      <span><span style="display:inline-block; width:9px; height:9px; border-radius:50%; background:#9ca3af;"></span> Propuesto</span>
-      <span><span style="display:inline-block; width:9px; height:9px; border-radius:50%; background:#EF9F27;"></span> Para agendar</span>
-      <span><span style="display:inline-block; width:9px; height:9px; border-radius:50%; background:#1D9E75;"></span> Agendada</span>
-      <span style="color:#9ca3af;">· se ordenan por hora · los huecos muestran el tiempo libre</span>
-    </div>
-    <div id="agenda-pick"></div>
-    <div id="agenda-status" class="fc-status" style="margin-top:6px;"></div>`;
+/* ==========================================================================================
+   GRILLA DE AGENDA CON DRAG & DROP (2026-09-17)
+   ------------------------------------------------------------------------------------------
+   Pedido de German: "abajo debería estar la agenda por fecha y horas (que sea editable) que se
+   pueda hacer drag and drop", con bloques de refrigerio y de traslado. Y: "suele reprogramarse".
+
+   Reemplaza la grilla vieja, que era de UN día y una columna por viajero, con huecos fijos de
+   1 h. Ahora: **columnas = días del viaje**, bloques posicionados por hora real, se arrastran
+   (vertical = hora, horizontal = otro día), se estiran del borde de abajo y se editan con doble
+   clic. El viajero pasa a ser una inicial en el bloque y un filtro arriba — con 3 viajeros × 4
+   días, una columna por viajero-día daban 12 columnas ilegibles.
+
+   ⚠️ Compatibilidad: el storage sigue siendo `agenda_plan` con key `dia|viajero|HH:MM`. Los
+   horarios reales viven en `tStart`/`tEnd` como siempre (así `agendaCalendar` y el archivado
+   siguen funcionando sin tocarse); `dur` es sólo el respaldo para los bloques sembrados. */
+const VJ_H0 = 7, VJ_H1 = 23, VJ_PX = 46;          // 07:00–23:00, 46 px por hora
+const VJ_SNAP = 15;                                // los arrastres caen de a 15 minutos
+
+function vjBlkTimes(key, s, trip) {
+  const kh = toMin(key.split("|")[2] || "09:00");
+  const ini = s && s.tStart ? toMin(s.tStart) : kh;
+  const fin = s && s.tEnd ? toMin(s.tEnd) : ini + ((s && s.dur) || (trip && trip.slotMin) || 60);
+  return { ini: ini, fin: Math.max(ini + 15, fin) };
+}
+function vjBlkSet(key, ini, fin) { planSet(key, { tStart: minToHHMM(ini), tEnd: minToHHMM(fin), dur: fin - ini }); }
+// Mover a otro día o viajero = cambiar la KEY (se borra la vieja y se escribe la nueva).
+function vjBlkMove(key, dia, viajero, ini, fin) {
+  const s = planGet(key) || {};
+  const nk = [dia, viajero, minToHHMM(ini)].join("|");
+  if (nk !== key) planDel(key);
+  planSet(nk, Object.assign({}, s, { tStart: minToHHMM(ini), tEnd: minToHHMM(fin), dur: fin - ini }));
+  return nk;
 }
 
-function slotAddr(slot) { if (slot.addr) return slot.addr; const m = getAgendaMeta(slot.cli || ""); return m.direccion || ""; }
-function slotCard(key, slot) {
-  const est = AGENDA_ESTADOS[slot.status || "propuesto"];
-  const addr = slotAddr(slot);
-  const trip = tripGet();
-  const tStart = slot.tStart || "09:00";
-  const tEnd = slot.tEnd || minToHHMM(toMin(tStart) + (trip ? trip.slotMin : 60));
-  return `<div class="ag-slot" style="background:${est.bg}; border-color:${est.dot};">
-    <div class="ag-slot-name" style="color:${est.fg};">${escAttr(slot.cli || slot.dealname || "")}</div>
-    <div style="display:flex; gap:4px; align-items:center; margin-top:3px;"><input type="time" lang="es-ES" value="${tStart}" onchange="agendaSlotTime('${key}','tStart',this.value)" title="Hora de inicio" style="font-size:10px; padding:0 2px; border:1px solid ${est.dot}; border-radius:4px;"><span style="font-size:10px; color:${est.fg};">a</span><input type="time" lang="es-ES" value="${tEnd}" onchange="agendaSlotTime('${key}','tEnd',this.value)" title="Hora de fin" style="font-size:10px; padding:0 2px; border:1px solid ${est.dot}; border-radius:4px;"></div>
-    ${addr ? `<div class="ag-slot-addr">📍 ${escAttr(addr)}</div>` : `<div class="ag-slot-addr" style="color:#b91c1c;">sin dirección · <a href="javascript:void(0)" onclick="agendaFetchAddr('${key}')" style="color:#4030C8;">traer de HubSpot</a></div>`}
-    <div style="display:flex; gap:5px; align-items:center; margin-top:4px; flex-wrap:wrap;">
-      <select onchange="agendaSlotStatus('${key}',this.value)" style="font-size:11px; padding:1px 4px; border:1px solid ${est.dot}; border-radius:4px; background:#fff; color:${est.fg};">${Object.keys(AGENDA_ESTADOS).map(k => `<option value="${k}" ${(slot.status || "propuesto") === k ? "selected" : ""}>${AGENDA_ESTADOS[k].label}</option>`).join("")}</select>
-      ${slot.calCreated ? `<span style="font-size:10px; color:#085041;">✓ en Calendar</span>` : `<button onclick="agendaCalendar('${key}')" style="font-size:11px; padding:1px 6px; border:1px solid #C7BDFF; color:#4030C8; background:#F1EFFF; border-radius:4px; cursor:pointer;">+ Calendar</button>`}
-      <button onclick="agendaSlotRemove('${key}')" title="Quitar" style="font-size:11px; padding:1px 5px; border:1px solid #d1d5db; background:#fff; border-radius:4px; cursor:pointer;">✕</button>
+function renderGrid(trip) {
+  const cont = document.getElementById("agenda-grid"); if (!cont) return;
+  const dias = tripDays(trip);
+  if (!dias.length) { cont.innerHTML = ""; return; }
+  const filtro = window.__vjTravFiltro || "";
+  const travs = (trip.viajeros || []).map(id => AGENDA_TRAVELERS.find(o => o.id === id)).filter(Boolean);
+  const all = planAll();
+
+  /* Aviso de traslado faltante — el error clásico de la planilla: 11:00 y 12:00 en dos puntas
+     de Asunción. Se avisa y se ofrece meterlo; nunca se inserta solo. */
+  const huecos = vjHuecosSinTraslado(trip);
+  const avisoTr = huecos.length ? `<div style="background:#FFFBEB; border:1px solid #FDE68A; border-radius:9px; padding:9px 13px; font-size:12.5px; color:#92400e; margin-bottom:10px;">
+      🚕 <b>Falta traslado</b> entre ${huecos.length === 1 ? "dos reuniones" : huecos.length + " pares de reuniones"} que quedaron pegadas:
+      ${huecos.slice(0, 4).map(h => `<span style="display:inline-block; margin:2px 0;">${escAttr(fmtDmy(h.dia))} ${escAttr(h.de)} → ${escAttr(h.a)} <a href="#" onclick="vjInsertarTraslado('${h.dia}','${h.viajero}',${h.finAnt},${JSON.stringify(h.de).replace(/"/g, "&quot;")},${JSON.stringify(h.a).replace(/"/g, "&quot;")}); return false;" style="color:#b45309; font-weight:700;">+ meter 20′</a></span>`).join(" · ")}
+    </div>` : "";
+
+  const cols = dias.map((dia, di) => {
+    const ev = (vjEventos() || []).filter(e => e.dest && VJ_DEST_BY_ID[e.dest] && VJ_DEST_BY_ID[e.dest].label === trip.ciudad && String(e.desde) <= dia && dia <= String(e.hasta || e.desde));
+    return `<div class="vj-col" data-dia="${dia}" style="position:relative; border-left:1px solid #e5e7eb; height:${(VJ_H1 - VJ_H0) * VJ_PX}px;">
+      ${Array.from({ length: VJ_H1 - VJ_H0 }, () => `<div style="height:${VJ_PX}px; border-bottom:1px dashed #f1f1f6;"></div>`).join("")}
+    </div>`;
+  }).join("");
+
+  const heads = dias.map(dia => {
+    const hoy = dia === new Date().toISOString().slice(0, 10);
+    const conEv = (vjEventos() || []).some(e => VJ_DEST_BY_ID[e.dest] && VJ_DEST_BY_ID[e.dest].label === trip.ciudad && String(e.desde) <= dia && dia <= String(e.hasta || e.desde));
+    return `<div style="padding:7px 6px; font-size:11.5px; font-weight:700; text-align:center; border-bottom:1px solid #e5e7eb; background:${conEv ? "#FEE2E2" : "#fafafa"}; color:${conEv ? "#991b1b" : hoy ? "#430C89" : "#374151"};">${fmtDow(dia)}${hoy ? " · hoy" : ""}</div>`;
+  }).join("");
+
+  cont.innerHTML = avisoTr + `
+    <div style="display:flex; gap:9px; align-items:center; flex-wrap:wrap; margin-bottom:9px;">
+      <span style="font-size:11.5px; color:#6b7280; font-weight:600;">Agenda del viaje</span>
+      ${travs.length > 1 ? `<select onchange="window.__vjTravFiltro=this.value; renderGrid(tripGet());" style="font-size:11.5px; padding:3px 7px; border:1px solid #d1d5db; border-radius:6px;"><option value="">Todos los viajeros</option>${travs.map(t => `<option value="${t.id}" ${filtro === t.id ? "selected" : ""}>${escAttr(t.name.split(" ")[0])}</option>`).join("")}</select>` : ""}
+      <span style="margin-left:auto; display:flex; gap:5px; flex-wrap:wrap;">
+        ${Object.keys(VJ_TIPOS).filter(t => t !== "reunion").map(t => `<button class="fc-btn secondary" style="font-size:11px; padding:3px 9px;" onclick="vjAddBlk('${t}')">${VJ_TIPOS[t].ic} ${escAttr(VJ_TIPOS[t].l)}</button>`).join("")}
+      </span>
+    </div>
+    <div style="display:grid; grid-template-columns:52px repeat(${dias.length}, 1fr); border:1px solid #e5e7eb; border-radius:10px; overflow:hidden; background:#fff;">
+      <div style="border-bottom:1px solid #e5e7eb; background:#fafafa;"></div>${heads}
+      <div>${Array.from({ length: VJ_H1 - VJ_H0 }, (_, i) => `<div style="height:${VJ_PX}px; font-size:9.5px; color:#9ca3af; text-align:right; padding:1px 5px 0 0; border-bottom:1px dashed #f5f5f8;">${String(VJ_H0 + i).padStart(2, "0")}:00</div>`).join("")}</div>
+      ${cols}
+    </div>
+    <div style="display:flex; gap:12px; flex-wrap:wrap; font-size:11px; color:#6b7280; margin-top:8px;">
+      ${Object.keys(VJ_TIPOS).map(t => `<span><i style="display:inline-block; width:11px; height:11px; border-radius:3px; background:${VJ_TIPOS[t].bg}; border:1px solid ${VJ_TIPOS[t].bd}; margin-right:4px; vertical-align:-1px;"></i>${escAttr(VJ_TIPOS[t].l)}</span>`).join("")}
+      <span style="color:#9ca3af;">· arrastrá para mover · estirá el borde de abajo para durar más · doble clic para editar</span>
+    </div>`;
+
+  // ---- pintar los bloques ----
+  const colEls = {}; cont.querySelectorAll(".vj-col").forEach(c => { colEls[c.dataset.dia] = c; });
+  Object.keys(all).forEach(k => {
+    const p = k.split("|");
+    if (dias.indexOf(p[0]) < 0) return;
+    if (filtro && p[1] !== filtro) return;
+    const col = colEls[p[0]]; if (!col) return;
+    const s = all[k], t = vjBlkTimes(k, s, trip), def = vjTipoDe(s);
+    const est = AGENDA_ESTADOS[s.estado || s.status || "propuesto"] || AGENDA_ESTADOS.propuesto;
+    const cancel = (s.estado === "cancelada");
+    const el = document.createElement("div");
+    el.className = "vj-blk"; el.dataset.key = k;
+    el.style.cssText = `position:absolute; left:3px; right:3px; top:${(t.ini - VJ_H0 * 60) / 60 * VJ_PX}px; height:${Math.max(18, (t.fin - t.ini) / 60 * VJ_PX - 2)}px;
+      background:${def.bg}; border:1px solid ${def.bd}; color:${def.fg}; border-radius:7px; padding:3px 6px; font-size:11px; overflow:hidden; cursor:grab; line-height:1.2;
+      ${cancel ? "opacity:.45; text-decoration:line-through;" : ""}`;
+    const trv = travs.find(x => x.id === p[1]);
+    el.innerHTML = `<b style="display:block; font-size:11.5px;">${def.ic ? def.ic + " " : ""}${escAttr(s.cli || "(sin cuenta)")}</b>
+      <span style="font-size:9.5px; opacity:.85;">${minToHHMM(t.ini)}–${minToHHMM(t.fin)}${trv && travs.length > 1 ? " · " + escAttr(trv.name.split(" ")[0]) : ""}${s.estado && s.estado !== "propuesto" ? " · " + escAttr((AGENDA_ESTADOS[s.estado] || {}).label || s.estado) : ""}</span>
+      <div class="vj-rs" style="position:absolute; left:0; right:0; bottom:0; height:6px; cursor:ns-resize;"></div>`;
+    col.appendChild(el);
+  });
+
+  vjWireDrag(cont, trip, dias);
+}
+
+/* Arrastre y redimensionado. Se hace a mano (sin librería) porque el dashboard no tiene
+   dependencias y agregar una por esto sería desproporcionado. Snap de 15 minutos. */
+function vjWireDrag(cont, trip, dias) {
+  const colEls = [...cont.querySelectorAll(".vj-col")];
+  cont.querySelectorAll(".vj-blk").forEach(el => {
+    const key = el.dataset.key;
+    let mode = null, sy = 0, st = 0, sh = 0, curCol = el.parentElement;
+
+    el.addEventListener("dblclick", e => { e.preventDefault(); vjBlkEdit(key); });
+    el.addEventListener("mousedown", e => {
+      if (e.button !== 0) return;
+      mode = e.target.classList.contains("vj-rs") ? "size" : "move";
+      sy = e.clientY; st = parseFloat(el.style.top); sh = parseFloat(el.style.height);
+      el.style.zIndex = 20; el.style.cursor = mode === "size" ? "ns-resize" : "grabbing";
+      e.preventDefault();
+    });
+    const mm = e => {
+      if (!mode) return;
+      const snapPx = VJ_PX * VJ_SNAP / 60;
+      if (mode === "size") {
+        let h = Math.max(snapPx, Math.round((sh + (e.clientY - sy)) / snapPx) * snapPx);
+        h = Math.min(h, (VJ_H1 - VJ_H0) * VJ_PX - parseFloat(el.style.top));
+        el.style.height = h + "px";
+      } else {
+        let t = Math.round((st + (e.clientY - sy)) / snapPx) * snapPx;
+        t = Math.max(0, Math.min((VJ_H1 - VJ_H0) * VJ_PX - parseFloat(el.style.height), t));
+        el.style.top = t + "px";
+        // ¿el puntero está sobre otra columna? entonces cambia de día
+        const bajo = colEls.find(c => { const r = c.getBoundingClientRect(); return e.clientX >= r.left && e.clientX <= r.right; });
+        if (bajo && bajo !== curCol) { curCol = bajo; bajo.appendChild(el); }
+      }
+      const ini = VJ_H0 * 60 + Math.round(parseFloat(el.style.top) / VJ_PX * 60);
+      const fin = ini + Math.round(parseFloat(el.style.height) / VJ_PX * 60);
+      const sp = el.querySelector("span"); if (sp) sp.textContent = minToHHMM(ini) + "–" + minToHHMM(fin);
+    };
+    const mu = () => {
+      if (!mode) return;
+      const ini = VJ_H0 * 60 + Math.round(parseFloat(el.style.top) / VJ_PX * 60);
+      const fin = ini + Math.round(parseFloat(el.style.height) / VJ_PX * 60);
+      const dia = curCol.dataset.dia, viaj = key.split("|")[1];
+      mode = null; el.style.zIndex = ""; el.style.cursor = "grab";
+      vjBlkMove(key, dia, viaj, ini, fin);
+      renderAgenda();
+    };
+    window.addEventListener("mousemove", mm);
+    window.addEventListener("mouseup", mu);
+  });
+}
+
+/* Alta rápida de un bloque suelto (comida, traslado, vuelo, evento). Cae en el primer día del
+   viaje a las 12:00 y desde ahí se arrastra a donde vaya. */
+function vjAddBlk(tipo) {
+  const trip = tripGet(); if (!trip || !trip.desde) return;
+  const def = VJ_TIPOS[tipo] || VJ_TIPOS.reunion;
+  let sug = "";
+  if (tipo === "comida") sug = "Almuerzo";
+  else if (tipo === "traslado") sug = "Traslado";
+  else if (tipo === "vuelo") sug = "Vuelo";
+  else if (tipo === "operativo") sug = VJ_OPERATIVOS[0];
+  /* Para EVENTO: si ya hay eventos cargados en esa ciudad, se ofrecen en vez de tipear el
+     nombre a mano — así el bloque queda escrito igual que el evento del radar. */
+  if (tipo === "evento") {
+    const d = VJ_DEST.find(x => x.label === trip.ciudad);
+    const evs = d ? vjEventosDe(d.id).filter(e => vjEvDias(e) === null || vjEvDias(e) >= -1) : [];
+    if (evs.length) {
+      const lista = evs.map((e, i) => `${i + 1}) ${e.nombre} · ${vjEvFecha(e)}`).join("\n");
+      const pick = prompt(`Eventos cargados en ${trip.ciudad}:\n\n${lista}\n\nElegí un número, o escribí un nombre para uno nuevo:`, "1");
+      if (pick === null) return;
+      const n = parseInt(pick, 10);
+      if (n >= 1 && n <= evs.length) { vjEvAlViaje(evs[n - 1].id); return; }
+      sug = String(pick).trim();
+    }
+  }
+  const etiqueta = tipo === "operativo" ? `Bloque operativo (ej.: ${VJ_OPERATIVOS.slice(0, 3).join(", ")}…)` : `Nombre del bloque de ${def.l.toLowerCase()}`;
+  const nombre = prompt(etiqueta + ":", sug);
+  if (nombre === null) return;
+  const dia = (window.__vjUltDia && tripDays(trip).indexOf(window.__vjUltDia) >= 0) ? window.__vjUltDia : tripDays(trip)[0];
+  const quien = window.__vjTravFiltro || (trip.viajeros || [AGENDA_ME])[0];
+  let h = 12 * 60;
+  while (planGet([dia, quien, minToHHMM(h)].join("|")) && h < 22 * 60) h += 30;
+  planSet([dia, quien, minToHHMM(h)].join("|"), {
+    cli: (nombre || def.l).trim(), tipo: tipo, tStart: minToHHMM(h),
+    tEnd: minToHHMM(h + (tipo === "traslado" ? 20 : tipo === "vuelo" ? 150 : tipo === "operativo" ? 45 : 60)), estado: "propuesto"
+  });
+  renderAgenda();
+}
+
+/* Editor del bloque (doble clic). Acá vive la REPROGRAMACIÓN: cambiar día, hora, duración,
+   tipo, cuenta, estado. "Reprogramada" y "cancelada" existen a propósito — una reunión que no
+   se concretó no puede contar como reunión hecha en los resultados del viaje. */
+function vjBlkEdit(key) {
+  const trip = tripGet(); if (!trip) return;
+  const s = planGet(key) || {}; const t = vjBlkTimes(key, s, trip);
+  const p = key.split("|");
+  const host = document.getElementById("vj-modal-host"); if (!host) return;
+  const inS = "padding:6px 9px; font-size:13px; border:1px solid #d1d5db; border-radius:7px; font-family:inherit; width:100%;";
+  const travs = (trip.viajeros || []).map(id => AGENDA_TRAVELERS.find(o => o.id === id)).filter(Boolean);
+  host.innerHTML = `
+  <div onclick="if(event.target===this) vjTripClose()" style="position:fixed; inset:0; background:rgba(17,24,39,.45); z-index:8500; display:flex; align-items:flex-start; justify-content:center; padding:44px 18px; overflow:auto;">
+    <div style="background:#fff; border-radius:13px; width:100%; max-width:520px; box-shadow:0 16px 44px rgba(0,0,0,.26); overflow:hidden;">
+      <div style="background:#430C89; color:#fff; padding:12px 17px; font-weight:800; font-size:15px; display:flex; justify-content:space-between; align-items:center;">
+        <span>Editar bloque</span><button onclick="vjTripClose()" style="background:rgba(255,255,255,.15); border:none; color:#fff; border-radius:6px; padding:2px 9px; font-size:15px; cursor:pointer;">✕</button>
+      </div>
+      <div style="padding:16px 17px;">
+        <label style="font-size:11.5px; color:#6b7280; display:block; margin-bottom:11px;">Cuenta / título<input type="text" id="vjb-cli" value="${escAttr(s.cli || "")}" style="${inS}"></label>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:11px;">
+          <label style="font-size:11.5px; color:#6b7280;">Tipo<select id="vjb-tipo" style="${inS}">${Object.keys(VJ_TIPOS).map(x => `<option value="${x}" ${(s.tipo || "reunion") === x ? "selected" : ""}>${VJ_TIPOS[x].ic} ${VJ_TIPOS[x].l}</option>`).join("")}</select></label>
+          <label style="font-size:11.5px; color:#6b7280;">Estado<select id="vjb-estado" style="${inS}">${Object.keys(AGENDA_ESTADOS).map(x => `<option value="${x}" ${(s.estado || "propuesto") === x ? "selected" : ""}>${AGENDA_ESTADOS[x].label}</option>`).join("")}</select></label>
+        </div>
+        <div style="display:grid; grid-template-columns:1.3fr 1fr 1fr; gap:10px; margin-bottom:11px;">
+          <label style="font-size:11.5px; color:#6b7280;">Día<select id="vjb-dia" style="${inS}">${tripDays(trip).map(d => `<option value="${d}" ${d === p[0] ? "selected" : ""}>${fmtDow(d)}</option>`).join("")}</select></label>
+          <label style="font-size:11.5px; color:#6b7280;">Desde<input type="time" id="vjb-ini" value="${minToHHMM(t.ini)}" style="${inS}"></label>
+          <label style="font-size:11.5px; color:#6b7280;">Hasta<input type="time" id="vjb-fin" value="${minToHHMM(t.fin)}" style="${inS}"></label>
+        </div>
+        ${travs.length > 1 ? `<label style="font-size:11.5px; color:#6b7280; display:block; margin-bottom:11px;">Quién va<select id="vjb-trav" style="${inS}">${travs.map(x => `<option value="${x.id}" ${x.id === p[1] ? "selected" : ""}>${escAttr(x.name)}</option>`).join("")}</select></label>` : ""}
+        <label style="font-size:11.5px; color:#6b7280; display:block; margin-bottom:13px;">Nota / objetivo<input type="text" id="vjb-nota" value="${escAttr(s.nota || "")}" placeholder="a qué vas, con quién…" style="${inS}"></label>
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+          <button class="fc-btn secondary" style="color:#b91c1c; border-color:#fecaca;" onclick="vjBlkDel('${key.replace(/'/g, "\\'")}')">Borrar bloque</button>
+          <span style="display:flex; gap:8px;">
+            <button class="fc-btn secondary" onclick="vjTripClose()">Cancelar</button>
+            <button class="fc-btn" onclick="vjBlkSave('${key.replace(/'/g, "\\'")}')">Guardar</button>
+          </span>
+        </div>
+      </div>
     </div>
   </div>`;
+}
+function vjBlkDel(key) {
+  const s = planGet(key) || {};
+  if (!confirm(`¿Borrar "${s.cli || "el bloque"}" de la agenda?`)) return;
+  planDel(key); vjTripClose(); renderAgenda();
+}
+function vjBlkSave(key) {
+  const g = i => { const el = document.getElementById(i); return el ? el.value : ""; };
+  const ini = toMin(g("vjb-ini") || "09:00"); let fin = toMin(g("vjb-fin") || "10:00");
+  if (fin <= ini) fin = ini + 30;
+  const s = planGet(key) || {};
+  const nk = vjBlkMove(key, g("vjb-dia") || key.split("|")[0], g("vjb-trav") || key.split("|")[1], ini, fin);
+  planSet(nk, { cli: (g("vjb-cli") || "").trim(), tipo: g("vjb-tipo") || "reunion", estado: g("vjb-estado") || "propuesto", nota: (g("vjb-nota") || "").trim() });
+  vjTripClose(); renderAgenda();
 }
 
 function agendaPickAt(tid, ts, te) {
