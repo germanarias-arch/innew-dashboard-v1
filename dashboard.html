@@ -12923,6 +12923,25 @@ function vjTipoCuenta(cli) {
    y el ROI **siguen siendo los del viaje entero** — un ROI parcial leído como el ROI del viaje es
    exactamente el tipo de dato que se termina presentando mal en una reunión. El banner lo dice. */
 let VJ_MIX_FILTRO = null;
+
+/* ===== DOS MOMENTOS, DOS TABLAS (2026-09-18) ==========================================
+   German: "me invade el color amarillo y naranja" + "hay un tema de priorización de información".
+   El color no sobraba por gusto: **la ausencia gritaba y la presencia susurraba**. Cada dato que
+   faltaba se pintaba como CTA ámbar (cargar contacto · cargar lugar · + tel · Preparar), o sea
+   ~30 elementos cálidos en 9 filas, mientras que lo que define la reunión —cuándo, con quién,
+   cuánta plata— iba en gris chico. Y encima **"Qué pasó" y "Movió u$s" estaban vacías en las 9**:
+   antes de viajar no tienen nada que decir y se comían un tercio del ancho.
+
+   La causa de fondo: **esta tabla hace DOS trabajos**. Antes del viaje se prepara (contacto, lugar,
+   objetivo); después se carga el resultado. Ahora cada modo muestra sólo sus columnas, así ninguna
+   queda vacía y el ámbar baja solo. Se suma de la opción C: **separación por día** (un viaje se
+   piensa por día) y **la hora en grande** (es el dato que ordena la jornada).
+
+   El modo arranca solo: si el viaje ya terminó abre en Resultados, si no en Preparar. Una vez que
+   German lo toca a mano, manda su elección. */
+let VJ_RES_MODO = null;      // null = automático · "preparar" · "resultados"
+function vjResModo(m) { VJ_RES_MODO = m; renderResultados(tripGet()); }
+
 function vjMixFiltro(t) {
   VJ_MIX_FILTRO = (VJ_MIX_FILTRO === t) ? null : t;
   renderResultados(tripGet());
@@ -13547,6 +13566,13 @@ function renderResultados(trip) {
   let movido = 0, cargados = 0;
   const paisTrip = vjPaisTrip(trip);
   let faltan = 0;
+
+  /* Modo automático: si TODAS las reuniones ya pasaron, el viaje terminó y lo que queda es cargar
+     resultados. Mientras haya una por delante, el trabajo es preparar. */
+  const modo = VJ_RES_MODO || (keys.every(k => vjReunionPasada(k)) ? "resultados" : "preparar");
+  const prep = modo === "preparar";
+
+  const metaFila = [];   // alineado por índice con `filas` y `keys`: { dia, monto }
   const filas = keys.sort().map(k => {
     const s = all[k], p = k.split("|");
     const r = vjResGet(k);
@@ -13569,12 +13595,14 @@ function renderResultados(trip) {
        · reunión ya pasada sin resultado → "Cargar resultado": es lo único que queda por hacer.
        · todo lo demás → "Ver ficha", discreto, porque no hay nada urgente ahí. */
     let btn;
-    if (!conObj && !pasada) btn = `<button onclick="vjFichaOpen('${kj}',0)" style="padding:4px 12px; border:1px solid #fde68a; background:#FFFBEB; color:#b45309; border-radius:7px; font-size:11.5px; font-weight:800; cursor:pointer; font-family:inherit; white-space:nowrap;">Preparar →</button>`;
+    if (!conObj && !pasada) btn = `<button onclick="vjFichaOpen('${kj}',0)" style="padding:4px 12px; border:1px solid #C7BDFF; background:#fff; color:#4030C8; border-radius:7px; font-size:11.5px; font-weight:800; cursor:pointer; font-family:inherit; white-space:nowrap;">Preparar →</button>`;
     else if (pasada && !r.res) btn = `<button onclick="vjFichaOpen('${kj}',1)" style="padding:4px 12px; border:1px solid #430C89; background:#430C89; color:#fff; border-radius:7px; font-size:11.5px; font-weight:800; cursor:pointer; font-family:inherit; white-space:nowrap;">Cargar resultado →</button>`;
     else btn = `<button onclick="vjFichaOpen('${kj}')" style="padding:4px 12px; border:1px solid #e5e7eb; background:#fff; color:#6b7280; border-radius:7px; font-size:11.5px; font-weight:700; cursor:pointer; font-family:inherit; white-space:nowrap;">Ver ficha →</button>`;
 
     // --- segunda línea de la columna principal: con quién y dónde ---
-    const falta = 'color:#b45309; background:#FFFBEB; border:1px solid #fde68a; border-radius:5px; padding:0 6px; cursor:pointer; font-weight:700;';
+    /* Antes esto era un chip ámbar relleno. Ahora es texto gris con subrayado punteado: sigue
+       siendo clickeable y evidente, pero **deja de competir con el dato que sí está cargado**. */
+    const falta = 'color:#9ca3af; border-bottom:1px dotted #cbd0d6; cursor:pointer; font-weight:600;';
     const quien = (r.cto || "").trim()
       ? `<span title="Contacto principal">👤 ${escAttr(r.cto)}</span>`
       : `<span onclick="vjFichaOpen('${kj}',0)" style="${falta}" title="Cargar el contacto">👤 cargar contacto</span>`;
@@ -13601,17 +13629,33 @@ function renderResultados(trip) {
     if (nDeals) ctxt.push(`<span style="display:inline-block; padding:1px 8px; border-radius:20px; background:#f3f4f6; border:1px solid #e5e7eb; color:#6b7280; font-size:10px; font-weight:700;">${nDeals} deal${nDeals > 1 ? "s" : ""} · ${fmtMoneyK(montoDeals)}</span>`);
 
     const cumC = VJ_CUMPLIDO[r.cumplido || ""];
-    return `<tr style="cursor:pointer;" onclick="if(!event.target.closest('a,button,span[onclick]')) vjFichaOpen('${kj}')">
-      <td style="vertical-align:top; padding-top:11px;"><div style="font-size:12px; font-weight:700; color:#374151; white-space:nowrap;">${fmtDow(p[0])} ${fmtDmy(p[0])}</div><div style="font-size:11.5px; color:#9ca3af;">${p[2]}</div></td>
-      <td style="vertical-align:top; padding-top:10px;">
-        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;"><b style="font-size:13.5px;">${escAttr(s.cli)}</b>${ctxt.join("")}</div>
-        <div style="margin-top:3px; font-size:11.5px; color:#6b7280; display:flex; gap:12px; flex-wrap:wrap;">${quien}${donde}</div>
-      </td>
-      <td class="c" style="vertical-align:top; padding-top:12px;">${waCell}</td>
-      <td style="vertical-align:top; padding-top:11px;"><span style="display:inline-block; padding:2px 9px; border-radius:20px; font-size:11px; font-weight:700; background:${def.bg}; color:${def.c}; border:1px solid ${def.c}33; white-space:nowrap;">${def.l}</span>${r.cumplido ? `<div style="margin-top:3px; font-size:10.5px; font-weight:700; color:${cumC.c};">${escAttr(cumC.l)}</div>` : ""}</td>
-      <td style="vertical-align:top; padding-top:12px; text-align:right; font-weight:700; color:${imp && def.mueve ? "#047857" : "#d1d5db"}; white-space:nowrap;">${imp ? fmtMoney(imp) : "—"}</td>
-      <td style="vertical-align:top; padding-top:10px; text-align:right;">${btn}</td>
-    </tr>`;
+    metaFila.push({ dia: p[0], monto: montoDeals });
+
+    /* La hora en grande (idea de la opción C): es el dato que ordena la jornada. La fecha ya no va
+       en la fila — vive en la cabecera del día. */
+    const celdaHora = `<td style="vertical-align:top; padding-top:10px;"><div style="font-size:17px; font-weight:700; color:#1b2024; font-variant-numeric:tabular-nums; white-space:nowrap;">${escAttr(p[2])}</div></td>`;
+
+    /* Los "N deals · U$S X" dejan de ser un chip gris y pasan a texto: un chip menos por fila. */
+    const sub = [];
+    if (nDeals) sub.push(`${nDeals} deal${nDeals > 1 ? "s" : ""}${montoDeals ? " · " + fmtMoneyK(montoDeals) : ""}`);
+    if (!prep) { sub.push(quien); sub.push(donde); }   // en Resultados no hay columnas propias
+    const celdaCuenta = `<td style="vertical-align:top; padding-top:11px;">
+        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;"><b style="font-size:14px;">${escAttr(s.cli)}</b>${ctxt.join("")}</div>
+        ${sub.length ? `<div style="margin-top:3px; font-size:11.5px; color:#6b7280; display:flex; gap:12px; flex-wrap:wrap;">${sub.join("")}</div>` : ""}
+      </td>`;
+
+    const celdas = prep
+      ? `${celdaHora}${celdaCuenta}
+      <td style="vertical-align:top; padding-top:12px; font-size:11.5px; color:#6b7280;">${quien}${wa.ok ? " " + waCell : ""}</td>
+      <td style="vertical-align:top; padding-top:12px; font-size:11.5px;">${donde}</td>
+      <td style="vertical-align:top; padding-top:12px; text-align:right; font-weight:700; color:${montoDeals ? "#047857" : "#d1d5db"}; white-space:nowrap; font-variant-numeric:tabular-nums;">${montoDeals ? fmtMoney(montoDeals) : "—"}</td>
+      <td style="vertical-align:top; padding-top:10px; text-align:right;">${btn}</td>`
+      : `${celdaHora}${celdaCuenta}
+      <td style="vertical-align:top; padding-top:12px;"><span style="display:inline-block; padding:2px 9px; border-radius:20px; font-size:11px; font-weight:700; background:${def.bg}; color:${def.c}; border:1px solid ${def.c}33; white-space:nowrap;">${def.l}</span>${r.cumplido ? `<div style="margin-top:3px; font-size:10.5px; font-weight:700; color:${cumC.c};">${escAttr(cumC.l)}</div>` : ""}</td>
+      <td style="vertical-align:top; padding-top:12px; text-align:right; font-weight:700; color:${imp && def.mueve ? "#047857" : "#d1d5db"}; white-space:nowrap; font-variant-numeric:tabular-nums;">${imp ? fmtMoney(imp) : "—"}</td>
+      <td style="vertical-align:top; padding-top:10px; text-align:right;">${btn}</td>`;
+
+    return `<tr style="cursor:pointer;" onclick="if(!event.target.closest('a,button,span[onclick]')) vjFichaOpen('${kj}')">${celdas}</tr>`;
   });   /* ⚠️ ARRAY, no string — antes acá había un .join("") y el filtro por tipo necesita
          poder filtrar por índice. Se une recién al pintar, en `filasVis.join("")`. */
 
@@ -13642,9 +13686,53 @@ function renderResultados(trip) {
 
   // Si el filtro apunta a un tipo que este viaje ya no tiene, se limpia solo.
   if (VJ_MIX_FILTRO && !mixN[VJ_MIX_FILTRO]) VJ_MIX_FILTRO = null;
-  const filasVis = VJ_MIX_FILTRO
-    ? filas.filter((_, i) => (vjTipoCuenta((all[keys[i]] || {}).cli) || "?") === VJ_MIX_FILTRO)
-    : filas;
+  const idxVis = filas.map((_, i) => i)
+    .filter(i => !VJ_MIX_FILTRO || (vjTipoCuenta((all[keys[i]] || {}).cli) || "?") === VJ_MIX_FILTRO);
+  const filasVis = idxVis.map(i => filas[i]);
+
+  /* Cabecera por día (idea de la opción C): un viaje se piensa por jornada, no como una lista
+     plana de 9. Cada cabecera dice cuántas reuniones tiene ese día y cuánta plata hay en juego.
+     🔒 Se calcula sobre las filas VISIBLES: si hay un filtro por tipo puesto, el día no puede
+     anunciar 4 reuniones y mostrar 1. Y un día que quedó sin filas no pinta cabecera huérfana. */
+  const nCols = prep ? 6 : 5;
+  const porDia = {};
+  idxVis.forEach(i => {
+    const d = metaFila[i].dia;
+    if (!porDia[d]) porDia[d] = { n: 0, monto: 0 };
+    porDia[d].n++; porDia[d].monto += metaFila[i].monto || 0;
+  });
+  let diaAnt = null;
+  const cuerpo = idxVis.map(i => {
+    const d = metaFila[i].dia;
+    let cab = "";
+    if (d !== diaAnt) {
+      const g = porDia[d];
+      cab = `<tr><td colspan="${nCols}" style="padding:15px 10px 6px; border-bottom:1px solid #e8e8ec;">
+        <span style="font-size:11px; font-weight:800; letter-spacing:.7px; text-transform:uppercase; color:#9ca3af;">${fmtDow(d)} ${fmtDmy(d)}</span>
+        <span style="font-size:11px; color:#c2c6cc; margin-left:9px;">${g.n} ${g.n > 1 ? "reuniones" : "reunión"}${g.monto ? " · " + fmtMoney(g.monto) + " en juego" : ""}</span>
+      </td></tr>`;
+      diaAnt = d;
+    }
+    return cab + filas[i];
+  }).join("");
+  /* El toggle de modo. `listas` cuenta preparación real: una reunión está lista cuando tiene
+     objetivo, contacto y lugar — las tres, porque con dos no entrás bien igual. */
+  const listas = keys.filter(k => { const r = vjResGet(k); return (r.obj || "").trim() && (r.cto || "").trim() && (r.lugar || "").trim(); }).length;
+  const tabBtn = (m, txt) => {
+    const on = modo === m;
+    return `<button onclick="vjResModo('${m}')" style="font-family:inherit; font-size:12.5px; font-weight:700; border:0; cursor:pointer; padding:6px 15px; border-radius:7px;
+      background:${on ? "#fff" : "transparent"}; color:${on ? "#4030C8" : "#6b7280"}; ${on ? "box-shadow:0 1px 3px rgba(0,0,0,.09);" : ""}">${txt}</button>`;
+  };
+  const pend = keys.filter(k => vjReunionPasada(k) && !vjResGet(k).res).length;
+  const tabs = `<div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:11px;">
+      <div style="display:inline-flex; background:#f1f1f4; border-radius:9px; padding:3px;">
+        ${tabBtn("preparar", "Preparar viaje")}${tabBtn("resultados", "Cargar resultados")}
+      </div>
+      <span style="font-size:11.5px; color:#6b7280;">${prep
+        ? `<b>${listas} de ${keys.length}</b> reuniones listas <span style="color:#9ca3af;">· con objetivo, contacto y lugar</span>`
+        : (pend ? `<b>${pend}</b> ${pend > 1 ? "reuniones" : "reunión"} sin resultado cargado` : `Todas las reuniones tienen resultado`)}</span>
+    </div>`;
+
   const fTxt = { cliente: "clientes", prospecto: "prospectos", partner: "partners", "?": "sin clasificar" }[VJ_MIX_FILTRO] || "";
   const bannerFiltro = VJ_MIX_FILTRO
     ? `<div style="margin-bottom:8px; padding:7px 11px; background:#F7F5FF; border:1px solid #E6E1FF; border-radius:8px; font-size:12px; color:#4030C8; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
@@ -13665,19 +13753,20 @@ function renderResultados(trip) {
       <div class="cue-kpi"><div class="kl">Costo del viaje</div><div class="kv" style="font-size:20px;"><input type="number" value="${costo != null ? costo : ""}" placeholder="u$s" onchange="vjCostoSet(this.value)" style="width:110px; font-size:17px; font-weight:700; color:#430C89; border:1px solid #d1d5db; border-radius:6px; padding:2px 6px; text-align:right;"></div><div class="ks">pasajes + hotel + viáticos</div></div>
       <div class="cue-kpi"><div class="kl">Retorno</div><div class="kv" style="font-size:20px; color:${roi === null ? "#9ca3af" : roi >= 1 ? "#047857" : "#b91c1c"};">${roi === null ? "—" : roi.toFixed(1) + "×"}</div><div class="ks">${roi === null ? "cargá costo e impacto" : "pipeline ÷ costo"}</div></div>
     </div>
+    ${tabs}
     ${bannerFiltro}
     <div style="overflow-x:auto;"><table class="std" style="table-layout:fixed; width:100%; min-width:840px;"><thead><tr>
-      <th style="width:96px;">Cuándo</th>
-      <th>Reunión · con quién y dónde</th>
-      <th class="c" style="width:104px;">WhatsApp</th>
-      <th style="width:132px;">Qué pasó</th>
-      <th style="width:96px; text-align:right;">Movió u$s</th>
+      <th style="width:62px;">Hora</th>
+      <th>Reunión</th>
+      ${prep
+        ? `<th style="width:200px;">Contacto</th><th style="width:150px;">Lugar</th><th style="width:104px; text-align:right;">En juego</th>`
+        : `<th style="width:132px;">Qué pasó</th><th style="width:100px; text-align:right;">Movió u$s</th>`}
       <th style="width:152px; text-align:right;">Ficha</th>
-    </tr></thead><tbody>${filasVis.join("")}</tbody></table></div>
+    </tr></thead><tbody>${cuerpo}</tbody></table></div>
     ${caidas.length ? `<div style="margin-top:9px; padding:8px 11px; background:#FFF7ED; border:1px solid #fed7aa; border-radius:8px; font-size:11.5px; color:#9a3412;">
       ↺ <b>No se concretaron:</b> ${caidas.map(k => escAttr((all[k].cli || "") + " (" + ((AGENDA_ESTADOS[all[k].estado] || {}).label || "") + ")")).join(" · ")}. No cuentan como reunión ni suman al pipeline movido.</div>` : ""}
     ${faltan ? `<div style="margin-top:9px; padding:8px 11px; background:#FFFBEB; border:1px solid #fde68a; border-radius:8px; font-size:12px; color:#854F0B;">
-      🎯 <b>${faltan} reunión${faltan > 1 ? "es" : ""} sin objetivo.</b> Entrarías a ciegas — el botón ámbar te lleva derecho a cargarlo.</div>` : ""}
+      🎯 <b>${faltan} ${faltan > 1 ? "reuniones" : "reunión"} sin objetivo.</b> Entrarías a ciegas — el botón <b>Preparar</b> te lleva derecho a cargarlo.</div>` : ""}
     <div style="font-size:10.5px; color:#9ca3af; margin-top:8px;">Clic en cualquier fila abre la <b>ficha de la reunión</b> en el panel de la derecha: objetivo, contacto, lugar, documentación y deals antes de entrar; resultado, bloqueo y accionables al salir. El próximo paso se escribe en <code>hs_next_step</code> del deal abierto de esa cuenta — si hay más de uno, te pregunta cuál.</div>
   </div>`;
   if (VJ_FICHA_KEY) vjFichaRender();   // el panel abierto se mantiene en sincronía con la tabla
