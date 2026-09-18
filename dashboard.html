@@ -13252,7 +13252,7 @@ async function vjCtoCrear(k, companyId) {
     const dup = txt.match(/Existing ID:\s*(\d+)/i);
     if (dup && est) {
       est.innerHTML = '<span style="color:#b45309;">Ese mail ya existe en HubSpot.</span> ' +
-        '<span onclick="vjCtoAsociarExistente(\'' + k + '\', \'' + companyId + '\', \'' + dup[1] + '\')" ' +
+        '<span onclick="vjCtoAsociarExistente(\'' + k + '\', \'' + companyId + '\', \'' + dup[1] + '\', \'' + String(mail).replace(/'/g, "\\'") + '\')" ' +
         'style="cursor:pointer; color:#4030C8; font-weight:700; text-decoration:underline;">asociar ese contacto a esta cuenta</span>';
     } else if (est) {
       /* 🔎 DIAGNÓSTICO (2026-09-18). Producción devolvía `properties: {}` con el formulario lleno.
@@ -13275,12 +13275,32 @@ async function vjCtoCrear(k, companyId) {
    en el alta no se escribe encima: el contacto viejo puede tener información mejor, y pisarla a
    ciegas rompe la regla de no completar nada por su cuenta. Si quiere corregirlo, tiene el link
    "ver en HubSpot". */
-async function vjCtoAsociarExistente(k, companyId, contactId) {
+async function vjCtoAsociarExistente(k, companyId, contactId, mailConocido) {
   const est = document.getElementById("vjcto-est");
   if (est) { est.textContent = "Asociando…"; est.style.color = "#6b7280"; }
+
+  /* 🐛 BUG REAL, encontrado el 2026-09-18 con German mirando la pantalla.
+     Esta función mandaba `properties: {}` a propósito —la idea era asociar SIN tocar un dato—,
+     pero **el proxy hace siempre un PATCH antes de asociar**:
+         PATCH /crm/v3/objects/contacts/{id}  body {properties: {}}
+     y HubSpot rechaza un PATCH sin propiedades con **"No properties found to update"**. Tiraba 400,
+     la excepción cortaba el flujo y **la asociación nunca se ejecutaba**. Ése era el `properties:{}`
+     que estuvimos persiguiendo — nunca fue el alta ni el proxy desactualizado.
+
+     Arreglo sin tocar el backend: se manda una escritura **idempotente** — el MISMO mail que el
+     contacto ya tiene (es el que HubSpot usó para detectar el duplicado, así que por definición
+     coincide). El PATCH pasa, no cambia ningún dato, y recién entonces corre la asociación.
+     Se mantiene la promesa original: **no se pisa nada de lo que German escribió en el alta**. */
+  const props = {};
+  if (mailConocido) props.email = String(mailConocido).trim();
+  if (!Object.keys(props).length) {
+    if (est) { est.textContent = "✗ No tengo el mail del contacto para poder asociarlo. Abrilo en HubSpot y asociá la company desde ahí."; est.style.color = "#b91c1c"; }
+    return;
+  }
+
   try {
     await hsWrite({ updateRequest: { objects: [{
-      objectType: "contacts", objectId: Number(contactId), properties: {},
+      objectType: "contacts", objectId: Number(contactId), properties: props,
       associations: [{ targetObjectType: "companies", targetObjectId: Number(companyId) }]
     }] } });
     await vjCtosCargar(companyId, true);
