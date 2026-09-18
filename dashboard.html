@@ -13187,15 +13187,31 @@ function vjCtoElegir(k, contactId, companyId) {
   const c = ((window.__vjCtoCache[String(companyId)] || {}).lista || []).find(x => String(x.id) === String(contactId));
   if (!c) return;
   const pr = c.properties || {};
+  /* 🐛 DOS BUGS ARREGLADOS ACÁ EL 2026-09-18, los dos míos y los dos escribían basura en HubSpot.
+     German eligió a Andrés Brito en Ferrex y la ficha le ofrecía guardar:
+       Nombre: (vacío) → andres.brito@ferrex.com.py      ← el MAIL metido en firstname
+       Teléfono: (vacío) → +595 976 927227               ← el teléfono de MARCOS, otro contacto
+
+     1) **El mail no es un nombre.** Antes, si HubSpot no tenía `firstname`/`lastname`, se rellenaba
+        `ctoNom` con `vjCtoNombre(c)`, que **cae al mail**. Servía para "no dejar la ficha en blanco",
+        pero después el diff lo leía como un nombre nuevo y ofrecía escribirlo. Ahora los campos de
+        nombre quedan **vacíos** y sólo el rótulo visible (`cto`) cae al mail — lo que se muestra
+        nunca es lo que se guarda.
+
+     2) **Los datos del contacto anterior no se arrastran.** `ctoTel` conservaba lo tipeado si el
+        contacto nuevo no tenía teléfono. La intención era buena (que no se pierda un teléfono
+        conseguido en la reunión) pero **sólo vale para el MISMO contacto**: al cambiar de persona,
+        el dato viejo se pegaba al nuevo. Ahora el arrastre exige que el id coincida. */
+  const prev = vjResGet(k) || {};
+  const mismoCto = String(prev.ctoId || "") === String(c.id);
   const campos = {
     ctoId: String(c.id),
     ctoNom: pr.firstname || "", ctoApe: pr.lastname || "", ctoRol: pr.jobtitle || "",
-    ctoMail: pr.email || "", ctoTel: vjCtoTel(c) || (vjResGet(k).ctoTel || "")
+    ctoMail: pr.email || "",
+    ctoTel: vjCtoTel(c) || (mismoCto ? (prev.ctoTel || "") : "")
   };
-  // Si en HubSpot no hay firstname/lastname (pasa: varios contactos son sólo un mail), el nombre
-  // visible cae al que arma vjCtoNombre, para no dejar la ficha en blanco.
-  if (!campos.ctoNom && !campos.ctoApe) campos.ctoNom = vjCtoNombre(c);
-  campos.cto = vjCtoComponer(campos);
+  // Rótulo visible: si no hay nombre en HubSpot, se muestra el mail — pero `ctoNom` sigue vacío.
+  campos.cto = vjCtoComponer(campos) || pr.email || "";
   vjPrepSet(k, campos);
   vjFichaRender(); renderResultados(tripGet());
 }
@@ -13328,8 +13344,11 @@ function vjCtoDiff(r, ctoHs, pais) {
     if (!v || v === String(hs || "").trim()) return;
     out[prop] = { hs: String(hs || ""), nuevo: v };
   };
-  cmp("firstname", r.ctoNom, p.firstname);
-  cmp("lastname", r.ctoApe, p.lastname);
+  /* 🔒 Cinturón de seguridad: un valor con "@" NO se escribe en firstname/lastname, pase lo que
+     pase. Es la última barrera contra el bug de arriba y contra un pegado accidental de German. */
+  const noEsMail = v => String(v || "").indexOf("@") < 0;
+  if (noEsMail(r.ctoNom)) cmp("firstname", r.ctoNom, p.firstname);
+  if (noEsMail(r.ctoApe)) cmp("lastname", r.ctoApe, p.lastname);
   cmp("jobtitle", r.ctoRol, p.jobtitle);
   cmp("email", r.ctoMail, p.email);
   // El teléfono se compara normalizado: "+595 981 1" y "0981-1" no son un cambio real.
