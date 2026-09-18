@@ -13254,8 +13254,20 @@ async function vjCtoCrear(k, companyId) {
       est.innerHTML = '<span style="color:#b45309;">Ese mail ya existe en HubSpot.</span> ' +
         '<span onclick="vjCtoAsociarExistente(\'' + k + '\', \'' + companyId + '\', \'' + dup[1] + '\')" ' +
         'style="cursor:pointer; color:#4030C8; font-weight:700; text-decoration:underline;">asociar ese contacto a esta cuenta</span>';
-    } else if (est) { est.textContent = "✗ " + vjCtoScopeMsg(e); est.style.color = "#b91c1c"; }
-    console.error("vjCtoCrear", e);
+    } else if (est) {
+      /* 🔎 DIAGNÓSTICO (2026-09-18). Producción devolvía `properties: {}` con el formulario lleno.
+         El front —verificado ejecutándolo— arma bien el objeto, así que el dato se pierde entre el
+         navegador y HubSpot. En vez de seguir deduciendo, acá se muestra **lo que el navegador
+         realmente envió**: si abajo se ven las propiedades y HubSpot igual dice `{}`, el problema
+         está en el proxy publicado, no en el dashboard. (Regla de debug del 09/09: mostrar el dato
+         real, nunca un mensaje genérico.) */
+      est.innerHTML = '<div style="color:#b91c1c;">✗ ' + escAttr(vjCtoScopeMsg(e)) + '</div>' +
+        '<div style="margin-top:6px; padding:6px 8px; background:#F7F5FF; border:1px solid #E6E1FF; border-radius:6px; color:#4030C8; font-size:11px; word-break:break-all;">' +
+        '<b>Esto envió el navegador:</b><br>' + escAttr(JSON.stringify(props)) +
+        '<br><span style="color:#6b7280;">Si acá ves los campos y HubSpot igual responde <code>{}</code>, el que los pierde es el proxy publicado.</span></div>';
+      est.style.color = "";
+    }
+    console.error("vjCtoCrear — payload enviado:", JSON.stringify(props), e);
   }
 }
 
