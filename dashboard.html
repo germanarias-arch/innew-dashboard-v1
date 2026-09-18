@@ -14340,7 +14340,7 @@ function renderGrid(trip) {
     <div style="display:flex; gap:12px; flex-wrap:wrap; font-size:11px; color:#6b7280; margin-top:5px;">
       <span style="font-weight:700; color:#374151;">Estado (franja izquierda):</span>
       ${["propuesto", "a_agendar", "agendada", "reprogramada", "cancelada"].map(x => `<span><i style="display:inline-block; width:4px; height:12px; border-radius:2px; background:${AGENDA_ESTADOS[x].dot}; margin-right:4px; vertical-align:-2px;"></i>${escAttr(AGENDA_ESTADOS[x].label)}</span>`).join("")}
-      <span style="color:#9ca3af;">· clic en el chip para avanzar el estado · ✕ borra · arrastrá para mover · estirá el borde de abajo · doble clic para editar</span>
+      <span style="color:#9ca3af;">· <b style="color:#4030C8;">clic en una reunión abre su ficha de preparación</b> · clic en el chip para avanzar el estado · ✕ borra · arrastrá para mover · estirá el borde de abajo · doble clic para editar el horario</span>
     </div>`;
 
   // ---- pintar los bloques ----
@@ -14363,7 +14363,14 @@ function renderGrid(trip) {
       ${cancel ? "opacity:.45; text-decoration:line-through;" : ""}`;
     const trv = travs.find(x => x.id === p[1]);
     const alto = (t.fin - t.ini) / 60 * VJ_PX;
-    el.innerHTML = `<b style="display:block; font-size:11.5px; padding-right:16px;">${def.ic ? def.ic + " " : ""}${escAttr(s.cli || "(sin cuenta)")}</b>
+    /* German (18/09): "quiero que el espacio se llame 'reu con CLIENTE'". El bloque de una reunión
+       dice ahora **Reu con <cuenta>** — en una grilla donde conviven vuelos, comidas y traslados,
+       el nombre solo no decía qué tipo de cosa era. Los demás tipos ya se explican con su ícono
+       y su nombre propio ("Almuerzo 1", "Traslado hotel"), así que no se les toca el rótulo. */
+    const esReu = (s.tipo || "reunion") === "reunion";
+    const rotulo = esReu ? "Reu con " + (s.cli || "(sin cuenta)") : (s.cli || "(sin cuenta)");
+    if (esReu) el.title = "Clic para preparar la reunión · arrastrá para mover · doble clic para editar el horario";
+    el.innerHTML = `<b style="display:block; font-size:11.5px; padding-right:16px;">${def.ic ? def.ic + " " : ""}${escAttr(rotulo)}</b>
       <span style="font-size:9.5px; opacity:.85;">${minToHHMM(t.ini)}–${minToHHMM(t.fin)}${trv && travs.length > 1 ? " · " + escAttr(trv.name.split(" ")[0]) : ""}</span>
       ${alto >= 40 ? `<div class="vj-est" title="Clic para cambiar: Idea → Propuesto al cliente → Confirmado" style="display:inline-block; margin-top:2px; font-size:9px; font-weight:800; border-radius:8px; padding:0 6px; background:${est.bg}; color:${est.fg}; cursor:pointer;">${escAttr(est.label)}</div>` : ""}
       <div class="vj-del" title="Borrar este bloque" style="position:absolute; top:2px; right:3px; width:15px; height:15px; line-height:14px; text-align:center; border-radius:4px; font-size:11px; color:${def.fg}; opacity:.35; cursor:pointer;">✕</div>
@@ -14427,11 +14434,28 @@ function vjWireDrag(cont, trip, dias) {
   cont.querySelectorAll(".vj-blk").forEach(el => {
     const key = el.dataset.key;
     let mode = null, sy = 0, st = 0, sh = 0, durStart = 0, curCol = el.parentElement;
+    /* `movio` distingue un CLIC de un ARRASTRE: al soltar después de mover, el navegador dispara
+       igual un `click`, y sin esta bandera cada vez que German acomodaba un bloque se le abría la
+       ficha. Se marca recién con más de 3 px de desplazamiento, para tolerar el pulso de la mano. */
+    let movio = false, tClic = null;
     /* La duración de verdad sale del registro, no de la pantalla: la pantalla le resta VJ_GAP. */
     const tOrig = vjBlkTimes(key, planGet(key) || {}, trip);
     let durLive = tOrig.fin - tOrig.ini;   // minutos reales; la altura en px es su reflejo, no al revés
 
-    el.addEventListener("dblclick", e => { e.preventDefault(); vjBlkEdit(key); });
+    /* Doble clic sigue abriendo el editor de horario. Para que no se disparen las dos cosas, el
+       clic simple espera 220 ms: si en ese lapso llega el segundo clic, se cancela la ficha. */
+    el.addEventListener("dblclick", e => { e.preventDefault(); if (tClic) { clearTimeout(tClic); tClic = null; } vjBlkEdit(key); });
+
+    /* Clic simple → ficha de preparación. Sólo en reuniones: una comida o un traslado no tienen
+       objetivo, contacto ni deals que preparar. */
+    el.addEventListener("click", e => {
+      if (movio) return;                                               // fue un arrastre, no un clic
+      if (e.target.closest(".vj-del, .vj-est, .vj-rs")) return;         // esos ya tienen su acción
+      const b = planGet(key) || {};
+      if ((b.tipo || "reunion") !== "reunion") return;
+      if (tClic) clearTimeout(tClic);
+      tClic = setTimeout(() => { tClic = null; vjFichaOpen(key, 0); }, 220);
+    });
     /* El ✕ y el chip de estado se atienden en mousedown y CORTAN la propagación: si no, el
        primer movimiento del mouse arrancaba el drag y el clic nunca llegaba. Era justo lo que
        reportó German — "sólo deja moverlo". */
@@ -14450,12 +14474,14 @@ function vjWireDrag(cont, trip, dias) {
     el.addEventListener("mousedown", e => {
       if (e.button !== 0) return;
       mode = e.target.classList.contains("vj-rs") ? "size" : "move";
+      movio = false;
       sy = e.clientY; st = parseFloat(el.style.top); sh = parseFloat(el.style.height); durStart = durLive;
       el.style.zIndex = 20; el.style.cursor = mode === "size" ? "ns-resize" : "grabbing";
       e.preventDefault();
     });
     const mm = e => {
       if (!mode) return;
+      if (Math.abs(e.clientY - sy) > 3) movio = true;
       const snapPx = VJ_PX * VJ_SNAP / 60;
       if (mode === "size") {
         /* Se snapea en MINUTOS y se parte de la duración REAL (`durStart`), nunca de la altura
