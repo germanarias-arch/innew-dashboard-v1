@@ -12794,6 +12794,30 @@ function vjCostoSet(v) { const t = tripGet(); if (!t) return; t.costo = cuNum(v)
 
 /* Deals abiertos que matchean el nombre de la cuenta de un bloque. Se resuelve EN EL MOMENTO,
    no al agendar: entre que agendás y volvés, el deal pudo cerrarse o aparecer otro. */
+/* ===== QUÉ HAY EN JUEGO, ABIERTO POR DEAL (2026-09-18) ================================
+   German: *"por qué Ferrex dice que está en juego 28K cuando el deal es de 10K"*.
+   El 28.002 estaba **bien sumado** — son los 3 deals abiertos de Ferrex en el pipeline de ventas.
+   Lo que estaba mal era la **etiqueta**: "En juego" aplanaba un deal al 90% con dos al 10% y al 5%,
+   y se leía como si los 28K estuvieran por entrar. El ponderado real era 10.652, o sea casi
+   exactamente el número que German tenía en la cabeza (el IDP de 10.002 al 90%).
+
+   Ahora la columna muestra el total **y debajo el ponderado**, y la sublínea **nombra los deals
+   ordenados por ponderado descendente**: antes de entrar a una reunión importa *cuál* vas a hablar,
+   no cuántos hay. La probabilidad sale de HubSpot vía `getProbability` — nunca hardcodeada. */
+function vjDealDetalle(cli) {
+  return vjDealsDe(cli).map(d => {
+    const pr = d.properties || {};
+    const monto = parseFloat(pr.amount || 0) || 0;
+    const prob = getProbability(pr.dealstage, pr.hs_deal_stage_probability);
+    // "Ferrex - Middleware back-office - Py" → "Middleware back-office"
+    let corto = String(pr.dealname || "").trim();
+    const cl = String(cli || "").trim();
+    if (cl && corto.toLowerCase().indexOf(cl.toLowerCase()) === 0) corto = corto.slice(cl.length);
+    corto = corto.replace(/^[\s\-–—·|]+/, "").replace(/[\s\-–—·|]+(py|ar|mx|cl|uy|pe|br)$/i, "").trim();
+    return { corto: corto || String(pr.dealname || "").trim(), monto: monto, prob: prob, pond: monto * (prob || 0) };
+  }).sort((a, b) => b.pond - a.pond);   // el que más pesa, primero
+}
+
 function vjDealsDe(cli) {
   const t = String(cli || "").trim().toLowerCase();
   if (!t) return [];
@@ -13641,7 +13665,9 @@ function renderResultados(trip) {
       ? `<span style="display:inline-block; padding:1px 8px; border-radius:20px; background:${ch.bg}; border:1px solid ${ch.bd}; color:${ch.fg}; font-size:10px; font-weight:700;">${ch.t}</span>`
       : `<span title="Cargando cuentas de HubSpot…" style="display:inline-block; padding:1px 8px; border-radius:20px; background:#f3f4f6; border:1px solid #e5e7eb; color:#9ca3af; font-size:10px; font-weight:700;">…</span>`);
     if (meta.semaforo === "riesgo") ctxt.push(`<span style="display:inline-block; padding:1px 8px; border-radius:20px; background:#FEF2F2; border:1px solid #fecaca; color:#b91c1c; font-size:10px; font-weight:700;">⚠ En riesgo</span>`);
-    if (nDeals) ctxt.push(`<span style="display:inline-block; padding:1px 8px; border-radius:20px; background:#f3f4f6; border:1px solid #e5e7eb; color:#6b7280; font-size:10px; font-weight:700;">${nDeals} deal${nDeals > 1 ? "s" : ""} · ${fmtMoneyK(montoDeals)}</span>`);
+    /* El chip "N deals · U$S X" se eliminó el 18/09: la sublínea ahora **nombra** los deals con su
+       monto y su probabilidad, que es lo que se necesita antes de entrar. Decir "3 deals" además
+       era repetir el dato peor contado, y sumaba un chip a una tabla que ya tenía de más. */
 
     const cumC = VJ_CUMPLIDO[r.cumplido || ""];
     metaFila.push({ dia: p[0], monto: montoDeals });
@@ -13651,8 +13677,15 @@ function renderResultados(trip) {
     const celdaHora = `<td style="vertical-align:top; padding-top:10px;"><div style="font-size:17px; font-weight:700; color:#1b2024; font-variant-numeric:tabular-nums; white-space:nowrap;">${escAttr(p[2])}</div></td>`;
 
     /* Los "N deals · U$S X" dejan de ser un chip gris y pasan a texto: un chip menos por fila. */
+    const det = vjDealDetalle(s.cli);
+    const pondTotal = det.reduce((a2, d) => a2 + d.pond, 0);
     const sub = [];
-    if (nDeals) sub.push(`${nDeals} deal${nDeals > 1 ? "s" : ""}${montoDeals ? " · " + fmtMoneyK(montoDeals) : ""}`);
+    if (det.length) {
+      const muestra = det.slice(0, 3).map(d =>
+        `<span title="${escAttr(d.corto)} · ${fmtMoney(d.monto)} · ${Math.round((d.prob || 0) * 100)}% de probabilidad">${escAttr(d.corto.slice(0, 26))}${d.corto.length > 26 ? "…" : ""} <b style="color:#374151;">${fmtMoneyK(d.monto)}</b> <span style="color:#9ca3af;">(${Math.round((d.prob || 0) * 100)}%)</span></span>`
+      ).join(" · ");
+      sub.push(muestra + (det.length > 3 ? ` <span style="color:#9ca3af;">+${det.length - 3} más</span>` : ""));
+    }
     if (!prep) { sub.push(quien); sub.push(donde); }   // en Resultados no hay columnas propias
     const celdaCuenta = `<td style="vertical-align:top; padding-top:11px;">
         <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;"><b style="font-size:14px;">${escAttr(s.cli)}</b>${ctxt.join("")}</div>
@@ -13663,7 +13696,10 @@ function renderResultados(trip) {
       ? `${celdaHora}${celdaCuenta}
       <td style="vertical-align:top; padding-top:12px; font-size:11.5px; color:#6b7280;">${quien}${wa.ok ? " " + waCell : ""}</td>
       <td style="vertical-align:top; padding-top:12px; font-size:11.5px;">${donde}</td>
-      <td style="vertical-align:top; padding-top:12px; text-align:right; font-weight:700; color:${montoDeals ? "#047857" : "#d1d5db"}; white-space:nowrap; font-variant-numeric:tabular-nums;">${montoDeals ? fmtMoney(montoDeals) : "—"}</td>
+      <td style="vertical-align:top; padding-top:11px; text-align:right; white-space:nowrap;">
+        <div style="font-weight:700; color:${montoDeals ? "#047857" : "#d1d5db"}; font-variant-numeric:tabular-nums;">${montoDeals ? fmtMoney(montoDeals) : "—"}</div>
+        ${pondTotal ? `<div style="font-size:10.5px; color:#9ca3af; font-variant-numeric:tabular-nums;" title="Suma de monto × probabilidad de cada deal, con la probabilidad que declara HubSpot">pond. ${fmtMoney(pondTotal)}</div>` : ""}
+      </td>
       <td style="vertical-align:top; padding-top:10px; text-align:right;">${btn}</td>`
       : `${celdaHora}${celdaCuenta}
       <td style="vertical-align:top; padding-top:12px;"><span style="display:inline-block; padding:2px 9px; border-radius:20px; font-size:11px; font-weight:700; background:${def.bg}; color:${def.c}; border:1px solid ${def.c}33; white-space:nowrap;">${def.l}</span>${r.cumplido ? `<div style="margin-top:3px; font-size:10.5px; font-weight:700; color:${cumC.c};">${escAttr(cumC.l)}</div>` : ""}</td>
