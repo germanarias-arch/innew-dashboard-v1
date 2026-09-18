@@ -13236,11 +13236,11 @@ async function vjCtoCrear(k, companyId) {
   const est = document.getElementById("vjcto-est");
   if (est) { est.textContent = "Creando en HubSpot…"; est.style.color = "#6b7280"; }
   const props = {};
-  if (nombre) props.firstname = nombre;
-  if (apellido) props.lastname = apellido;
-  if (mail) props.email = mail;
-  if (puesto) props.jobtitle = puesto;
-  if (tel) props.phone = tel;
+  if (nombre) props.firstname = vjLimpio(nombre);
+  if (apellido) props.lastname = vjLimpio(apellido);
+  if (mail) props.email = vjLimpio(mail);
+  if (puesto) props.jobtitle = vjLimpio(puesto);
+  if (tel) props.phone = vjLimpio(tel);
   if (!Object.keys(props).length) {
     alert("No pude leer ningún dato del formulario, así que no mando nada a HubSpot.\n\n" +
           "Lo que leí: " + JSON.stringify(leido) + "\n\n" +
@@ -13333,6 +13333,20 @@ async function vjCtoAsociarExistente(k, companyId, contactId, mailConocido) {
 /* El teléfono es el dato que HubSpot casi nunca tiene (de 6 contactos de Ferrex, Bancard y Nueva
    Americana, NINGUNO tenía). Si German lo consigue en la reunión, tiene que volver al CRM: si se
    queda en el dashboard, el próximo que atienda la cuenta lo pide de nuevo. */
+/* 🧼 Caracteres invisibles: al copiar un teléfono de WhatsApp o de macOS vienen envueltos en
+   marcas de dirección Unicode (U+202A…U+202C, U+200E/F) y a veces con espacios finos o NBSP.
+   Se ven idénticos en pantalla pero **son otros bytes**: rompen la comparación con HubSpot (todo
+   parece un cambio), ensucian el dato guardado y pueden romper el link de wa.me.
+   Caso testigo: Vanessa Sanchez quedó en HubSpot con `"‪+595 984 876961‬"` (18/09).
+   Se limpia TODO lo que va a HubSpot, no sólo el teléfono — un nombre pegado trae lo mismo. */
+function vjLimpio(v) {
+  return String(v == null ? "" : v)
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, "")  // bidi + zero-width + BOM
+    .replace(/[\u00A0\u2007\u202F\u2009]/g, " ")                        // espacios raros → espacio normal
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 const VJ_CTO_LABEL = { firstname: "Nombre", lastname: "Apellido", jobtitle: "Cargo", email: "Mail", phone: "Teléfono" };
 
 /* Qué cambió respecto de HubSpot. Sólo mira los campos que German completó: **un campo vacío en la
@@ -13340,8 +13354,9 @@ const VJ_CTO_LABEL = { firstname: "Nombre", lastname: "Apellido", jobtitle: "Car
 function vjCtoDiff(r, ctoHs, pais) {
   const p = ctoHs.properties || {}, out = {};
   const cmp = (prop, valor, hs) => {
-    const v = String(valor || "").trim();
-    if (!v || v === String(hs || "").trim()) return;
+    const v = vjLimpio(valor);
+    // Se compara limpio contra limpio: si la única diferencia son invisibles, NO es un cambio.
+    if (!v || v === vjLimpio(hs)) return;
     out[prop] = { hs: String(hs || ""), nuevo: v };
   };
   /* 🔒 Cinturón de seguridad: un valor con "@" NO se escribe en firstname/lastname, pase lo que
@@ -13460,6 +13475,7 @@ function vjCtoBloqueHtml(k, kj, co, r, pais, inS, lbS, coEstado, cli) {
          <span onclick="vjCtoGuardarCambios('${kj}', '${co.id}')" style="cursor:pointer; color:#4030C8; font-size:11.5px; font-weight:700;">↑ guardar ${nDif === 1 ? "este cambio" : "estos " + nDif + " cambios"} en HubSpot</span>
          <span id="vjcto-tel-est" style="font-size:11px;"></span>
          <div style="font-size:10.5px; color:#6b7280; margin-top:4px; line-height:1.5;">${Object.keys(dif).map(f => `<b>${escAttr(VJ_CTO_LABEL[f] || f)}</b>: ${dif[f].hs ? escAttr(dif[f].hs) : "(vacío)"} → ${escAttr(dif[f].nuevo)}`).join("<br>")}</div>
+         <div style="font-size:10px; color:#9ca3af; margin-top:5px;">Comparado contra la última lectura de HubSpot. Si acabás de editar el contacto allá, apretá <b>⟳</b> antes de guardar.</div>
        </div>`
     : "";
 
