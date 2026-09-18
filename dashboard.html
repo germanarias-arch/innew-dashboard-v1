@@ -14507,10 +14507,18 @@ function vjWireDrag(cont, trip, dias) {
     };
     const mu = () => {
       if (!mode) return;
+      mode = null; el.style.zIndex = ""; el.style.cursor = "grab";
+
+      /* 🪤 SI NO SE MOVIÓ, ACÁ NO SE TOCA NADA. Dos razones, y la segunda es la que rompía:
+         · guardar y repintar por un clic es trabajo inútil — se reescriben los mismos horarios;
+         · **`renderAgenda()` reconstruye la grilla y destruye este elemento**, así que el `click`
+           que el navegador dispara justo después de soltar cae sobre un nodo que ya no existe
+           y el handler nunca corre. Era exactamente por esto que "no abría la ficha". */
+      if (!movio) return;
+
       const t = vjPxTimes(el, durLive);
       const ini = t.ini, fin = t.fin;
       const dia = curCol.dataset.dia, viaj = key.split("|")[1];
-      mode = null; el.style.zIndex = ""; el.style.cursor = "grab";
       vjBlkMove(key, dia, viaj, ini, fin);
       renderAgenda();
     };
