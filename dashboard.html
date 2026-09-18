@@ -13185,6 +13185,14 @@ async function vjCtoCrear(k, companyId) {
   const nombre = g("vjcto-nom").trim(), apellido = g("vjcto-ape").trim();
   const mail = g("vjcto-mail").trim(), puesto = g("vjcto-rol").trim(), tel = g("vjcto-tel").trim();
   if (!nombre && !mail) { alert("Poné al menos el nombre o el mail."); return; }
+
+  /* 🛡️ Red de seguridad puesta el 2026-09-18, después de que producción devolviera
+     `HubSpot 400: No properties found to update` con `properties: {}`.
+     Un payload vacío sólo puede salir si los inputs se leen en blanco (ids que no coinciden con
+     los del formulario, por ejemplo). En vez de mandarle `{}` a HubSpot y traducir su error
+     genérico, se corta acá y se dice **qué se leyó de cada campo**: si están todos vacíos pero en
+     pantalla hay texto, el formulario y el lector no se están hablando. */
+  const leido = { nombre, apellido, mail, puesto, tel };
   const est = document.getElementById("vjcto-est");
   if (est) { est.textContent = "Creando en HubSpot…"; est.style.color = "#6b7280"; }
   const props = {};
@@ -13193,6 +13201,13 @@ async function vjCtoCrear(k, companyId) {
   if (mail) props.email = mail;
   if (puesto) props.jobtitle = puesto;
   if (tel) props.phone = tel;
+  if (!Object.keys(props).length) {
+    alert("No pude leer ningún dato del formulario, así que no mando nada a HubSpot.\n\n" +
+          "Lo que leí: " + JSON.stringify(leido) + "\n\n" +
+          "Si en pantalla ves los campos completos, el dashboard publicado está desactualizado: " +
+          "hay que deployar el repo (dashboard.html + functions/api/hubspot.js).");
+    return;
+  }
   try {
     const r = await hsWrite({ createRequest: { objects: [{
       objectType: "contacts", properties: props,
