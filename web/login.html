@@ -31,13 +31,22 @@
   </div>
   <script src="https://accounts.google.com/gsi/client" async></script>
   <script>
+    /* Si YA hay sesión válida, no mostramos el login: vamos derecho al dashboard.
+       Pasa cuando el celular vuelve atrás o restaura la pestaña y cae acá con la
+       cookie viva — veías el login y parecía que se había cerrado la sesión. */
+    fetch("/api/me", { credentials: "include" })
+      .then(function (r) { if (r.ok) location.replace("/"); })
+      .catch(function () {});
+
     function onLogin(resp) {
       document.getElementById("msg").textContent = "Verificando…";
       fetch("/api/auth", {
         method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
         body: JSON.stringify({ credential: resp.credential })
       }).then(function (r) {
-        if (r.ok) { location.href = "/"; return; }
+        /* replace y no href: así login.html NO queda en el historial y el Atrás
+           del dashboard no te devuelve a la pantalla de login. */
+        if (r.ok) { location.replace("/"); return; }
         return r.json().then(function (j) { document.getElementById("msg").textContent = (j && j.error) || "No autorizado"; });
       }).catch(function () { document.getElementById("msg").textContent = "Error de red, reintentá."; });
     }
