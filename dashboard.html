@@ -7487,8 +7487,42 @@ function renderTarget() {
   bEl.innerHTML = h;
 }
 
-function setView(v) {
+/* ── Historial de vistas: que el Atrás del celular navegue ENTRE pestañas ─────
+   🪤 Sin esto la app tiene UNA SOLA entrada de historial. El Atrás de Safari
+   sale del dashboard y cae en /login.html — y parece que "se cerró la sesión",
+   cuando en realidad la cookie sigue viva (Max-Age 12 h). Fijado 2026-09-19.
+   VIEW_POP evita re-apilar la vista que vino justamente del botón Atrás. */
+let VIEW_POP = false;
+function histPush(v) {
+  try {
+    if (!window.history || !history.pushState) return;
+    if (history.state && history.state.v === v) return;   // ya estamos parados ahí
+    history.pushState({ v: v }, "", "#" + v);
+  } catch (e) {}
+}
+function viewDelHash() {
+  const h = String(location.hash || "").replace(/^#/, "").trim();
+  return VIEWS_VALIDAS[h] ? h : "";
+}
+const VIEWS_VALIDAS = { foco: 1, metas: 1, fuentes: 1, emb: 1, ritmo: 1, cur: 1, cue: 1, clientes: 1, nurt: 1, tareas: 1, agenda: 1, reseller: 1, target: 1, marcadores: 1, bugs: 1, guia: 1, inbound: 1 };
+
+window.addEventListener("popstate", function (e) {
+  // 1) Ficha de reunión abierta (en celular es pantalla completa): el Atrás la CIERRA
+  //    y no cambia de pestaña. Reponemos la entrada que consumió el gesto.
+  if (typeof VJ_FICHA_KEY !== "undefined" && VJ_FICHA_KEY) {
+    try { vjFichaClose(); } catch (err) {}
+    try { history.pushState({ v: window.__view }, "", "#" + (window.__view || "foco")); } catch (err) {}
+    return;
+  }
+  // 2) Vuelta a la pestaña anterior.
+  const v = (e.state && e.state.v) || viewDelHash() || "foco";
+  VIEW_POP = true;
+  try { setView(v, true); } finally { VIEW_POP = false; }
+});
+
+function setView(v, fromPop) {
   // "foco" es la vista Daily (foco comercial del día). Comparten el mismo div view-daily.
+  if (!fromPop && !VIEW_POP) histPush(v);   // antes de renderizar: si un render tira, el historial queda bien
   window.__view = v; // lo usa refreshGlobal() para saber qué re-renderizar
   const views = { foco: "view-daily", metas: "view-metas", fuentes: "view-fuentes", emb: "view-embudo", ritmo: "view-ritmo", cur: "view-curaduria", cue: "view-cuentas", clientes: "view-clientes", nurt: "view-nurt", tareas: "view-tareas", agenda: "view-agenda", reseller: "view-reseller", target: "view-target", marcadores: "view-marcadores", bugs: "view-bugs", guia: "view-guia", inbound: "view-inbound" };
   const btns = { foco: "vt-foco", metas: "vt-metas", fuentes: "vt-fuentes", emb: "vt-emb", ritmo: "vt-ritmo", cur: "vt-cur", cue: "vt-cue", clientes: "vt-clientes", nurt: "vt-nurt", tareas: "vt-tareas", agenda: "vt-agenda", reseller: "vt-reseller", target: "vt-target", marcadores: "vt-marcadores", bugs: "vt-bugs", guia: "vt-guia", inbound: "vt-inbound" };
@@ -18127,7 +18161,9 @@ function renderAccuracy() {
     // Mostrar la vista por defecto (Foco) recién ahora que los datos ya están cargados.
     // Sin esto, todos los divs view-* quedan en display:none y Foco aparece vacío hasta
     // que el usuario navega a otra vista y vuelve (setView recién ahí lo hace visible).
-    setView("foco");
+    // 📱 Si la URL trae #vista (volvió del Atrás, recargó, o iOS descartó la pestaña
+    //    en segundo plano y la restauró), arrancamos DONDE ESTABA, no en Foco.
+    setView(viewDelHash() || "foco");
 
     // Web app: candado por rol. Si el usuario es "reseller", lo dejamos solo en su panel.
     if (WEB_MODE) {
