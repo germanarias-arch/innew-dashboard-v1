@@ -299,6 +299,26 @@ table.std tr:hover td { background: #fafafa; }
 .nav-group .view-toggle { margin: 0; }
 .nav-group .nav-tier-label { margin: 0 4px 3px; }
 
+/* ---- Viajes Comerciales: el botón destacado de la barra (2026-09-19) ----
+   Va relleno en el púrpura de Innew mientras el resto de la fila son píldoras lila claro, así
+   que se ve solo sin necesitar tamaño extra. `margin-left:auto` en un contenedor con wrap lo
+   manda al extremo derecho de SU línea; los grupos que siguen arrancan en la línea de abajo. */
+.nav-group.nav-viajes { margin-left: auto; }
+.view-toggle.vt-priority.vt-destacado { background: #430C89; border-color: #430C89; box-shadow: 0 2px 10px rgba(67,12,137,.28); }
+.view-toggle.vt-priority.vt-destacado .vt-btn { color: #fff; font-weight: 700; }
+/* Activo: el fondo ya es púrpura, así que el estado se marca con un anillo claro por dentro
+   (si se dejara el .active heredado, activo e inactivo se verían idénticos). */
+.view-toggle.vt-priority.vt-destacado .vt-btn.active { background: rgba(255,255,255,.18); box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.55); }
+.view-toggle.vt-priority.vt-destacado .vt-btn:hover { background: rgba(255,255,255,.12); }
+
+@media (max-width: 720px) {
+  /* En el celular Viajes es LA vista (es la única con diseño móvil): va primera y a todo el
+     ancho, no colgada a la derecha de una fila que en pantalla angosta ni existe. */
+  .nav-group.nav-viajes { margin-left: 0; order: -1; width: 100%; }
+  .nav-group.nav-viajes .view-toggle { display: flex; }
+  .nav-group.nav-viajes .vt-btn { flex: 1; justify-content: center; padding: 11px 14px; }
+}
+
 /* ---- Accesos a los portales de partner (VTEX y Tiendanube) ----
    Salen del dashboard: son links externos, no vistas. Por eso son <a> y no .vt-btn — no
    participan del estado activo de setView() y abren en pestaña nueva.
@@ -500,6 +520,16 @@ table.std tr:hover td { background: #fafafa; }
           <button id="vt-ritmo" class="vt-btn" onclick="setView('ritmo')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:5px;"><path d="M4 12h3l2 -6l4 12l2 -6h5"/></svg>Ritmo semanal</button>
         </div>
       </div>
+      <!-- Viajes Comerciales subió acá el 2026-09-19 (pedido de German). Estaba perdido en
+           "Otras vistas" siendo la vista que más usa en viaje y la única con versión móvil.
+           `margin-left:auto` lo pega a la derecha de la PRIMERA fila (arriba de Chat web) y de
+           paso empuja a Outbound a la fila siguiente, que es el corte que ya existía. -->
+      <div class="nav-group nav-viajes">
+        <div class="nav-tier-label">En la calle</div>
+        <div class="view-toggle vt-priority vt-destacado">
+          <button id="vt-agenda" class="vt-btn" onclick="setView('agenda')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:6px;"><path d="M9 11a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"/><path d="M17.657 16.657l-4.243 4.243a2 2 0 0 1 -2.827 0l-4.244 -4.243a8 8 0 1 1 11.314 0z"/></svg>Viajes Comerciales</button>
+        </div>
+      </div>
       <div class="nav-group">
         <div class="nav-tier-label">Motores de Generación - Outbound</div>
         <div class="view-toggle vt-priority">
@@ -534,7 +564,6 @@ table.std tr:hover td { background: #fafafa; }
         <div class="view-toggle vt-secondary">
           <button id="vt-cur" class="vt-btn" onclick="setView('cur')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><path d="M16 18a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2z"/><path d="M16 6a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2z"/><path d="M9 18a6 6 0 0 1 6 -6a6 6 0 0 1 -6 -6a6 6 0 0 1 -6 6a6 6 0 0 1 6 6z"/></svg>Curaduría</button>
           <button id="vt-tareas" class="vt-btn" onclick="setView('tareas')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><path d="M10 5a2 2 0 1 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3h-16a4 4 0 0 0 2 -3v-3a7 7 0 0 1 4 -6"/><path d="M9 17v1a3 3 0 0 0 6 0v-1"/></svg>Tareas</button>
-          <button id="vt-agenda" class="vt-btn" onclick="setView('agenda')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><path d="M9 11a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"/><path d="M17.657 16.657l-4.243 4.243a2 2 0 0 1 -2.827 0l-4.244 -4.243a8 8 0 1 1 11.314 0z"/></svg>Viajes Comerciales</button>
           <button id="vt-marcadores" class="vt-btn" onclick="setView('marcadores')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><path d="M9 4h6a2 2 0 0 1 2 2v14l-5 -3l-5 3v-14a2 2 0 0 1 2 -2"/></svg>Marcadores</button>
           <button id="vt-bugs" class="vt-btn" onclick="setView('bugs')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><path d="M9 9v-1a3 3 0 0 1 6 0v1"/><path d="M8 9h8a6 6 0 0 1 1 3v3a5 5 0 0 1 -10 0v-3a6 6 0 0 1 1 -3"/><path d="M3 13h4"/><path d="M17 13h4"/><path d="M12 20v-6"/><path d="M4 19l3.35 -2"/><path d="M20 19l-3.35 -2"/><path d="M4 7l3.75 2.4"/><path d="M20 7l-3.75 2.4"/></svg>Avisos de bugs</button>
           <button id="vt-guia" class="vt-btn" onclick="setView('guia')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><path d="M3 19a9 9 0 0 1 9 0a9 9 0 0 1 9 0"/><path d="M3 6a9 9 0 0 1 9 0a9 9 0 0 1 9 0"/><path d="M3 6v13"/><path d="M12 6v13"/><path d="M21 6v13"/></svg>Guía de uso</button>
