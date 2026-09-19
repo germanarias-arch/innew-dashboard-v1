@@ -68,6 +68,40 @@ h3 { font-size: 14px; font-weight: 600; margin: 12px 0 6px; color: #4030C8; text
 .metas-cad .mc-hint { color: #9ca3af; font-size: 11px; }
 .metas-cad .mc-chip { font-size: 9.5px; font-weight: 800; border-radius: 4px; padding: 1px 6px; background: #fee2e2; color: #b91c1c; }
 @media (max-width: 900px) { .metas-cad .mc-tramos { grid-template-columns: 1fr; } }
+
+/* ═══════════════ VIAJES EN EL CELULAR (2026-09-19) ═══════════════════════════════════
+   German: "se puede pensar en un diseño para el celular? el de desktop debería quedar como
+   está por ahora. A medida que voy agregando funcionalidades que impacte en las dos."
+
+   Decisión de arquitectura, para que NO se desincronicen: **un solo archivo y un solo motor
+   de datos**. El móvil no es otra app ni otro `mobile.html` — es **otro dibujo de los mismos
+   datos**. Toda la lógica (`vjTipoCuenta`, `vjDealDetalle`, `vjResGet`, `vjLimpio`, el push de
+   `hs_next_step`…) se reusa tal cual; acá abajo sólo se decide qué se ve.
+
+   El alcance es **sólo Viajes**: es el único momento en que German usa el dashboard sin la
+   compu —en la calle, entre dos reuniones— y necesita escribir, no sólo mirar. El resto de las
+   27 vistas siguen siendo de escritorio.
+
+   🔒 **El desktop no se toca:** arriba de 720px `#vj-mobile` está oculto y todo lo demás pinta
+   exactamente como hoy. Todo lo nuevo vive dentro de este media query. */
+#vj-mobile { display: none; }
+@media (max-width: 720px) {
+  /* En el teléfono no entra una grilla semanal ni una tabla de 840px: se esconden y manda la lista. */
+  #vj-radar, #agenda-days, #agenda-grid, #agenda-deals, #vj-roi, #agenda-history, #view-agenda > .cue-alert { display: none !important; }
+  #vj-mobile { display: block; }
+  /* La ficha deja de ser un cajón lateral y pasa a ser una hoja a pantalla completa.
+     Se hace por CSS sobre el MISMO render — no hay una segunda ficha que mantener. */
+  .vj-drawer { width: 100% !important; left: 0 !important; border-left: 0 !important; }
+}
+.vjm-card { background:#fff; border:1px solid #e8e8ec; border-radius:13px; padding:12px 13px; margin-bottom:9px; }
+.vjm-card.next { border:2px solid #430C89; box-shadow:0 3px 10px rgba(67,12,137,.10); }
+.vjm-btn { flex:1; text-align:center; font-size:12.5px; font-weight:700; padding:10px 0; border-radius:9px;
+           border:1px solid #C7BDFF; color:#4030C8; background:#fff; font-family:inherit; cursor:pointer; text-decoration:none; }
+.vjm-btn.full { background:#430C89; color:#fff; border-color:#430C89; }
+.vjm-btn.wa { border-color:#a7f3d0; color:#047857; background:#ECFDF5; }
+.vjm-btn.gris { border-color:#e8e8ec; color:#6b7280; }
+.vjm-barra { position:sticky; bottom:0; background:rgba(255,255,255,.97); border-top:1px solid #e8e8ec;
+             padding:10px 0 12px; display:flex; gap:8px; }
 .foco-block { background: #F8F7FF; border: 1px solid #D6CCF7; border-radius: 10px; padding: 13px 15px; margin-bottom: 10px; }
 .foco-block.motores { background: #F0FBF6; border-color: #b8e6cf; }
 .foco-block .fb-h { font-size: 14px; color: #292D32; margin-bottom: 6px; }
@@ -1115,6 +1149,7 @@ table.std tr:hover td { background: #fafafa; }
     </style>
     <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">🧭 Planificá el viaje: definí ciudad, fechas y quién va; reservá bloques por día y asigná deals de esa ciudad. Al marcar un bloque y crear en Calendar se reserva en tu agenda con la dirección de HubSpot.</div>
     <div id="vj-modal-host"></div>
+    <div id="vj-mobile"></div>
     <div id="vj-radar"></div>
     <div id="agenda-trip"></div>
     <div id="agenda-days"></div>
@@ -13630,7 +13665,7 @@ function vjFichaRender() {
 
   host.innerHTML = `
     <div onclick="vjFichaClose()" style="position:fixed; inset:0; background:rgba(17,24,39,.22); z-index:9998;"></div>
-    <div style="position:fixed; top:0; right:0; bottom:0; width:min(480px, 96vw); background:#fff; border-left:1px solid #e5e5e5; box-shadow:-8px 0 26px rgba(0,0,0,.10); overflow-y:auto; z-index:9999;">
+    <div class="vj-drawer" style="position:fixed; top:0; right:0; bottom:0; width:min(480px, 96vw); background:#fff; border-left:1px solid #e5e5e5; box-shadow:-8px 0 26px rgba(0,0,0,.10); overflow-y:auto; z-index:9999;">
       <div style="position:sticky; top:0; background:#430C89; color:#fff; padding:14px 18px 13px; z-index:2;">
         <span onclick="vjFichaClose()" title="Cerrar (Esc)" style="position:absolute; top:11px; right:15px; cursor:pointer; font-size:18px; opacity:.8;">✕</span>
         <div style="font-size:11.5px; color:#d6cbf0;">${fmtDow(p[0])} ${fmtDmy(p[0])} · ${minToHHMM(t.ini)}–${minToHHMM(t.fin)}${trv ? " · " + escAttr(trv.name.split(" ")[0]) : ""}</div>
@@ -13890,6 +13925,134 @@ function renderResultados(trip) {
   if (VJ_FICHA_KEY) vjFichaRender();   // el panel abierto se mantiene en sincronía con la tabla
 }
 
+/* ═══════════════ RENDER MÓVIL DE VIAJES (2026-09-19) ═══════════════════════════════
+   Pinta SIEMPRE (es barato) y el CSS decide si se ve: así no hay que escuchar el resize ni
+   mantener dos estados. Todo sale del mismo motor que usa el desktop.
+
+   La pregunta que responde esta pantalla NO es "¿cómo viene el viaje?" (esa es la de la compu)
+   sino **"¿qué sigue y qué tengo que saber antes de entrar?"** — por eso hay una lista de lo que
+   viene y no una grilla. */
+function esMobile() { return (window.innerWidth || 1200) < 720; }
+
+function vjmDia() {
+  const trip = tripGet(); if (!trip || !trip.desde) return null;
+  const dias = tripDays(trip);
+  if (!window.__vjDiaMovil || dias.indexOf(window.__vjDiaMovil) < 0) {
+    // Arranca en HOY si el viaje está en curso; si no, en el primer día.
+    const hoy = new Date().toISOString().slice(0, 10);
+    window.__vjDiaMovil = dias.indexOf(hoy) >= 0 ? hoy : dias[0];
+  }
+  return window.__vjDiaMovil;
+}
+function vjmVerDia(d) { window.__vjDiaMovil = d; renderViajesMovil(tripGet()); }
+
+function renderViajesMovil(trip) {
+  const el = document.getElementById("vj-mobile"); if (!el) return;
+  if (!trip || !trip.ciudad || !trip.desde) {
+    el.innerHTML = `<div style="padding:22px 4px; text-align:center; color:#6b7280; font-size:13.5px; line-height:1.6;">
+      <div style="font-size:30px; margin-bottom:6px;">🧭</div>
+      <b style="color:#1b2024;">No hay viaje en curso</b><br>Planificá el viaje desde la computadora;
+      acá vas a tener la agenda del día y las fichas para preparar y cargar cada reunión.</div>`;
+    return;
+  }
+
+  const dias = tripDays(trip), dia = vjmDia(), all = planAll();
+  const pais = vjPaisTrip(trip);
+  const esReunion = k => (all[k].tipo || "reunion") === "reunion";
+  const delDia = Object.keys(all).filter(k => k.split("|")[0] === dia && all[k] && all[k].cli)
+    .sort((a, b) => vjBlkTimes(a, all[a], trip).ini - vjBlkTimes(b, all[b], trip).ini);
+
+  /* La "próxima" es la primera reunión del día que todavía no pasó. Si ya pasaron todas, la
+     protagonista pasa a ser la primera SIN resultado cargado: al final del día el trabajo
+     cambia de preparar a registrar, y la pantalla tiene que cambiar con él. */
+  const reuniones = delDia.filter(esReunion);
+  let foco = reuniones.find(k => !vjReunionPasada(k));
+  const modoCarga = !foco;
+  if (!foco) foco = reuniones.find(k => !(vjResGet(k).res || "").trim());
+
+  const chips = dias.map((d, i) => `<div onclick="vjmVerDia('${d}')" style="flex:1; text-align:center; font-size:11px; font-weight:700;
+      padding:6px 0; border-radius:8px; cursor:pointer; ${d === dia ? "background:#fff; color:#430C89;" : "background:rgba(255,255,255,.14); color:#fff;"}">
+      ${escAttr(fmtDmy(d).split("/")[0])}<span style="display:block; font-size:9.5px; font-weight:600; opacity:${d === dia ? ".65" : ".8"};">${escAttr(fmtDow(d))}</span></div>`).join("");
+
+  const idxDia = dias.indexOf(dia) + 1;
+  const head = `<div style="background:#430C89; color:#fff; padding:13px 14px 12px; margin:-2px -2px 0; border-radius:12px 12px 0 0;">
+      <div style="font-size:10.5px; opacity:.75; letter-spacing:.6px; text-transform:uppercase; font-weight:700;">Viaje · día ${idxDia} de ${dias.length}</div>
+      <div style="font-size:19px; font-weight:800; margin-top:1px;">${escAttr(trip.ciudad)}</div>
+      <div style="display:flex; gap:6px; margin-top:11px;">${chips}</div>
+    </div>`;
+
+  const tarjeta = (k, destacada) => {
+    const s2 = all[k], t = vjBlkTimes(k, s2, trip), r = vjResGet(k), def = vjTipoDe(s2);
+    const kj = k.replace(/'/g, "\\'");
+    if (!esReunion(k)) {
+      return `<div class="vjm-card" style="opacity:.62; padding:9px 12px; display:flex; align-items:center; gap:10px;">
+        <b style="font-size:14px; font-variant-numeric:tabular-nums; width:48px; flex:none;">${minToHHMM(t.ini)}</b>
+        <div style="flex:1;"><b style="font-size:13.5px;">${def.ic ? def.ic + " " : ""}${escAttr(s2.cli)}</b>
+        <div style="font-size:11px; color:#9ca3af;">no es reunión comercial</div></div></div>`;
+    }
+    const ch = VJ_TIPO_CHIP[vjTipoCuenta(s2.cli)];
+    const det = vjDealDetalle(s2.cli);
+    const monto = det.reduce((a, d) => a + d.monto, 0), pond = det.reduce((a, d) => a + d.pond, 0);
+    const wa = vjWa(r.ctoTel, pais);
+    const href = vjLugarHref(r.lugar);
+    const listos = [(r.obj || "").trim(), (r.cto || "").trim(), (r.lugar || "").trim()];
+    const pips = listos.map(v => `<i style="width:6px; height:6px; border-radius:50%; display:inline-block; background:${v ? "#430C89" : "#dfe1e6"};"></i>`).join(" ");
+    const faltan = listos.filter(v => !v).length;
+
+    if (!destacada) {
+      return `<div class="vjm-card" onclick="vjFichaOpen('${kj}')" style="padding:10px 12px; display:flex; align-items:center; gap:11px; cursor:pointer;">
+        <b style="font-size:15px; font-variant-numeric:tabular-nums; width:48px; flex:none;">${minToHHMM(t.ini)}</b>
+        <div style="flex:1; min-width:0;">
+          <b style="font-size:14px;">${escAttr(s2.cli)}</b>
+          <div style="font-size:11.5px; color:#6b7280; margin-top:2px;">
+            ${ch ? `<i style="width:7px;height:7px;border-radius:50%;display:inline-block;background:${ch.fg};"></i> ${ch.t}` : ""}
+            ${monto ? ` · <b style="color:#047857;">${fmtMoney(monto)}</b>` : ""}</div>
+        </div>
+        <span style="display:flex; gap:4px;">${pips}</span>
+      </div>`;
+    }
+    return `<div class="vjm-card next">
+      <div style="display:flex; align-items:baseline; gap:9px;">
+        <span style="font-size:20px; font-weight:800; font-variant-numeric:tabular-nums; line-height:1;">${minToHHMM(t.ini)}</span>
+        <span style="font-size:10.5px; color:#9ca3af;">→ ${minToHHMM(t.fin)}</span>
+      </div>
+      <div style="font-size:16.5px; font-weight:700; margin-top:4px; line-height:1.2;">${escAttr(s2.cli)}</div>
+      <div style="font-size:11.5px; color:#6b7280; margin-top:3px;">
+        ${ch ? `<i style="width:7px;height:7px;border-radius:50%;display:inline-block;background:${ch.fg};"></i> ${ch.t}` : ""}
+        ${monto ? ` · <b style="color:#047857; font-size:13px;">${fmtMoney(monto)}</b>` : ""}
+        ${pond ? `<span style="color:#c2c6cc;"> · pond. ${fmtMoney(pond)}</span>` : ""}
+      </div>
+      <div style="font-size:11.5px; margin-top:6px; display:flex; align-items:center; gap:7px;">
+        <span style="display:flex; gap:4px;">${pips}</span>
+        <span style="color:${faltan ? "#B45309" : "#047857"}; font-weight:600;">${faltan ? "falta " + faltan + (faltan > 1 ? " datos" : " dato") : "lista para entrar"}</span>
+      </div>
+      <div style="display:flex; gap:7px; margin-top:11px;">
+        <button class="vjm-btn full" onclick="vjFichaOpen('${kj}',${modoCarga ? 1 : 0})">${modoCarga ? "Cargar resultado →" : "Preparar →"}</button>
+        ${wa.ok ? `<a class="vjm-btn wa" style="flex:0 0 58px;" href="https://wa.me/${wa.num}" target="_blank" rel="noopener">💬</a>` : ""}
+        ${href ? `<a class="vjm-btn gris" style="flex:0 0 58px;" href="${escAttr(href)}" target="_blank" rel="noopener">📍</a>` : ""}
+      </div>
+    </div>`;
+  };
+
+  let cuerpo = "";
+  if (!delDia.length) {
+    cuerpo = `<div style="padding:26px 6px; text-align:center; color:#9ca3af; font-size:13px;">Sin bloques cargados este día.</div>`;
+  } else {
+    const rotulo = modoCarga ? "Ya pasaron · cargá el resultado" : "Lo que sigue";
+    if (foco) cuerpo += `<div style="font-size:10.5px; font-weight:800; letter-spacing:.7px; text-transform:uppercase; color:#4030C8; margin:12px 2px 7px;">${rotulo}</div>` + tarjeta(foco, true);
+    const resto = delDia.filter(k => k !== foco);
+    if (resto.length) cuerpo += `<div style="font-size:10.5px; font-weight:800; letter-spacing:.7px; text-transform:uppercase; color:#9ca3af; margin:16px 2px 7px;">Resto del día</div>` + resto.map(k => tarjeta(k, false)).join("");
+  }
+
+  const kf = foco ? foco.replace(/'/g, "\\'") : "";
+  const barra = foco ? `<div class="vjm-barra">
+      <button class="vjm-btn full" onclick="vjFichaOpen('${kf}',${modoCarga ? 1 : 0})">${modoCarga ? "Cargar" : "Preparar"} ${escAttr((all[foco].cli || "").slice(0, 18))}</button>
+    </div>` : "";
+
+  el.innerHTML = `<div style="border:1px solid #e8e8ec; border-radius:12px; background:#fafafc; padding:2px;">
+      ${head}<div style="padding:0 11px 4px;">${cuerpo}${barra}</div></div>`;
+}
+
 // ====================================================
 function renderAgenda() {
   const trip = tripGet();
@@ -13900,6 +14063,7 @@ function renderAgenda() {
   // El radar va SIEMPRE, haya viaje activo o no: la vista arranca por ciudad, no por fecha.
   try { renderRadar(); } catch (e) { console.warn("renderRadar", e); }
   if (!trip || !trip.ciudad) {
+    renderViajesMovil(trip);
     renderTripForm(trip);
     document.getElementById("agenda-days").innerHTML = "";
     document.getElementById("agenda-grid").innerHTML = "";
@@ -13908,6 +14072,7 @@ function renderAgenda() {
     renderHistory();
     return;
   }
+  renderViajesMovil(trip);
   renderTripSummary(trip);
   const days = tripDays(trip);
   if (!window.__agendaDay || !days.includes(window.__agendaDay)) window.__agendaDay = days[0];
