@@ -1281,7 +1281,8 @@ const STATE_KEYS = [
   "tareas_hidden", "tarea_slack_sent",
   "dashComercial_cierreCamb",  // contador cambios de fecha de cierre (2026-08-08)
   "dashComercial_genHidden",   // deals ocultos en Generación (2026-08-11)
-  "dashComercial_tareaCamb"    // contador cambios de fecha de tareas (2026-08-11)
+  "dashComercial_tareaCamb",   // contador cambios de fecha de tareas (2026-08-11)
+  "dashComercial_inboxEstado"  // estado del chat web: sin leer / sin responder / respondido / derivado (2026-09-19)
 ];
 const STATE_BASE_LS  = "dashState_base";     // NO se espeja: versión del server con la que estamos sincronizados
 const STATE_RELOAD_SS = "dashState_reloads"; // guard anti-loop de reload
@@ -11221,28 +11222,210 @@ async function fetchInboundWeb() {
    accesible ni por el MCP ni por este proxy; ver la nota en fetchInboundWeb.
 
    Lo leído vive SÓLO en el navegador de German (localStorage), no en HubSpot: marcar leído es
-   su triage personal, no un estado compartido del CRM. Si algún día hay que compartirlo entre
-   dispositivos, el lugar natural es /api/state, no una property de contacto. */
-const INBOX_READ_KEY = "dashComercial_inboxLeidos";
+   su triage personal. **Eso cambió el 2026-09-19** (pedido de German): ahora el estado es
+   COMPARTIDO por todo Innew vía /api/state — ver INBOX_EST_KEY acá abajo. El motivo es
+   "derivado": si German deriva un contacto a Joaquin, Joaquin tiene que verlo derivado. */
+const INBOX_READ_KEY = "dashComercial_inboxLeidos";   // legacy — sólo se lee para migrar
 
-function inboxLeidosAll() { try { return JSON.parse(localStorage.getItem(INBOX_READ_KEY) || "{}"); } catch (e) { return {}; } }
-function inboxLeidosSave(o) { try { localStorage.setItem(INBOX_READ_KEY, JSON.stringify(o)); } catch (e) {} }
-function inboxEsLeido(id) { return !!inboxLeidosAll()[String(id)]; }
-function inboxMarcarLeido(id, leido) {
-  const all = inboxLeidosAll();
-  if (leido === false) delete all[String(id)];
-  else all[String(id)] = new Date().toISOString().slice(0, 10);
-  inboxLeidosSave(all);
-  // renderInboundWeb ya refresca el badge con las filas en mano: no hace falta llamarlo aparte.
+/* ==========================================================================================
+   ESTADO DEL INBOUND (2026-09-19) — 4 estados + a quién se derivó
+   ------------------------------------------------------------------------------------------
+   Vive en `dashComercial_inboxEstado`, que está en STATE_KEYS → se espeja en /api/state, que es
+   un documento COMPARTIDO por todo Innew. Consecuencia buscada: el estado se ve igual en la compu
+   y en el celular, y el resto del equipo ve que un contacto ya fue derivado.
+
+   ⚠️ El estado NO va a una property de contacto de HubSpot: no existe uno que signifique esto y
+   crear uno custom es de German, no mío. El ÚNICO dato que sí se escribe en HubSpot es el dueño
+   (`hubspot_owner_id`), porque ése sí es del CRM.
+
+   Forma: { "<contactId>": { est, deriv: ["mail", …], ts: "ISO", por: "email de quien lo tocó" } } */
+const INBOX_EST_KEY = "dashComercial_inboxEstado";
+const INBOX_ESTADOS = [
+  { v: "sinleer", l: "Sin leer",      c: "#E11D48", bg: "#fff1f2", bd: "#fecdd3" },
+  { v: "sinresp", l: "Sin responder", c: "#b45309", bg: "#fffbeb", bd: "#fde68a" },
+  { v: "resp",    l: "Respondido",    c: "#059669", bg: "#ecfdf5", bd: "#a7f3d0" },
+  { v: "deriv",   l: "Derivado",      c: "#4030C8", bg: "#f5f3ff", bd: "#ddd6fe" }
+];
+function inboxEstDef(v) { return INBOX_ESTADOS.find(e => e.v === v) || INBOX_ESTADOS[0]; }
+
+function inboxEstAll() {
+  inboxMigrarLeidos();
+  try { return JSON.parse(localStorage.getItem(INBOX_EST_KEY) || "{}"); } catch (e) { return {}; }
+}
+function inboxEstSave(o) {
+  try { localStorage.setItem(INBOX_EST_KEY, JSON.stringify(o)); } catch (e) {}
+  try { if (typeof stateSchedulePush === "function") stateSchedulePush(); } catch (e) {}
+}
+function inboxEstDe(id) {
+  const r = inboxEstAll()[String(id)];
+  return (r && typeof r === "object") ? r : { est: "sinleer", deriv: [], ts: "", por: "" };
+}
+/* Migración de una sola vez: lo que German ya había marcado como leído pasa a "sin responder"
+   (leído pero todavía sin contestar), que es exactamente lo que significaba. Es idempotente:
+   nunca pisa un estado nuevo ya cargado. */
+let INBOX_MIGRADO = false;
+function inboxMigrarLeidos() {
+  if (INBOX_MIGRADO) return; INBOX_MIGRADO = true;
+  let viejos = {}, nuevos = {};
+  try { viejos = JSON.parse(localStorage.getItem(INBOX_READ_KEY) || "{}"); } catch (e) { return; }
+  if (!viejos || !Object.keys(viejos).length) return;
+  try { nuevos = JSON.parse(localStorage.getItem(INBOX_EST_KEY) || "{}"); } catch (e) { nuevos = {}; }
+  let toco = false;
+  Object.keys(viejos).forEach(id => {
+    if (nuevos[id]) return;
+    nuevos[id] = { est: "sinresp", deriv: [], ts: String(viejos[id] || ""), por: "" };
+    toco = true;
+  });
+  if (toco) { try { localStorage.setItem(INBOX_EST_KEY, JSON.stringify(nuevos)); } catch (e) {} }
+}
+
+function inboxSetEst(id, est, extra) {
+  const all = inboxEstAll();
+  const prev = all[String(id)] || {};
+  all[String(id)] = {
+    est: est,
+    deriv: (extra && extra.deriv) || (est === "deriv" ? (prev.deriv || []) : []),
+    ts: new Date().toISOString(),
+    por: (window.__me && window.__me.email) || prev.por || ""
+  };
+  inboxEstSave(all);
   if (document.getElementById("inbox-web")) renderInboundWeb(); else inboxBadgeUpdate();
 }
+
+/* `inboxEsLeido` se mantiene porque el badge de la nav y el render lo usan: leído = cualquier
+   estado que no sea "sin leer". No se borró para no tener DOS definiciones de lo mismo. */
+function inboxEsLeido(id) { return inboxEstDe(id).est !== "sinleer"; }
+function inboxMarcarLeido(id, leido) { inboxSetEst(id, leido === false ? "sinleer" : "sinresp"); }
 function inboxMarcarTodo() {
   const rows = window.__inboxHum || [];
   if (!rows.length) return;
-  const all = inboxLeidosAll(), hoy = new Date().toISOString().slice(0, 10);
-  rows.forEach(p => { all[String(p.id)] = hoy; });
-  inboxLeidosSave(all);
+  const all = inboxEstAll(), ahora = new Date().toISOString();
+  const yo = (window.__me && window.__me.email) || "";
+  rows.forEach(p => {
+    const k = String(p.id);
+    if (all[k] && all[k].est && all[k].est !== "sinleer") return;   // no pisa respondido ni derivado
+    all[k] = { est: "sinresp", deriv: [], ts: ahora, por: yo };
+  });
+  inboxEstSave(all);
   if (document.getElementById("inbox-web")) renderInboundWeb(); else inboxBadgeUpdate();
+}
+
+/* ── Asignar dueño — esto SÍ se escribe en HubSpot (hubspot_owner_id del contacto) ──────────
+   Optimista con rollback: pinta el select al toque, y si HubSpot rechaza vuelve atrás y muestra
+   el error REAL en pantalla (regla del 09/09: nunca un "no se pudo" mudo). */
+async function inboxAsignar(id, ownerId, selEl) {
+  const fila = (window.__inboxHum || []).find(p => String(p.id) === String(id));
+  const antes = fila ? (fila.hubspot_owner_id || "") : "";
+  if (String(antes) === String(ownerId)) return;
+  if (selEl) { selEl.disabled = true; selEl.style.opacity = ".5"; }
+  const avisar = txt => { const e = document.getElementById("inbox-err"); if (e) { e.innerHTML = txt; e.style.display = txt ? "" : "none"; } };
+  avisar("");
+  try {
+    const props = {};
+    props.hubspot_owner_id = String(ownerId || "");
+    await hsWrite({ updateRequest: { objects: [{ objectType: "contacts", objectId: Number(id), properties: props }] } });
+    if (fila) fila.hubspot_owner_id = String(ownerId || "");
+    if (document.getElementById("inbox-web")) renderInboundWeb();
+  } catch (e) {
+    if (selEl) { selEl.value = String(antes); selEl.disabled = false; selEl.style.opacity = ""; }
+    avisar('⚠️ HubSpot rechazó la asignación: <span style="color:#9ca3af;">' + escAttr(String((e && e.message) || e)) + '</span>');
+  }
+}
+
+/* ── Derivar: popup + Gmail prellenado ─────────────────────────────────────────────────────
+   ⚠️ El dashboard NO envía el mail: no hay integración de Gmail en el backend (el proxy sólo
+   habla con HubSpot). Arma el mensaje y abre Gmail con todo cargado; el Enviar lo aprieta German.
+   El mail sale igual desde german.arias@innew.la — Gmail es el que lo manda, no esta página.
+   Mails verificados contra el Gmail de German el 2026-09-19: `administracion` va SIN tilde. */
+const INBOX_DERIV_TO = [
+  { m: "joaquin@innew.la", l: "Joaquin" },
+  { m: "cristian@innew.la", l: "Cristian" },
+  { m: "administracion@innew.la", l: "Administración" },
+  { m: "people@innew.la", l: "People (RRHH)" }
+];
+const INBOX_REMITENTE = "german.arias@innew.la";
+
+function inboxDerivarAbrir(id) {
+  const p = (window.__inboxHum || []).find(x => String(x.id) === String(id));
+  if (!p) return;
+  const nom = ((p.firstname || "") + " " + (p.lastname || "")).trim() || (p.email || "(sin nombre)");
+  const d = inboxDays(p.createdate);
+  const previos = (inboxEstDe(id).deriv || []);
+  const cuerpo = "Hola,\n\nLlegó por el chat del sitio y se lo derivo para que lo respondan:\n\n"
+    + "• Nombre: " + nom + "\n"
+    + "• Mail: " + (p.email || "—") + "\n"
+    + "• Entró hace: " + (d === null ? "—" : d + " día" + (d === 1 ? "" : "s")) + "\n\n"
+    + "Queda asignado a ustedes para responder. Cualquier cosa me avisan.\n\nGracias,\nGerman";
+  const chks = INBOX_DERIV_TO.map((t, i) =>
+    '<label style="display:flex; align-items:center; gap:7px; padding:5px 8px; border:1px solid #e5e7eb; border-radius:7px; cursor:pointer; background:#fff;">'
+    + '<input type="checkbox" class="inbox-deriv-to" value="' + t.m + '"' + (previos.indexOf(t.m) >= 0 ? " checked" : "") + '>'
+    + '<span style="font-size:12.5px;"><b>' + t.l + '</b> <span style="color:#9ca3af;">' + t.m + '</span></span></label>').join("");
+  const ov = document.createElement("div");
+  ov.id = "inbox-deriv-ov";
+  ov.style.cssText = "position:fixed; inset:0; background:rgba(17,17,27,.45); z-index:9999; display:flex; align-items:center; justify-content:center; padding:16px;";
+  ov.onclick = ev => { if (ev.target === ov) inboxDerivarCerrar(); };
+  ov.innerHTML = '<div style="background:#fff; border-radius:12px; width:min(560px,100%); max-height:90vh; overflow:auto; box-shadow:0 18px 50px rgba(0,0,0,.28);">'
+    + '<div style="padding:14px 18px; border-bottom:1px solid #eee; display:flex; align-items:center; gap:8px;">'
+    + '<b style="font-size:14px;">📨 Derivar para responder</b>'
+    + '<span style="font-size:12px; color:#6b7280;">' + escAttr(nom) + '</span>'
+    + '<button onclick="inboxDerivarCerrar()" style="margin-left:auto; border:0; background:none; font-size:19px; color:#9ca3af; cursor:pointer; line-height:1;">×</button></div>'
+    + '<div style="padding:14px 18px;">'
+    + '<div style="font-size:12px; color:#6b7280; margin-bottom:7px;">¿A quién se lo derivás? (podés marcar varios)</div>'
+    + '<div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">' + chks + '</div>'
+    + '<input id="inbox-deriv-otro" placeholder="otro@innew.la (opcional, separá con comas)" style="width:100%; box-sizing:border-box; margin-top:8px; padding:7px 9px; border:1px solid #e5e7eb; border-radius:7px; font-size:12.5px;">'
+    + '<div style="font-size:12px; color:#6b7280; margin:12px 0 6px;">Mensaje <span style="color:#9ca3af;">(editable)</span></div>'
+    + '<textarea id="inbox-deriv-cuerpo" rows="9" style="width:100%; box-sizing:border-box; padding:9px; border:1px solid #e5e7eb; border-radius:7px; font-size:12.5px; font-family:inherit; line-height:1.5;">' + escAttr(cuerpo) + '</textarea>'
+    + '<div id="inbox-deriv-conv" style="font-size:11.5px; color:#9ca3af; margin-top:6px;"></div>'
+    + '<div style="display:flex; align-items:center; gap:9px; margin-top:14px;">'
+    + '<button class="fc-btn" onclick="inboxDerivarEnviar(\'' + p.id + '\')" style="font-size:12.5px;">Abrir en Gmail y marcar derivado</button>'
+    + '<button class="fc-btn secondary" onclick="inboxDerivarCerrar()" style="font-size:12.5px;">Cancelar</button>'
+    + '<span style="font-size:11.5px; color:#9ca3af; margin-left:auto;">Sale desde ' + INBOX_REMITENTE + '</span></div>'
+    + '<div id="inbox-deriv-err" style="font-size:12px; color:#b91c1c; margin-top:8px;"></div>'
+    + '</div></div>';
+  document.body.appendChild(ov);
+  inboxDerivarTraerConv(p.id);
+}
+function inboxDerivarCerrar() { const o = document.getElementById("inbox-deriv-ov"); if (o) o.remove(); }
+
+/* Intenta sumarle al cuerpo lo que la persona escribió en el chat. Si no se puede (fuera de la
+   web app, sin hilos, o el endpoint falla) NO rompe nada: el mail se manda igual sin eso. */
+async function inboxDerivarTraerConv(id) {
+  const av = document.getElementById("inbox-deriv-conv");
+  if (!WEB_MODE) { if (av) av.textContent = "El texto del chat sólo se puede adjuntar desde la web app."; return; }
+  if (av) av.textContent = "Buscando el texto del chat…";
+  try {
+    const th = await mcpCall("conversations", { op: "threads", contactId: String(id) });
+    const threads = (th && th.results) || [];
+    if (!threads.length) { if (av) av.textContent = "Este contacto no tiene hilo en la bandeja: el mensaje va sin el texto del chat."; return; }
+    const r = await mcpCall("conversations", { op: "messages", threadId: String(threads[0].id) });
+    const msgs = (r && r.results) || [];
+    const txt = msgs.map(m => String((m && (m.text || m.richText)) || "").replace(/<[^>]*>/g, "").trim()).filter(Boolean).slice(0, 12).join("\n");
+    if (!txt) { if (av) av.textContent = "El hilo no trajo texto: el mensaje va sin el chat."; return; }
+    const ta = document.getElementById("inbox-deriv-cuerpo");
+    if (ta && ta.value.indexOf("Lo que escribió en el chat") < 0) {
+      ta.value = ta.value.replace("\n\nQueda asignado", "\n\nLo que escribió en el chat:\n" + txt + "\n\nQueda asignado");
+    }
+    if (av) av.textContent = "✓ Se adjuntó el texto del chat.";
+  } catch (e) { if (av) av.textContent = "No se pudo traer el chat (" + String((e && e.message) || e).slice(0, 80) + "): el mensaje va sin eso."; }
+}
+
+function inboxDerivarEnviar(id) {
+  const err = document.getElementById("inbox-deriv-err");
+  const marcados = [].slice.call(document.querySelectorAll(".inbox-deriv-to:checked")).map(c => c.value);
+  const otroEl = document.getElementById("inbox-deriv-otro");
+  const otros = String((otroEl && otroEl.value) || "").split(/[,;\s]+/).map(x => x.trim()).filter(x => x.indexOf("@") > 0);
+  const to = marcados.concat(otros).filter((v, i, a) => a.indexOf(v) === i);
+  if (!to.length) { if (err) err.textContent = "Elegí al menos un destinatario."; return; }
+  const p = (window.__inboxHum || []).find(x => String(x.id) === String(id)) || {};
+  const nom = ((p.firstname || "") + " " + (p.lastname || "")).trim() || (p.email || "contacto del chat");
+  const su = "[Chat web] " + nom + " — derivado para responder";
+  const body = (document.getElementById("inbox-deriv-cuerpo") || {}).value || "";
+  const url = "https://mail.google.com/mail/?authuser=" + encodeURIComponent(INBOX_REMITENTE)
+    + "&view=cm&fs=1&tf=1&to=" + encodeURIComponent(to.join(","))
+    + "&su=" + encodeURIComponent(su) + "&body=" + encodeURIComponent(body);
+  window.open(url, "_blank", "noopener");
+  inboxDerivarCerrar();
+  inboxSetEst(id, "deriv", { deriv: to });
 }
 
 /* Pinta el contador en el botón de nav. Se llama al boot y cada 5 minutos: el badge tiene que
@@ -11416,13 +11599,16 @@ async function renderInboundWeb() {
   }
   const rojo = hum.filter(p => !p.hubspot_owner_id && (inboxDays(p.createdate) || 0) >= 2).length;
   const nuevos = hum.filter(p => !inboxEsLeido(p.id)).length;
+  const sinResp = hum.filter(p => inboxEstDe(p.id).est === "sinresp").length;
   let h = '<div style="border:1px solid ' + (rojo ? "#fecaca" : "#e5e7eb") + '; border-radius:8px; padding:11px 14px; background:' + (rojo ? "#fef2f2" : "#fafafa") + ';">'
     + '<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">'
     + '<b style="font-size:13px;">📥 Inbound web</b> <span class="small" style="color:#6b7280;">' + hum.length + ' contacto' + (hum.length === 1 ? "" : "s") + ' del chat del sitio</span>'
     + (nuevos ? ' <span style="font-size:11px; font-weight:800; color:#fff; background:#E11D48; border-radius:999px; padding:1px 8px;">' + nuevos + ' sin leer</span>' : ' <span style="font-size:11px; color:#059669; font-weight:600;">✓ todo leído</span>')
     + (rojo ? ' <span style="font-size:11px; font-weight:700; color:#b91c1c;">· ' + rojo + ' sin dueño hace +48 h</span>' : "")
+    + (sinResp ? ' <span style="font-size:11px; font-weight:700; color:#b45309;">· ' + sinResp + ' sin responder</span>' : "")
     + (nuevos ? '<button class="fc-btn secondary" onclick="inboxMarcarTodo()" style="font-size:11px; padding:3px 10px; margin-left:auto;">✓ Marcar todo como leído</button>' : "")
     + '</div>'
+    + '<div id="inbox-err" style="display:none; font-size:12px; color:#b91c1c; margin-top:7px;"></div>'
     + '<table style="width:100%; border-collapse:collapse; font-size:12.5px; margin-top:8px;">';
   hum.sort((a, b) => (inboxDays(b.createdate) || 0) - (inboxDays(a.createdate) || 0)).forEach(p => {
     const d = inboxDays(p.createdate);
@@ -11432,19 +11618,33 @@ async function renderInboundWeb() {
     // Los leídos se atenúan en vez de esconderse: ocultarlos haría desaparecer contactos que
     // todavía no tienen dueño, que es justo lo que este panel existe para no perder de vista.
     const leido = inboxEsLeido(p.id);
-    h += '<tr style="border-top:1px solid #eee;' + (leido ? " opacity:.5;" : "") + '">'
-      + '<td style="padding:5px 8px 5px 0;">' + (leido ? "" : '<span title="Sin leer" style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#E11D48; margin-right:6px; vertical-align:1px;"></span>') + '<b>' + nom + '</b></td>'
-      + '<td style="padding:5px 8px; color:#6b7280;">' + (p.email || "—") + '</td>'
-      + '<td style="padding:5px 8px; text-align:right; color:' + col + '; font-weight:600; white-space:nowrap;">' + (d === null ? "—" : d + " d") + '</td>'
-      + '<td style="padding:5px 0 5px 8px; text-align:right; color:' + col + '; white-space:nowrap;">' + (sinD ? "sin asignar" : "asignado") + '</td>'
-      + '<td style="padding:5px 0 5px 10px; text-align:right; white-space:nowrap;">'
+    const st = inboxEstDe(p.id), sd = inboxEstDef(st.est);
+    /* Chips de estado: se ve de un vistazo en cuál está y se cambia con UN clic, sin menú.
+       El chip activo va pintado; los otros quedan en gris. */
+    const chips = INBOX_ESTADOS.map(e => {
+      const on = e.v === st.est;
+      return '<button onclick="inboxSetEst(\'' + p.id + '\', \'' + e.v + '\')" title="Marcar como ' + e.l + '"'
+        + ' style="font-size:10.5px; font-weight:' + (on ? "700" : "500") + '; padding:2px 8px; border-radius:999px; cursor:pointer; margin-right:3px;'
+        + ' border:1px solid ' + (on ? e.bd : "#e5e7eb") + '; background:' + (on ? e.bg : "#fff") + '; color:' + (on ? e.c : "#9ca3af") + ';">'
+        + e.l + '</button>';
+    }).join("");
+    const derivA = (st.est === "deriv" && (st.deriv || []).length)
+      ? '<div style="font-size:10.5px; color:#6d5bd0; margin-top:3px;">→ ' + escAttr((st.deriv || []).join(", ")) + '</div>' : "";
+    h += '<tr style="border-top:1px solid #eee;' + (st.est === "resp" ? " opacity:.55;" : "") + '">'
+      + '<td style="padding:6px 8px 6px 0;">' + (leido ? "" : '<span title="Sin leer" style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#E11D48; margin-right:6px; vertical-align:1px;"></span>') + '<b>' + nom + '</b></td>'
+      + '<td style="padding:6px 8px; color:#6b7280;">' + (p.email || "—") + '</td>'
+      + '<td style="padding:6px 8px; text-align:right; color:' + col + '; font-weight:600; white-space:nowrap;">' + (d === null ? "—" : d + " d") + '</td>'
+      + '<td style="padding:6px 8px; white-space:nowrap;">' + chips + derivA + '</td>'
+      + '<td style="padding:6px 8px; white-space:nowrap;">'
+      + '<select onchange="inboxAsignar(\'' + p.id + '\', this.value, this)" title="Asignar dueño — se escribe en HubSpot"'
+      + ' style="font-size:11.5px; padding:3px 5px; border-radius:6px; border:1px solid ' + (sinD ? "#fecaca" : "#e5e7eb") + '; background:' + (sinD ? "#fff5f5" : "#fff") + '; color:' + (sinD ? "#b91c1c" : "#374151") + ';">'
+      + '<option value="">sin asignar</option>' + ownerOptions(p.hubspot_owner_id) + '</select></td>'
+      + '<td style="padding:6px 0 6px 10px; text-align:right; white-space:nowrap;">'
       + '<a href="#" onclick="convToggle(\'' + p.id + '\', \'' + String((nom === "(sin nombre)" && p.email) ? p.email : nom).replace(/'/g, "\\'") + '\'); return false;" title="Ver la conversación del chat" style="font-size:11px; color:#430C89; font-weight:600; margin-right:10px;">💬 ver</a>'
-      + (leido
-        ? '<a href="#" onclick="inboxMarcarLeido(\'' + p.id + '\', false); return false;" title="Volver a marcarlo como sin leer" style="font-size:11px; color:#9ca3af;">↺ sin leer</a>'
-        : '<a href="#" onclick="inboxMarcarLeido(\'' + p.id + '\', true); return false;" style="font-size:11px; color:#4030C8; font-weight:600;">✓ leído</a>')
+      + '<a href="#" onclick="inboxDerivarAbrir(\'' + p.id + '\'); return false;" title="Derivar por mail para que lo responda otro" style="font-size:11px; color:#4030C8; font-weight:600;">📨 derivar</a>'
       + '</td>'
       + '</tr>'
-      + '<tr id="conv-' + p.id + '" style="display:none;"><td colspan="5" style="padding:0 0 10px; background:#faf9ff;"><div id="convbody-' + p.id + '" style="padding:8px 10px;"></div></td></tr>';
+      + '<tr id="conv-' + p.id + '" style="display:none;"><td colspan="6" style="padding:0 0 10px; background:#faf9ff;"><div id="convbody-' + p.id + '" style="padding:8px 10px;"></div></td></tr>';
   });
   box.innerHTML = h + '</table>' + foot + '</div>';
   window.__inboxHum = hum;
@@ -16777,6 +16977,8 @@ const RESELLERS = [
 // Web app: aplica el candado por rol. Si el usuario logueado es "reseller", oculta todo y deja solo su panel.
 function applyRoleLockdown(me) {
   if (!me) return;
+  window.__me = me;   // lo usa el estado compartido del chat web para registrar quién lo tocó
+
   if (me.role === "reseller") {
     const r = RESELLERS.find(x => String(x.ownerId) === String(me.ownerId));
     if (r) window.__resellerSel = r.key;
