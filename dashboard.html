@@ -92,6 +92,12 @@ h3 { font-size: 14px; font-weight: 600; margin: 12px 0 6px; color: #4030C8; text
   /* La ficha deja de ser un cajón lateral y pasa a ser una hoja a pantalla completa.
      Se hace por CSS sobre el MISMO render — no hay una segunda ficha que mantener. */
   .vj-drawer { width: 100% !important; left: 0 !important; border-left: 0 !important; }
+  /* Mini-acciones de la fila compacta: WhatsApp y Maps al alcance del pulgar, 34px de área
+     táctil (el mínimo cómodo) sin robarle ancho al nombre de la cuenta. */
+  .vjm-mini { width: 34px; height: 34px; border-radius: 10px; display: flex; align-items: center;
+    justify-content: center; font-size: 15px; text-decoration: none; border: 1px solid #e5e7eb; background: #fff; }
+  .vjm-mini.wa { border-color: #a7f3d0; background: #ECFDF5; }
+  .vjm-mini.gris { border-color: #ddd6fe; background: #F5F3FF; }
 }
 .vjm-card { background:#fff; border:1px solid #e8e8ec; border-radius:13px; padding:12px 13px; margin-bottom:9px; }
 .vjm-card.next { border:2px solid #430C89; box-shadow:0 3px 10px rgba(67,12,137,.10); }
@@ -14209,6 +14215,24 @@ function vjmDia() {
 }
 function vjmVerDia(d) { window.__vjDiaMovil = d; renderViajesMovil(tripGet()); }
 
+/* ── Reloj del móvil (2026-09-21) ────────────────────────────────────────────────────────
+   Re-renderiza SÓLO cuando la reunión destacada ya terminó — que es el único momento en que
+   la pantalla tiene que cambiar. Repintar cada minuto porque sí haría saltar el scroll
+   mientras German está leyendo. En modo carga (ya pasaron todas) la destacada es "la primera
+   sin resultado", que no depende del reloj: por eso ahí no hace falta tocar nada. */
+let VJM_RELOJ = null;
+function vjmRelojArrancar() {
+  if (VJM_RELOJ) return;
+  VJM_RELOJ = setInterval(function () {
+    if (!esMobile()) return;
+    if (window.__view !== "agenda") return;
+    if (typeof VJ_FICHA_KEY !== "undefined" && VJ_FICHA_KEY) return;  // ficha abierta: no le movemos el piso
+    const f = window.__vjmFoco;
+    if (!f || !vjReunionPasada(f)) return;
+    const t = tripGet(); if (t) renderViajesMovil(t);
+  }, 60000);
+}
+
 function renderViajesMovil(trip) {
   const el = document.getElementById("vj-mobile"); if (!el) return;
   if (!trip || !trip.ciudad || !trip.desde) {
@@ -14263,15 +14287,26 @@ function renderViajesMovil(trip) {
     const faltan = listos.filter(v => !v).length;
 
     if (!destacada) {
-      return `<div class="vjm-card" onclick="vjFichaOpen('${kj}')" style="padding:10px 12px; display:flex; align-items:center; gap:11px; cursor:pointer;">
-        <b style="font-size:15px; font-variant-numeric:tabular-nums; width:48px; flex:none;">${minToHHMM(t.ini)}</b>
+      /* Ya pasó: se atenúa para que la vista siga el reloj sola. PERO si además no tiene
+         resultado cargado, eso es trabajo pendiente — se avisa en ámbar en vez de dejarlo
+         apagado y silencioso, que sería esconder justo lo que hay que hacer. */
+      const paso = vjReunionPasada(k);
+      const sinRes = paso && !(vjResGet(k).res || "").trim();
+      /* 🪤 Los botones van DENTRO de una card que tiene su propio onclick: sin
+         stopPropagation, tocar WhatsApp abre el chat **y** la ficha al mismo tiempo. */
+      const stop = 'onclick="event.stopPropagation()"';
+      const acc = (wa.ok ? `<a class="vjm-mini wa" ${stop} href="https://wa.me/${wa.num}" target="_blank" rel="noopener" title="WhatsApp ${escAttr(r.cto || s2.cli)}">💬</a>` : "")
+        + (href ? `<a class="vjm-mini gris" ${stop} href="${escAttr(href)}" target="_blank" rel="noopener" title="${/^https?:/i.test(r.lugar) ? "Abrir el link" : "Abrir en Google Maps"}">📍</a>` : "");
+      return `<div class="vjm-card" onclick="vjFichaOpen('${kj}')" style="padding:10px 12px; display:flex; align-items:center; gap:11px; cursor:pointer;${paso && !sinRes ? " opacity:.5;" : ""}${sinRes ? " border-left:3px solid #F59E0B;" : ""}">
+        <b style="font-size:15px; font-variant-numeric:tabular-nums; width:48px; flex:none;${paso ? " color:#9ca3af;" : ""}">${minToHHMM(t.ini)}</b>
         <div style="flex:1; min-width:0;">
           <b style="font-size:14px;">${escAttr(s2.cli)}</b>
           <div style="font-size:11.5px; color:#6b7280; margin-top:2px;">
             ${ch ? `<i style="width:7px;height:7px;border-radius:50%;display:inline-block;background:${ch.fg};"></i> ${ch.t}` : ""}
             ${monto ? ` · <b style="color:#047857;">${fmtMoney(monto)}</b>` : ""}</div>
+          ${sinRes ? `<div style="font-size:11px; color:#B45309; font-weight:700; margin-top:3px;">⚠ falta cargar el resultado</div>` : ""}
         </div>
-        <span style="display:flex; gap:4px;">${pips}</span>
+        ${acc ? `<span style="display:flex; gap:5px; flex:none;">${acc}</span>` : `<span style="display:flex; gap:4px;">${pips}</span>`}
       </div>`;
     }
     return `<div class="vjm-card next">
@@ -14306,6 +14341,11 @@ function renderViajesMovil(trip) {
     const resto = delDia.filter(k => k !== foco);
     if (resto.length) cuerpo += `<div style="font-size:10.5px; font-weight:800; letter-spacing:.7px; text-transform:uppercase; color:#9ca3af; margin:16px 2px 7px;">Resto del día</div>` + resto.map(k => tarjeta(k, false)).join("");
   }
+
+  /* Qué reunión está destacada depende de la hora, así que hay que RE-RENDERIZAR para que
+     avance sola; si no, la pantalla se queda congelada en la reunión de hace tres horas. */
+  window.__vjmFoco = foco || "";
+  vjmRelojArrancar();
 
   const kf = foco ? foco.replace(/'/g, "\\'") : "";
   const barra = foco ? `<div class="vjm-barra">
