@@ -1334,7 +1334,14 @@ const STATE_KEYS = [
   "dashComercial_cierreCamb",  // contador cambios de fecha de cierre (2026-08-08)
   "dashComercial_genHidden",   // deals ocultos en Generación (2026-08-11)
   "dashComercial_tareaCamb",   // contador cambios de fecha de tareas (2026-08-11)
-  "dashComercial_inboxEstado"  // estado del chat web: sin leer / sin responder / respondido / derivado (2026-09-19)
+  "dashComercial_inboxEstado", // estado del chat web: sin leer / sin responder / respondido / derivado (2026-09-19)
+  /* 🐛 Los 3 de Viajes faltaban y por eso NADA de lo que German cargaba en la ficha llegaba al
+     celular (2026-09-21). `vj_resultados` es el más grave: ahí viven objetivo, contacto, teléfono,
+     LUGAR, resultado y próximo paso de cada reunión. Se cargaba en la compu y el celular no se
+     enteraba — parecía un bug del render móvil y era que el dato nunca salía del navegador. */
+  "vj_resultados",             // ficha de cada reunión: objetivo, contacto, tel, lugar, resultado
+  "vj_eventos",                // eventos/ferias del radar de destinos
+  "vj_partners"                // padrón de partners (VTEX, Tiendanube) que usa vjTipoCuenta
 ];
 const STATE_BASE_LS  = "dashState_base";     // NO se espeja: versión del server con la que estamos sincronizados
 const STATE_RELOAD_SS = "dashState_reloads"; // guard anti-loop de reload
@@ -1356,15 +1363,32 @@ function stateSnapshot() {
   return o;
 }
 // Espejo completo: aplicar un snapshot también BORRA las claves trackeadas que no vengan.
+/* Claves recién sumadas al sync (2026-09-21).
+   🚨 TRAMPA GRANDE: `stateApply` BORRA la clave local cuando el server no la trae. Eso está bien
+   para propagar un borrado, pero convierte "sumar una clave a STATE_KEYS" en una bomba: en el
+   primer arranque el server todavía no la conoce, así que le habría BORRADO a German la ficha de
+   todas las reuniones (objetivo, contacto, teléfono, lugar, resultado) del dispositivo donde las
+   cargó. Mientras el server no conozca la clave, **lo local manda y se sube**. En cuanto el server
+   la tiene, esta lista deja de tener efecto sola — no hay que acordarse de sacarla. */
+const STATE_KEYS_ADOPTAR = ["vj_resultados", "vj_eventos", "vj_partners"];
+
 function stateApply(snap) {
   window.__stateApplying = true;
+  let adoptar = false;
   try {
     STATE_KEYS.forEach(k => {
-      if (snap && Object.prototype.hasOwnProperty.call(snap, k)) _lsSet(k, String(snap[k]));
-      else _lsRem(k);
+      if (snap && Object.prototype.hasOwnProperty.call(snap, k)) { _lsSet(k, String(snap[k])); return; }
+      // El server no trae la clave. ¿Es una recién sumada que acá SÍ tiene datos? → conservar y subir.
+      if (STATE_KEYS_ADOPTAR.indexOf(k) !== -1) {
+        let local = null; try { local = localStorage.getItem(k); } catch (e) {}
+        if (local && local !== "{}" && local !== "[]" && local !== "null") { adoptar = true; return; }
+      }
+      _lsRem(k);
     });
   } catch (e) {}
   window.__stateApplying = false;
+  // Fuera del flag: stateSchedulePush se auto-ignora mientras __stateApplying está prendido.
+  if (adoptar) { try { stateSchedulePush(); } catch (e) {} }
 }
 function stateBadge(txt, color, onClick) {
   const S = window.__stateSync; S.status = txt;
