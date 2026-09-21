@@ -106,6 +106,23 @@ h3 { font-size: 14px; font-weight: 600; margin: 12px 0 6px; color: #4030C8; text
 .vjm-btn.full { background:#430C89; color:#fff; border-color:#430C89; }
 .vjm-btn.wa { border-color:#a7f3d0; color:#047857; background:#ECFDF5; }
 .vjm-btn.gris { border-color:#e8e8ec; color:#6b7280; }
+/* Filas de acción de la tarjeta destacada (opción A, elegida por German 2026-09-21).
+   Ancho completo y con el DATO escrito —el nombre de quién y la dirección adónde—: es lo que
+   se lee caminando. Cuando el dato falta, la misma fila pasa a ser el llamador a cargarlo,
+   que es más útil que un puntito gris apagado. */
+.vjm-acc { display:flex; align-items:center; gap:10px; padding:9px 10px; border:1px solid #e8e8ec;
+  border-radius:10px; background:#fff; margin-top:7px; text-decoration:none; color:#292D32; cursor:pointer; }
+.vjm-acc-ico { width:32px; height:32px; border-radius:9px; display:flex; align-items:center;
+  justify-content:center; flex:none; }
+.vjm-acc-ico.wa { background:#ECFDF5; border:1px solid #a7f3d0; }
+.vjm-acc-ico.map { background:#F5F3FF; border:1px solid #ddd6fe; }
+.vjm-acc-tx { flex:1; min-width:0; }
+.vjm-acc-tx b { display:block; font-size:13px; line-height:1.2; }
+.vjm-acc-tx i { display:block; font-size:11.5px; color:#6b7280; font-style:normal; margin-top:1px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.vjm-acc-ch { color:#9ca3af; font-size:16px; flex:none; }
+.vjm-acc.vacio { border-style:dashed; border-color:#FDE68A; background:#FFFBEB; }
+.vjm-acc.vacio .vjm-acc-tx b { color:#B45309; }
 .vjm-barra { position:sticky; bottom:0; background:rgba(255,255,255,.97); border-top:1px solid #e8e8ec;
              padding:10px 0 12px; display:flex; gap:8px; }
 .foco-block { background: #F8F7FF; border: 1px solid #D6CCF7; border-radius: 10px; padding: 13px 15px; margin-bottom: 10px; }
@@ -14215,6 +14232,13 @@ function vjmDia() {
 }
 function vjmVerDia(d) { window.__vjDiaMovil = d; renderViajesMovil(tripGet()); }
 
+/* Logo de WhatsApp — archivo que pasó German (2026-09-21). El PNG original venía en RGB con el
+   damero pegado (no tenía transparencia real): se le quitó el fondo, se recortó y quedó en 72 px.
+   Va embebido porque el dashboard es UN archivo: 7,9 KB → ~10 KB en base64. Copia suelta en
+   agents/dashboard-comercial/wa-logo.png. Se usa sólo para enlazar a WhatsApp, no como marca propia. */
+const WA_LOGO = "data:image/png;base64,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";
+const waImg = px => `<img src="${WA_LOGO}" alt="WhatsApp" width="${px}" height="${px}" style="display:block;">`;
+
 /* ── Reloj del móvil (2026-09-21) ────────────────────────────────────────────────────────
    Re-renderiza SÓLO cuando la reunión destacada ya terminó — que es el único momento en que
    la pantalla tiene que cambiar. Repintar cada minuto porque sí haría saltar el scroll
@@ -14231,6 +14255,37 @@ function vjmRelojArrancar() {
     if (!f || !vjReunionPasada(f)) return;
     const t = tripGet(); if (t) renderViajesMovil(t);
   }, 60000);
+}
+
+/* Las dos filas de acción de la tarjeta destacada: a quién escribirle y adónde ir.
+   Devuelve SIEMPRE las dos — con dato o con el llamador a cargarlo. Van dentro de una card
+   que NO tiene onclick propio, así que acá no hace falta stopPropagation (sí en la fila
+   compacta, que sí lo tiene). */
+const VJ_PIN = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#4030C8" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"/><path d="M17.657 16.657l-4.243 4.243a2 2 0 0 1 -2.827 0l-4.244 -4.243a8 8 0 1 1 11.314 0z"/></svg>';
+const VJ_PIN_AMB = VJ_PIN.replace(/#4030C8/g, "#B45309");
+function accFila(kj, r, wa, href) {
+  const quien = String(r.cto || "").trim();
+  const fWa = wa.ok
+    ? `<a class="vjm-acc" href="https://wa.me/${wa.num}" target="_blank" rel="noopener">
+         <span class="vjm-acc-ico wa">${waImg(20)}</span>
+         <span class="vjm-acc-tx"><b>WhatsApp</b><i>${escAttr(quien || ("+" + wa.num))}</i></span>
+         <span class="vjm-acc-ch">›</span></a>`
+    : `<div class="vjm-acc vacio" onclick="vjFichaOpen('${kj}',0)">
+         <span class="vjm-acc-ico wa">${waImg(20)}</span>
+         <span class="vjm-acc-tx"><b>Cargar el teléfono</b><i>${escAttr(wa.vacio ? (quien ? quien + " · sin número cargado" : "sin número no hay WhatsApp") : (wa.msg || "revisar el número"))}</i></span>
+         <span class="vjm-acc-ch">›</span></div>`;
+  const esLink = /^https?:/i.test(String(r.lugar || ""));
+  const dir = String(r.lugar || "").replace(/^https?:\/\//i, "");
+  const fMapa = href
+    ? `<a class="vjm-acc" href="${escAttr(href)}" target="_blank" rel="noopener">
+         <span class="vjm-acc-ico map">${VJ_PIN}</span>
+         <span class="vjm-acc-tx"><b>${esLink ? "Abrir el link" : "Cómo llegar"}</b><i>${escAttr(dir)}</i></span>
+         <span class="vjm-acc-ch">›</span></a>`
+    : `<div class="vjm-acc vacio" onclick="vjFichaOpen('${kj}',0)">
+         <span class="vjm-acc-ico map">${VJ_PIN_AMB}</span>
+         <span class="vjm-acc-tx"><b>Cargar la dirección</b><i>sin dirección no hay cómo llegar</i></span>
+         <span class="vjm-acc-ch">›</span></div>`;
+  return fWa + fMapa;
 }
 
 function renderViajesMovil(trip) {
@@ -14295,7 +14350,7 @@ function renderViajesMovil(trip) {
       /* 🪤 Los botones van DENTRO de una card que tiene su propio onclick: sin
          stopPropagation, tocar WhatsApp abre el chat **y** la ficha al mismo tiempo. */
       const stop = 'onclick="event.stopPropagation()"';
-      const acc = (wa.ok ? `<a class="vjm-mini wa" ${stop} href="https://wa.me/${wa.num}" target="_blank" rel="noopener" title="WhatsApp ${escAttr(r.cto || s2.cli)}">💬</a>` : "")
+      const acc = (wa.ok ? `<a class="vjm-mini wa" ${stop} href="https://wa.me/${wa.num}" target="_blank" rel="noopener" title="WhatsApp ${escAttr(r.cto || s2.cli)}">${waImg(18)}</a>` : "")
         + (href ? `<a class="vjm-mini gris" ${stop} href="${escAttr(href)}" target="_blank" rel="noopener" title="${/^https?:/i.test(r.lugar) ? "Abrir el link" : "Abrir en Google Maps"}">📍</a>` : "");
       return `<div class="vjm-card" onclick="vjFichaOpen('${kj}')" style="padding:10px 12px; display:flex; align-items:center; gap:11px; cursor:pointer;${paso && !sinRes ? " opacity:.5;" : ""}${sinRes ? " border-left:3px solid #F59E0B;" : ""}">
         <b style="font-size:15px; font-variant-numeric:tabular-nums; width:48px; flex:none;${paso ? " color:#9ca3af;" : ""}">${minToHHMM(t.ini)}</b>
@@ -14324,10 +14379,9 @@ function renderViajesMovil(trip) {
         <span style="display:flex; gap:4px;">${pips}</span>
         <span style="color:${faltan ? "#B45309" : "#047857"}; font-weight:600;">${faltan ? "falta " + faltan + (faltan > 1 ? " datos" : " dato") : "lista para entrar"}</span>
       </div>
-      <div style="display:flex; gap:7px; margin-top:11px;">
+      ${accFila(kj, r, wa, href)}
+      <div style="display:flex; gap:7px; margin-top:9px;">
         <button class="vjm-btn full" onclick="vjFichaOpen('${kj}',${modoCarga ? 1 : 0})">${modoCarga ? "Cargar resultado →" : "Preparar →"}</button>
-        ${wa.ok ? `<a class="vjm-btn wa" style="flex:0 0 58px;" href="https://wa.me/${wa.num}" target="_blank" rel="noopener">💬</a>` : ""}
-        ${href ? `<a class="vjm-btn gris" style="flex:0 0 58px;" href="${escAttr(href)}" target="_blank" rel="noopener">📍</a>` : ""}
       </div>
     </div>`;
   };
