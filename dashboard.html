@@ -14408,13 +14408,26 @@ function renderViajesMovil(trip) {
   const delDia = Object.keys(all).filter(k => k.split("|")[0] === dia && all[k] && all[k].cli)
     .sort((a, b) => vjBlkTimes(a, all[a], trip).ini - vjBlkTimes(b, all[b], trip).ini);
 
-  /* La "próxima" es la primera reunión del día que todavía no pasó. Si ya pasaron todas, la
-     protagonista pasa a ser la primera SIN resultado cargado: al final del día el trabajo
-     cambia de preparar a registrar, y la pantalla tiene que cambiar con él. */
+  /* ── Qué va grande y qué va chico (regla fijada con German 2026-09-22) ──────────────────
+     GRANDE = lo que pide acción. CHICO = lo cerrado o lo que no es comercial.
+       · reunión que todavía no pasó            → grande, con objetivo + WhatsApp + mapa
+       · reunión que pasó y NO tiene resultado  → grande: ahora la acción es registrarla
+       · reunión que pasó y ya tiene resultado  → chica y atenuada
+       · vuelo, comida, traslado                → chico siempre
+     Antes sólo UNA era grande (la próxima) y el resto iban en una línea; German pidió que
+     todas las comerciales pendientes tengan la tarjeta completa. */
   const reuniones = delDia.filter(esReunion);
-  let foco = reuniones.find(k => !vjReunionPasada(k));
-  const modoCarga = !foco;
-  if (!foco) foco = reuniones.find(k => !(vjResGet(k).res || "").trim());
+  const proximas = reuniones.filter(k => !vjReunionPasada(k));
+  const pendientesDeCarga = reuniones.filter(k => vjReunionPasada(k) && !(vjResGet(k).res || "").trim());
+  /* 🐛 Esto era `proximas.length ? proximas : pendientesDeCarga` — un o-lo-uno-o-lo-otro que
+     contradecía la regla: una reunión vencida SIN resultado tiene que verse grande aunque queden
+     futuras, porque registrarla también es acción pendiente. Con el orden cronológico no hay
+     motivo para excluirla: nada se mueve de lugar, sólo cambia el tamaño. */
+  const grandes = delDia.filter(k => proximas.indexOf(k) >= 0 || pendientesDeCarga.indexOf(k) >= 0);
+  const modoCarga = !proximas.length;
+  /* `foco` sigue siendo la primera de las grandes: lo usan el reloj (para saber cuándo
+     repintar) y la barra fija de abajo. */
+  const foco = grandes[0] || null;
 
   const chips = dias.map((d, i) => `<div onclick="vjmVerDia('${d}')" style="flex:1; text-align:center; font-size:11px; font-weight:700;
       padding:6px 0; border-radius:8px; cursor:pointer; ${d === dia ? "background:#fff; color:#430C89;" : "background:rgba(255,255,255,.14); color:#fff;"}">
@@ -14485,7 +14498,12 @@ function renderViajesMovil(trip) {
       </div>
       ${objBloque(kj, r)}${accFila(kj, r, wa, href)}
       <div style="display:flex; gap:7px; margin-top:9px;">
-        <button class="vjm-btn full" onclick="vjFichaOpen('${kj}',${modoCarga ? 1 : 0})">${modoCarga ? "Cargar resultado →" : "Preparar →"}</button>
+        ${(() => {
+          /* Por reunión, no por día: con el orden cronológico puede haber una vencida sin cargar
+             arriba y otra por venir abajo, y cada una necesita su propio botón. */
+          const yaFue = vjReunionPasada(k);
+          return `<button class="vjm-btn full" onclick="vjFichaOpen('${kj}',${yaFue ? 1 : 0})">${yaFue ? "Cargar resultado →" : "Preparar →"}</button>`;
+        })()}
       </div>
     </div>`;
   };
@@ -14494,10 +14512,15 @@ function renderViajesMovil(trip) {
   if (!delDia.length) {
     cuerpo = `<div style="padding:26px 6px; text-align:center; color:#9ca3af; font-size:13px;">Sin bloques cargados este día.</div>`;
   } else {
-    const rotulo = modoCarga ? "Ya pasaron · cargá el resultado" : "Lo que sigue";
-    if (foco) cuerpo += `<div style="font-size:10.5px; font-weight:800; letter-spacing:.7px; text-transform:uppercase; color:#4030C8; margin:12px 2px 7px;">${rotulo}</div>` + tarjeta(foco, true);
-    const resto = delDia.filter(k => k !== foco);
-    if (resto.length) cuerpo += `<div style="font-size:10.5px; font-weight:800; letter-spacing:.7px; text-transform:uppercase; color:#9ca3af; margin:16px 2px 7px;">Resto del día</div>` + resto.map(k => tarjeta(k, false)).join("");
+    /* ⏱️ ORDEN DEL DÍA PURO — decisión de German (2026-09-22), revirtiendo el corte en dos
+       secciones que había probado antes. El día se lee de arriba abajo como transcurre:
+       08:00 vuelo, 13:00 almuerzo, 14:00 traslado, 15:00 Ferrex…
+       Lo que cambia con la hora es el TAMAÑO, no la posición: la reunión que pide acción está
+       grande y la que se cerró se achica **en su lugar**. Nada se mueve de sitio, que es lo que
+       hacía difícil de seguir la versión anterior. */
+    const rotulo = modoCarga ? "El día · cargá los resultados" : "El día";
+    cuerpo += `<div style="font-size:10.5px; font-weight:800; letter-spacing:.7px; text-transform:uppercase; color:#4030C8; margin:12px 2px 7px;">${rotulo}</div>`
+      + delDia.map(k => tarjeta(k, grandes.indexOf(k) >= 0)).join("");
   }
 
   /* Qué reunión está destacada depende de la hora, así que hay que RE-RENDERIZAR para que
@@ -14507,7 +14530,7 @@ function renderViajesMovil(trip) {
 
   const kf = foco ? foco.replace(/'/g, "\\'") : "";
   const barra = foco ? `<div class="vjm-barra">
-      <button class="vjm-btn full" onclick="vjFichaOpen('${kf}',${modoCarga ? 1 : 0})">${modoCarga ? "Cargar" : "Preparar"} ${escAttr((all[foco].cli || "").slice(0, 18))}</button>
+      <button class="vjm-btn full" onclick="vjFichaOpen('${kf}',${vjReunionPasada(foco) ? 1 : 0})">${vjReunionPasada(foco) ? "Cargar" : "Preparar"} ${escAttr((all[foco].cli || "").slice(0, 18))}</button>
     </div>` : "";
 
   el.innerHTML = `<div style="border:1px solid #e8e8ec; border-radius:12px; background:#fafafc; padding:2px;">
