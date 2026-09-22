@@ -121,6 +121,14 @@ h3 { font-size: 14px; font-weight: 600; margin: 12px 0 6px; color: #4030C8; text
 .vjm-acc-tx i { display:block; font-size:11.5px; color:#6b7280; font-style:normal; margin-top:1px;
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .vjm-acc-ch { color:#9ca3af; font-size:16px; flex:none; }
+/* Fila de la dirección (opción B3, elegida por German 2026-09-22). El título de la ubicación
+   puede ser largo de verdad —el de Grupo David tiene 66 caracteres con el piso adentro— así que
+   se deja envolver entero y el llamado a la acción baja a ancho completo. Recortarlo a dos
+   líneas se comía justo el "Piso 14", que es EL dato que necesitás parado en el edificio. */
+.vjm-acc.mapa { align-items:flex-start; flex-wrap:wrap; }
+.vjm-acc.mapa .vjm-acc-tx b { font-size:13.5px; line-height:1.3; }
+.vjm-acc-cta { flex:0 0 100%; text-align:center; margin-top:8px; font-size:11.5px; font-weight:800;
+  color:#4030C8; background:#F5F3FF; border:1px solid #ddd6fe; border-radius:999px; padding:7px 0; }
 .vjm-acc.vacio { border-style:dashed; border-color:#FDE68A; background:#FFFBEB; }
 .vjm-acc.vacio .vjm-acc-tx b { color:#B45309; }
 .vjm-barra { position:sticky; bottom:0; background:rgba(255,255,255,.97); border-top:1px solid #e8e8ec;
@@ -13699,6 +13707,11 @@ function vjUbiTitSet(kj, companyId, cual) {
   if (lim) all[id][cual] = lim; else delete all[id][cual];
   if (!Object.keys(all[id]).length) delete all[id];
   try { localStorage.setItem(VJ_UBI_TIT_KEY, JSON.stringify(all)); } catch (e) {}
+  /* Refrescá la copia que viaja en ESTA reunión, que es la que lee el celular. Las otras
+     reuniones de la misma cuenta se quedan con el título viejo hasta que las abras: es el
+     precio de no resolver la company en la calle, y se paga una sola vez por reunión. */
+  const k = kj.replace(/\\'/g, "'");
+  if (vjUbiTipo(companyId, vjResGet(k)) === cual) vjPrepSet(k, { lugarTit: lim });
   vjFichaRender();
 }
 
@@ -13768,7 +13781,11 @@ function vjLugarOkHtml(kj, r) {
 function vjUbiElegir(kj, companyId, cual) {
   const k = kj.replace(/\\'/g, "'");
   const u = (window.__vjUbi || {})[String(companyId)] || {};
-  const patch = { lugarTipo: cual };
+  /* 🧷 El título se COPIA dentro de la reunión (`lugarTit`). No es redundancia: en el celular
+     el título hay que dibujarlo sin resolver la company, porque en un prospecto eso cuesta una
+     request y arranca en frío — justo en la calle es cuando peor funciona. Acá viaja con la
+     ficha por /api/state y llega gratis. */
+  const patch = { lugarTipo: cual, lugarTit: cual === "puntual" ? "" : vjUbiTit(companyId, cual) };
   if (cual === "ppal" && vjLimpio(u.ppal || "")) patch.lugar = vjLimpio(u.ppal);
   if (cual === "sec" && vjLimpio(u.sec || "")) patch.lugar = vjLimpio(u.sec);
   vjPrepSet(k, patch);
@@ -14921,13 +14938,27 @@ function accFila(kj, r, wa, href) {
          <span class="vjm-acc-ico wa">${waImg(20)}</span>
          <span class="vjm-acc-tx"><b>Cargar el teléfono</b><i>${escAttr(wa.vacio ? (quien ? quien + " · sin número cargado" : "sin número no hay WhatsApp") : (wa.msg || "revisar el número"))}</i></span>
          <span class="vjm-acc-ch">›</span></div>`;
-  const esLink = /^https?:/i.test(String(r.lugar || ""));
-  const dir = String(r.lugar || "").replace(/^https?:\/\//i, "");
+  /* ── Fila de la dirección (2026-09-22) ───────────────────────────────────────────────
+     Antes decía "Abrir el link" con la URL cruda de Maps debajo: 60 caracteres ilegibles
+     ocupando el único renglón útil de la tarjeta, y sin decir a qué lugar vas.
+     Ahora manda el TÍTULO que cargaste en la ficha ("Oficina central"), con el rótulo
+     genérico de la ranura como red y "Dónde es" como último recurso.
+     🧷 Todo sale de `r`: cero consultas desde el celular. El título vive en `vj_ubi_titulos`
+     indexado por companyId, y resolver la company de un prospecto en la calle cuesta una
+     request y arranca en frío — justo cuando peor anda. Por eso se copia en la reunión
+     (`lugarTit`) al elegir la ranura, y viaja por /api/state con el resto de la ficha. */
+  const txtLugar = vjLimpio(r.lugar || "");
+  const esCall = vjEsLinkReunion(txtLugar);
+  const tit = vjLimpio(r.lugarTit || "")
+    || (esCall ? "Reunión por link" : (VJ_UBI_ROT[r.lugarTipo] || "Dónde es"));
+  /* La URL de Maps no se muestra; una dirección escrita SÍ, que es la que le dictás al taxi. */
+  const dir = esCall ? txtLugar.replace(/^https?:\/\//i, "").split("/")[0]
+            : (/^https?:/i.test(txtLugar) ? "Google Maps · tocá para ir" : txtLugar);
   const fMapa = href
-    ? `<a class="vjm-acc" href="${escAttr(href)}" target="_blank" rel="noopener">
+    ? `<a class="vjm-acc mapa" href="${escAttr(href)}" target="_blank" rel="noopener">
          <span class="vjm-acc-ico map">${VJ_PIN}</span>
-         <span class="vjm-acc-tx"><b>${esLink ? "Abrir el link" : "Cómo llegar"}</b><i>${escAttr(dir)}</i></span>
-         <span class="vjm-acc-ch">›</span></a>`
+         <span class="vjm-acc-tx"><b>${escAttr(tit)}</b><i>${escAttr(dir)}</i></span>
+         <span class="vjm-acc-cta">${esCall ? "Entrar a la reunión ↗" : "Cómo llegar ↗"}</span></a>`
     : `<div class="vjm-acc vacio" onclick="vjFichaOpen('${kj}',0)">
          <span class="vjm-acc-ico map">${VJ_PIN_AMB}</span>
          <span class="vjm-acc-tx"><b>Cargar la dirección</b><i>sin dirección no hay cómo llegar</i></span>
