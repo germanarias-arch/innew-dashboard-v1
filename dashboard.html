@@ -13447,6 +13447,15 @@ function vjCoDeCuenta(cli) {
    La secundaria va en `ubicacion_secundaria`, que German tiene que crear: si no existe, HubSpot
    rechaza el write y mostramos su mensaje textual en vez de fallar mudo. */
 const VJ_UBI_PROPS = { ppal: "ubicacion_oficina", sec: "ubicacion_secundaria" };
+
+/* 🐛 ERROR DE DISEÑO CORREGIDO (2026-09-22, lo cazó German en la ficha de Ferrex).
+   La primera versión bloqueaba **cualquier** link, pensando en Meet y Zoom. Pero la property se
+   llama literalmente "Ubicación de Google Maps de la oficina": un link de Maps ES el caso
+   principal, no una excepción. Se bloqueaba justo lo que había que guardar.
+   Ahora se bloquea sólo el link de REUNIÓN —dónde se hace la call de hoy, no dónde queda la
+   empresa—; una dirección de texto y un link de mapa se guardan los dos. */
+const VJ_LINK_REUNION = /(meet\.google|zoom\.us|teams\.microsoft|teams\.live|whereby\.com|meet\.jit\.si|webex\.com|bluejeans|gotomeet|chime\.aws)/i;
+function vjEsLinkReunion(v) { const t = String(v || ""); return /^https?:/i.test(t) && VJ_LINK_REUNION.test(t); }
 window.__vjUbi = window.__vjUbi || {};      // companyId -> { estado, ppal, sec, msg }
 
 async function vjUbiCargar(companyId, forzar) {
@@ -13480,7 +13489,7 @@ async function vjUbiGuardar(kj, companyId, cual) {
   const est = document.getElementById("vj-ubi-est");
   const avisar = (t, c) => { if (est) { est.textContent = t; est.style.color = c || "#6b7280"; } };
   if (!txt) { avisar("Cargá primero la dirección.", "#B45309"); return; }
-  if (/^https?:/i.test(txt)) { avisar("Es un link de reunión, no una dirección: no se guarda en la empresa.", "#B45309"); return; }
+  if (vjEsLinkReunion(txt)) { avisar("Es el link de la call de hoy, no dónde queda la empresa: no se guarda.", "#B45309"); return; }
   avisar("Guardando en HubSpot…");
   /* El armado de `props` va FUERA del try: adentro, un error de código (una const mal escrita,
      por ejemplo) se reportaría como "HubSpot rechazó el guardado" y mandaría a buscar el problema
@@ -13877,7 +13886,7 @@ function vjUbiBloqueHtml(kj, co, r) {
   if (!u) { setTimeout(() => vjUbiCargar(co.id), 0); return `<div style="font-size:11px; color:#9ca3af; margin-top:4px;">Buscando la ubicación guardada…</div>`; }
   if (u.estado === "cargando") return `<div style="font-size:11px; color:#9ca3af; margin-top:4px;">Buscando la ubicación guardada…</div>`;
   const actual = vjLimpio(r.lugar || "");
-  const esLink = /^https?:/i.test(actual);
+  const esLink = vjEsLinkReunion(actual);   // sólo Meet/Zoom bloquean: un link de Maps se guarda
   const chip = (txt, rot) => txt
     ? `<button onclick="vjUbiUsar('${kj}', ${JSON.stringify(txt).replace(/"/g, "&quot;")})" title="Usar esta dirección en la reunión"
          style="font-size:10.5px; font-weight:700; padding:3px 9px; border-radius:999px; cursor:pointer; font-family:inherit; max-width:100%;
@@ -13890,11 +13899,19 @@ function vjUbiBloqueHtml(kj, co, r) {
     ? `<button onclick="vjUbiGuardar('${kj}', '${co.id}', 'ppal')" style="font-size:10.5px; font-weight:700; padding:3px 9px; border-radius:7px; cursor:pointer; font-family:inherit; border:1px solid #C7BDFF; background:#F1EFFF; color:#4030C8;">⬆ Guardar como principal</button>`
       + ` <button onclick="vjUbiGuardar('${kj}', '${co.id}', 'sec')" style="font-size:10.5px; font-weight:600; padding:3px 9px; border-radius:7px; cursor:pointer; font-family:inherit; border:1px solid #e5e7eb; background:#fff; color:#6b7280;">como secundaria</button>`
     : "";
-  if (!chips.trim() && !guardar) return u.estado === "error"
-    ? `<div style="font-size:11px; color:#b91c1c; margin-top:4px;">No se pudo leer la ubicación de la empresa: ${escAttr(u.msg || "")}</div>` : "";
+  /* 🪤 Antes acá se devolvía "" y el bloque quedaba MUDO: sin chips, sin botones y sin decir por
+     qué. German no tenía forma de saber si había guardado o no. Ahora siempre dice algo. */
+  if (!chips.trim() && !guardar) {
+    if (u.estado === "error") return `<div style="font-size:11px; color:#b91c1c; margin-top:4px;">No se pudo leer la ubicación de la empresa: ${escAttr(u.msg || "")}</div>`;
+    if (esLink) return `<div style="font-size:11px; color:#9ca3af; margin-top:4px;">Es el link de la call: no se guarda como ubicación de la empresa. Esta cuenta todavía no tiene dirección guardada.</div>`;
+    /* Si hay texto y no es link de call, `puedeGuardar` es true y ya salimos por el botón:
+       esta rama sólo se alcanza sin nada cargado. (Cuando la dirección YA está guardada, el chip
+       de arriba la muestra con ✓ — no hace falta una línea extra diciendo lo mismo.) */
+    return `<div style="font-size:11px; color:#9ca3af; margin-top:4px;">Esta cuenta no tiene ubicación guardada. Cargá la dirección o el link de Maps y aparece el botón para guardarla.</div>`;
+  }
   return `<div style="margin-top:6px; display:flex; gap:5px; flex-wrap:wrap; align-items:center;">${chips}${guardar}</div>
     <div id="vj-ubi-est" style="font-size:11px; margin-top:4px; color:#6b7280;"></div>
-    ${esLink && (u.ppal || u.sec) ? `<div style="font-size:10.5px; color:#9ca3af; margin-top:2px;">Hoy hay un link cargado; los chips de arriba son las direcciones guardadas de la cuenta.</div>` : ""}`;
+    ${esLink && (u.ppal || u.sec) ? `<div style="font-size:10.5px; color:#9ca3af; margin-top:2px;">Hoy la reunión es por call; los chips de arriba son las ubicaciones guardadas de la cuenta.</div>` : ""}`;
 }
 
 function vjCtoBloqueHtml(k, kj, co, r, pais, inS, lbS, coEstado, cli) {
