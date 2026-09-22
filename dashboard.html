@@ -13435,6 +13435,74 @@ function vjCoDeCuenta(cli) {
   if (local) return { estado: "listo", co: local };
   return window.__vjCoCuenta[vjCoKey(cli)] || { estado: "", co: null };
 }
+/* ── Ubicación de la empresa en HubSpot (2026-09-22) ────────────────────────────────────
+   Pedido de German: que el lugar que carga en la ficha quede guardado como ubicación de la
+   empresa, con una secundaria, y que en cada reunión pueda elegir principal / secundaria / otra
+   (puede surgir juntarse en un café).
+
+   ⚠️ **NO se escribe en `address`.** Ese campo lo llena HubSpot Insights solo —8 de 29 cuentas ya
+   tienen valor automático, con formato invertido tipo "1360 Cucha Cucha"— y pisarlo sería pelear
+   contra el enriquecimiento del CRM en cada corrida. Se usa `ubicacion_oficina`, que existe, está
+   **vacía en las 29** y cuya descripción dice literal "Ubicación de Google Maps de la oficina".
+   La secundaria va en `ubicacion_secundaria`, que German tiene que crear: si no existe, HubSpot
+   rechaza el write y mostramos su mensaje textual en vez de fallar mudo. */
+const VJ_UBI_PROPS = { ppal: "ubicacion_oficina", sec: "ubicacion_secundaria" };
+window.__vjUbi = window.__vjUbi || {};      // companyId -> { estado, ppal, sec, msg }
+
+async function vjUbiCargar(companyId, forzar) {
+  const id = String(companyId || ""); if (!id) return;
+  const c = window.__vjUbi[id];
+  if (!forzar && c && (c.estado === "ok" || c.estado === "cargando")) return;
+  window.__vjUbi[id] = { estado: "cargando", ppal: "", sec: "" };
+  try {
+    const res = await mcpCall(HS_SEARCH_TOOL, {
+      objectType: "companies",
+      filterGroups: [{ filters: [{ propertyName: "hs_object_id", operator: "EQ", value: id }] }],
+      properties: ["name", VJ_UBI_PROPS.ppal, VJ_UBI_PROPS.sec], limit: 1,
+      chatInsights: { userIntent: "Ficha de reunión: ubicación de la empresa", satisfaction: "NEUTRAL" }
+    });
+    const parsed = typeof res === "string" ? JSON.parse(res) : res;
+    const uno = (parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [])[0];
+    const pr = (uno && uno.properties) || {};
+    window.__vjUbi[id] = { estado: "ok", ppal: vjLimpio(pr[VJ_UBI_PROPS.ppal] || ""), sec: vjLimpio(pr[VJ_UBI_PROPS.sec] || "") };
+  } catch (e) {
+    window.__vjUbi[id] = { estado: "error", ppal: "", sec: "", msg: String((e && e.message) || e) };
+  }
+  if (VJ_FICHA_KEY) vjFichaRender();
+}
+
+/* Guarda el texto que hay en "Dónde es" como principal o secundaria de la empresa.
+   Un link de Meet/Zoom NO se guarda: la ubicación de la empresa es un lugar físico, y meter ahí
+   el link de una call la ensuciaría para siempre. */
+async function vjUbiGuardar(kj, companyId, cual) {
+  const k = kj.replace(/\\'/g, "'");
+  const txt = vjLimpio((vjResGet(k) || {}).lugar || "");
+  const est = document.getElementById("vj-ubi-est");
+  const avisar = (t, c) => { if (est) { est.textContent = t; est.style.color = c || "#6b7280"; } };
+  if (!txt) { avisar("Cargá primero la dirección.", "#B45309"); return; }
+  if (/^https?:/i.test(txt)) { avisar("Es un link de reunión, no una dirección: no se guarda en la empresa.", "#B45309"); return; }
+  avisar("Guardando en HubSpot…");
+  /* El armado de `props` va FUERA del try: adentro, un error de código (una const mal escrita,
+     por ejemplo) se reportaría como "HubSpot rechazó el guardado" y mandaría a buscar el problema
+     al lugar equivocado. El try envuelve sólo la llamada de red. */
+  const props = {}; props[cual === "sec" ? VJ_UBI_PROPS.sec : VJ_UBI_PROPS.ppal] = txt;
+  try {
+    await hsWrite({ updateRequest: { objects: [{ objectType: "companies", objectId: Number(companyId), properties: props }] } });
+    await vjUbiCargar(companyId, true);
+    avisar("✓ Guardada como " + (cual === "sec" ? "secundaria" : "principal"), "#047857");
+  } catch (e) {
+    const m = String((e && e.message) || e);
+    avisar(/does not exist|PROPERTY_DOESNT_EXIST/i.test(m)
+      ? "Falta crear la propiedad " + VJ_UBI_PROPS.sec + " en HubSpot."
+      : "HubSpot rechazó el guardado: " + m.slice(0, 140), "#b91c1c");
+  }
+}
+function vjUbiUsar(kj, texto) {
+  const k = kj.replace(/\\'/g, "'");
+  vjPrepSet(k, { lugar: texto });
+  vjFichaRender(); renderResultados(tripGet());
+}
+
 async function vjCoResolver(cli, forzar) {
   const key = vjCoKey(cli); if (!key) return;
   if (vjCompanyDe(cli)) return;                                  // ya lo teníamos local
@@ -13800,6 +13868,35 @@ async function vjCtoGuardarCambios(k, companyId) {
 }
 
 /* Bloque completo de contacto: selector de HubSpot + campos + alta. */
+/* Las guardadas de la empresa + el botón para guardar la de hoy.
+   Si la cuenta no resolvió a company (prospecto sin deals, típicamente) no se muestra nada:
+   sin id no hay dónde guardar, y un botón que no puede funcionar es peor que ninguno. */
+function vjUbiBloqueHtml(kj, co, r) {
+  if (!co || !co.id) return "";
+  const u = (window.__vjUbi || {})[String(co.id)];
+  if (!u) { setTimeout(() => vjUbiCargar(co.id), 0); return `<div style="font-size:11px; color:#9ca3af; margin-top:4px;">Buscando la ubicación guardada…</div>`; }
+  if (u.estado === "cargando") return `<div style="font-size:11px; color:#9ca3af; margin-top:4px;">Buscando la ubicación guardada…</div>`;
+  const actual = vjLimpio(r.lugar || "");
+  const esLink = /^https?:/i.test(actual);
+  const chip = (txt, rot) => txt
+    ? `<button onclick="vjUbiUsar('${kj}', ${JSON.stringify(txt).replace(/"/g, "&quot;")})" title="Usar esta dirección en la reunión"
+         style="font-size:10.5px; font-weight:700; padding:3px 9px; border-radius:999px; cursor:pointer; font-family:inherit; max-width:100%;
+         border:1px solid ${actual === txt ? "#a7f3d0" : "#ddd6fe"}; background:${actual === txt ? "#ECFDF5" : "#F5F3FF"}; color:${actual === txt ? "#047857" : "#4030C8"};">
+         ${actual === txt ? "✓ " : ""}${rot}: ${escAttr(txt.slice(0, 34))}${txt.length > 34 ? "…" : ""}</button>`
+    : "";
+  const chips = chip(u.ppal, "Principal") + " " + chip(u.sec, "Secundaria");
+  const puedeGuardar = actual && !esLink && actual !== u.ppal;
+  const guardar = puedeGuardar
+    ? `<button onclick="vjUbiGuardar('${kj}', '${co.id}', 'ppal')" style="font-size:10.5px; font-weight:700; padding:3px 9px; border-radius:7px; cursor:pointer; font-family:inherit; border:1px solid #C7BDFF; background:#F1EFFF; color:#4030C8;">⬆ Guardar como principal</button>`
+      + ` <button onclick="vjUbiGuardar('${kj}', '${co.id}', 'sec')" style="font-size:10.5px; font-weight:600; padding:3px 9px; border-radius:7px; cursor:pointer; font-family:inherit; border:1px solid #e5e7eb; background:#fff; color:#6b7280;">como secundaria</button>`
+    : "";
+  if (!chips.trim() && !guardar) return u.estado === "error"
+    ? `<div style="font-size:11px; color:#b91c1c; margin-top:4px;">No se pudo leer la ubicación de la empresa: ${escAttr(u.msg || "")}</div>` : "";
+  return `<div style="margin-top:6px; display:flex; gap:5px; flex-wrap:wrap; align-items:center;">${chips}${guardar}</div>
+    <div id="vj-ubi-est" style="font-size:11px; margin-top:4px; color:#6b7280;"></div>
+    ${esLink && (u.ppal || u.sec) ? `<div style="font-size:10.5px; color:#9ca3af; margin-top:2px;">Hoy hay un link cargado; los chips de arriba son las direcciones guardadas de la cuenta.</div>` : ""}`;
+}
+
 function vjCtoBloqueHtml(k, kj, co, r, pais, inS, lbS, coEstado, cli) {
   r = vjCtoMigrar(k, r);                 // parte el viejo "Nombre y rol" la primera vez
   const wa = vjWa(r.ctoTel, pais);
@@ -14005,6 +14102,7 @@ function vjFichaRender() {
       ${href ? `<a href="${escAttr(href)}" target="_blank" rel="noopener" title="Abrir" style="flex:0 0 auto; padding:6px 12px; border:1px solid #C7BDFF; border-radius:7px; background:#F1EFFF; color:#4030C8; font-size:12px; font-weight:700; text-decoration:none;">↗</a>` : ""}
     </div>
     ${(r.lugar || "").trim() && !/^https?:/i.test(r.lugar) ? `<div style="font-size:11px; color:#6b7280; margin-top:3px;">Abre en Google Maps.</div>` : ""}
+    ${vjUbiBloqueHtml(kj, co, r)}
     <label style="${lbS}">Documentación <span onclick="vjPrepDocAdd('${kj}')" style="cursor:pointer; color:#4030C8; font-weight:800; text-transform:none; letter-spacing:0;">＋ link</span></label>
     ${docsHtml}
     <label style="${lbS}">Info de interés previa</label>
