@@ -13892,6 +13892,18 @@ function vjCtoScopeMsg(e) {
       "Agregá los alcances crm.objects.contacts.read y crm.objects.contacts.write en " +
       "Configuración → Integraciones → Apps privadas → la app del dashboard.";
   }
+  /* 🧩 El mail es ÚNICO en HubSpot. Cuando se intenta escribir uno que ya tiene otro contacto,
+     HubSpot devuelve un objeto Java crudo —`Cannot set PropertyValueCoordinates{portalId=…,
+     propertyName=email, value=…}`— que no le dice nada a nadie. Caso testigo 22/09: dos
+     "Vanessa Sanchez" creadas con 67 segundos de diferencia el 18/09, una en la company
+     equivocada y con el mail metido en el campo Cargo. **El error casi siempre significa
+     contacto duplicado**, así que se traduce y se dice qué hacer. */
+  const mail = t.match(/propertyName=email,\s*value=([^,}\s]+)/i);
+  if (mail || /already (in use|has this|exists)/i.test(t)) {
+    return "Ese mail" + (mail ? " (" + mail[1] + ")" : "") + " ya lo tiene OTRO contacto en HubSpot: "
+      + "el mail es único, así que no se puede repetir. Casi siempre significa que este contacto está "
+      + "duplicado. Buscá el mail en HubSpot, fusionalos, y volvé a elegir el contacto bueno acá.";
+  }
   return t.slice(0, 220);
 }
 function vjCtoNombre(c) {
