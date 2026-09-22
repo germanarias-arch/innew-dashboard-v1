@@ -13500,6 +13500,50 @@ function vjUbiTipo(companyId, r) {
   return "";
 }
 
+/* ===== "El cliente confirmó que la reunión es acá" (2026-09-22) =======================
+   Pedido de German: que él tilde en la compu que el cliente confirmó la dirección, y que en la
+   calle esa confirmación se vea. El punto entero de la feature es que quien está viajando no
+   dude de si el lugar es el correcto.
+   🚨 Por eso la confirmación guarda **el texto confirmado**, no un booleano suelto: si después
+   la dirección cambia, el tilde deja de valer **solo**. Un check que sobrevive a un cambio de
+   dirección es peor que no tener check — manda a alguien tranquilo al lugar equivocado. */
+function vjLugarOkEstado(r) {
+  const txt = vjLimpio((r && r.lugar) || "");
+  if (!txt) return "sin";                                   // no hay dirección que confirmar
+  if (!r || !r.lugarOk) return "no";
+  return vjLimpio(r.lugarOkTxt || "") === txt ? "si" : "cambio";
+}
+function vjLugarOkSet(kj, v) {
+  const k = kj.replace(/\\'/g, "'");
+  const txt = vjLimpio((vjResGet(k) || {}).lugar || "");
+  if (v && !txt) return;                                    // no se confirma una dirección vacía
+  vjPrepSet(k, v
+    ? { lugarOk: 1, lugarOkTxt: txt, lugarOkTs: new Date().toISOString().slice(0, 10) }
+    : { lugarOk: 0, lugarOkTxt: "", lugarOkTs: "" });
+  vjFichaRender(); renderResultados(tripGet());
+}
+/* El tilde en la ficha (escritorio). En el celular esto se lee, no se toca: confirmar es algo
+   que se hace hablando con el cliente antes de salir, no parado en la vereda. */
+function vjLugarOkHtml(kj, r) {
+  const e = vjLugarOkEstado(r);
+  if (e === "sin") return `<div style="font-size:11px; color:#9ca3af; margin-top:5px;">Cuando cargues la dirección vas a poder marcar que el cliente la confirmó.</div>`;
+  if (e === "cambio") return `<div style="margin-top:6px; padding:7px 10px; border:1px solid #fed7aa; background:#FFF7ED; border-radius:8px; font-size:11.5px; color:#9a3412;">
+      ⚠ <b>La dirección cambió después de confirmarla</b>, así que el tilde ya no vale.
+      ${r.lugarOkTxt ? `Habías confirmado: <i>${escAttr(String(r.lugarOkTxt).slice(0, 60))}</i>.` : ""}
+      <div style="margin-top:5px;"><label style="cursor:pointer; font-weight:700; color:#9a3412;">
+        <input type="checkbox" onchange="vjLugarOkSet('${kj}',this.checked?1:0)" style="vertical-align:-1px; margin-right:5px;">Volví a confirmarla con el cliente</label></div>
+    </div>`;
+  const si = e === "si";
+  return `<label style="display:flex; align-items:flex-start; gap:7px; margin-top:6px; cursor:pointer; font-size:11.5px; line-height:1.4;
+      padding:7px 10px; border-radius:8px; border:1px solid ${si ? "#a7f3d0" : "#e5e7eb"}; background:${si ? "#ECFDF5" : "#fff"};">
+    <input type="checkbox" ${si ? "checked" : ""} onchange="vjLugarOkSet('${kj}',this.checked?1:0)" style="margin-top:2px;">
+    <span><b style="color:${si ? "#047857" : "#374151"};">El cliente confirmó que la reunión es acá</b>
+      <i style="display:block; font-style:normal; color:#9ca3af; font-size:10.5px; margin-top:1px;">${si
+        ? "Confirmada" + (r.lugarOkTs ? " el " + escAttr(fmtDmy(r.lugarOkTs)) : "") + " · en el celular se ve el sello verde"
+        : "Tildalo cuando te lo confirme: en la calle se lee y el que viaja no duda"}</i></span>
+  </label>`;
+}
+
 /* Elegir de dónde sale el lugar de hoy. Al elegir primaria/secundaria se copia la dirección
    guardada; si esa ranura está vacía se conserva lo que ya estaba escrito, que es justo lo que
    después se va a guardar ahí. "Puntual" no toca el texto y deja la cuenta afuera. */
@@ -14229,6 +14273,7 @@ function vjFichaRender() {
     </div>
     ${(r.lugar || "").trim() && !/^https?:/i.test(r.lugar) ? `<div style="font-size:11px; color:#6b7280; margin-top:3px;">Abre en Google Maps.</div>` : ""}
     ${vjUbiBloqueHtml(kj, coCto, r, coEstado)}
+    ${vjLugarOkHtml(kj, r)}
     <label style="${lbS}">Documentación <span onclick="vjPrepDocAdd('${kj}')" style="cursor:pointer; color:#4030C8; font-weight:800; text-transform:none; letter-spacing:0;">＋ link</span></label>
     ${docsHtml}
     <label style="${lbS}">Info de interés previa</label>
@@ -14591,6 +14636,35 @@ function objBloque(kj, r) {
     </div>`;
 }
 
+/* Chip de estado del bloque para el celular (2026-09-22). El dato ya existía —`s.estado`, el
+   mismo que pinta la franja izquierda del cronograma en escritorio— pero en el celular no se
+   veía, así que una "idea" y una reunión confirmada se leían igual. Es el motor el que manda:
+   acá sólo se dibuja. */
+function vjmEstadoChip(s, chico) {
+  const e = AGENDA_ESTADOS[(s && (s.estado || s.status)) || "propuesto"];
+  if (!e) return "";
+  return `<span style="display:inline-flex; align-items:center; gap:4px; background:${e.bg}; color:${e.fg};
+    font-size:${chico ? "9.5" : "10.5"}px; font-weight:800; padding:${chico ? "1px 6px" : "2px 8px"}; border-radius:999px; white-space:nowrap;">
+    <i style="width:5px; height:5px; border-radius:50%; background:${e.dot};"></i>${escAttr(e.label)}</span>`;
+}
+
+/* El sello que mira el que está en la calle. Verde = el cliente dijo que es ahí.
+   Los otros dos estados NO se dibujan en gris neutro a propósito: "sin confirmar" es
+   información operativa (llamá antes de viajar), no un detalle. */
+function vjmLugarSello(r) {
+  const e = vjLugarOkEstado(r);
+  if (e === "sin") return "";
+  if (e === "si") return `<div style="margin-top:6px; display:flex; align-items:center; gap:7px; padding:7px 10px; border-radius:9px;
+      background:#ECFDF5; border:1px solid #a7f3d0; color:#047857; font-size:11.5px; font-weight:700;">
+      <span style="font-size:13px;">✓</span><span>Dirección confirmada con el cliente${r.lugarOkTs ? ` <span style="font-weight:500; color:#6b9c8a;">· ${escAttr(fmtDmy(r.lugarOkTs))}</span>` : ""}</span></div>`;
+  if (e === "cambio") return `<div style="margin-top:6px; display:flex; align-items:center; gap:7px; padding:7px 10px; border-radius:9px;
+      background:#FFF7ED; border:1px solid #fed7aa; color:#9a3412; font-size:11.5px; font-weight:700;">
+      <span style="font-size:13px;">⚠</span><span>La dirección cambió después de confirmarla — confirmala de nuevo</span></div>`;
+  return `<div style="margin-top:6px; display:flex; align-items:center; gap:7px; padding:7px 10px; border-radius:9px;
+      background:#FFFBEB; border:1px solid #fde68a; color:#854F0B; font-size:11.5px; font-weight:700;">
+      <span style="font-size:13px;">◌</span><span>Dirección sin confirmar con el cliente</span></div>`;
+}
+
 function accFila(kj, r, wa, href) {
   const quien = String(r.cto || "").trim();
   const fWa = wa.ok
@@ -14697,9 +14771,9 @@ function renderViajesMovil(trip) {
         <b style="font-size:15px; font-variant-numeric:tabular-nums; width:48px; flex:none;${paso ? " color:#9ca3af;" : ""}">${minToHHMM(t.ini)}</b>
         <div style="flex:1; min-width:0;">
           <b style="font-size:14px;">${escAttr(s2.cli)}</b>
-          <div style="font-size:11.5px; color:#6b7280; margin-top:2px;">
-            ${ch ? `<i style="width:7px;height:7px;border-radius:50%;display:inline-block;background:${ch.fg};"></i> ${ch.t}` : ""}
-            ${monto ? ` · <b style="color:#047857;">${fmtMoney(monto)}</b>` : ""}</div>
+          <div style="font-size:11.5px; color:#6b7280; margin-top:2px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            ${vjmEstadoChip(s2, 1)}
+            <span>${ch ? `<i style="width:7px;height:7px;border-radius:50%;display:inline-block;background:${ch.fg};"></i> ${ch.t}` : ""}${monto ? ` · <b style="color:#047857;">${fmtMoney(monto)}</b>` : ""}</span></div>
           ${sinRes ? `<div style="font-size:11px; color:#B45309; font-weight:700; margin-top:3px;">⚠ falta cargar el resultado</div>` : ""}
         </div>
         ${acc ? `<span style="display:flex; gap:5px; flex:none;">${acc}</span>` : `<span style="display:flex; gap:4px;">${pips}</span>`}
@@ -14709,6 +14783,7 @@ function renderViajesMovil(trip) {
       <div style="display:flex; align-items:baseline; gap:9px;">
         <span style="font-size:20px; font-weight:800; font-variant-numeric:tabular-nums; line-height:1;">${minToHHMM(t.ini)}</span>
         <span style="font-size:10.5px; color:#9ca3af;">→ ${minToHHMM(t.fin)}</span>
+        <span style="margin-left:auto;">${vjmEstadoChip(s2, 0)}</span>
       </div>
       <div style="font-size:16.5px; font-weight:700; margin-top:4px; line-height:1.2;">${escAttr(s2.cli)}</div>
       <div style="font-size:11.5px; color:#6b7280; margin-top:3px;">
@@ -14720,7 +14795,7 @@ function renderViajesMovil(trip) {
         <span style="display:flex; gap:4px;">${pips}</span>
         <span style="color:${faltan ? "#B45309" : "#047857"}; font-weight:600;">${faltan ? "falta " + faltan + (faltan > 1 ? " datos" : " dato") : "lista para entrar"}</span>
       </div>
-      ${objBloque(kj, r)}${accFila(kj, r, wa, href)}
+      ${objBloque(kj, r)}${accFila(kj, r, wa, href)}${vjmLugarSello(r)}
       <div style="display:flex; gap:7px; margin-top:9px;">
         ${(() => {
           /* Por reunión, no por día: con el orden cronológico puede haber una vencida sin cargar
