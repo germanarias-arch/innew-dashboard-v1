@@ -13988,11 +13988,16 @@ function vjFichaRender() {
   const def = VJ_RESULTADOS[r.res || ""];
   const nDeals = deals.length;
 
+  /* 🎯 El objetivo va PRIMERO y enmarcado (pedido de German 2026-09-22): es lo único que hay
+     que tener en la cabeza al entrar. Antes quedaba debajo de los deals y se leía como un campo
+     más del formulario. Los deals son contexto; el objetivo es la reunión. */
   const antes = `
+    <div style="border:2px solid #430C89; border-radius:10px; background:#F7F5FF; padding:9px 11px; margin-bottom:12px;">
+      <label style="${lbS} color:#430C89; font-weight:800;">🎯 Objetivo de la reunión</label>
+      <textarea rows="2" placeholder="Qué querés llevarte de acá. Uno solo y concreto." onchange="vjPrepSet('${kj}',{obj:this.value}); renderResultados(tripGet());" style="${inS} resize:vertical; margin-bottom:0;${(r.obj || "").trim() ? "" : " border-color:#EF9F27; background:#FFFCF5;"}">${escAttr(r.obj || "")}</textarea>
+    </div>
     <label style="${lbS}">Deals asociados${totDeals ? ` · <span style="color:#047857;">${fmtMoneyK(totDeals)}</span>` : ""}</label>
     ${dealsHtml}
-    <label style="${lbS}">Objetivo de la reunión</label>
-    <textarea rows="2" placeholder="Qué querés llevarte de acá. Uno solo y concreto." onchange="vjPrepSet('${kj}',{obj:this.value}); renderResultados(tripGet());" style="${inS} resize:vertical;${(r.obj || "").trim() ? "" : " border-color:#EF9F27; background:#FFFCF5;"}">${escAttr(r.obj || "")}</textarea>
     ${vjCtoBloqueHtml(k, kj, coCto, r, pais, inS, lbS, coEstado, cli)}
     <label style="${lbS}">Dónde es</label>
     <div style="display:flex; gap:6px;">
@@ -14345,6 +14350,23 @@ function vjmRelojArrancar() {
    compacta, que sí lo tiene). */
 const VJ_PIN = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#4030C8" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"/><path d="M17.657 16.657l-4.243 4.243a2 2 0 0 1 -2.827 0l-4.244 -4.243a8 8 0 1 1 11.314 0z"/></svg>';
 const VJ_PIN_AMB = VJ_PIN.replace(/#4030C8/g, "#B45309");
+/* 🎯 El objetivo, arriba de todo en la tarjeta del celular (2026-09-22).
+   Va ANTES que WhatsApp y Maps a propósito: esos son el cómo, esto es el para qué. Si no está
+   cargado, el bloque se convierte en el llamador a cargarlo — mismo criterio que las otras filas. */
+function objBloque(kj, r) {
+  const obj = String(r.obj || "").trim();
+  if (!obj) {
+    return `<div class="vjm-acc vacio" onclick="vjFichaOpen('${kj}',0)" style="margin-top:9px;">
+      <span class="vjm-acc-ico" style="background:#FFF7E6; border:1px solid #FDE68A;">🎯</span>
+      <span class="vjm-acc-tx"><b>Cargar el objetivo</b><i>qué querés llevarte de esta reunión</i></span>
+      <span class="vjm-acc-ch">›</span></div>`;
+  }
+  return `<div onclick="vjFichaOpen('${kj}',0)" style="margin-top:10px; border:2px solid #430C89; border-radius:10px; background:#F7F5FF; padding:9px 11px; cursor:pointer;">
+      <div style="font-size:9.5px; font-weight:800; letter-spacing:.7px; text-transform:uppercase; color:#430C89; margin-bottom:3px;">🎯 Objetivo</div>
+      <div style="font-size:13.5px; line-height:1.35; font-weight:600; color:#292D32;">${escAttr(obj)}</div>
+    </div>`;
+}
+
 function accFila(kj, r, wa, href) {
   const quien = String(r.cto || "").trim();
   const fWa = wa.ok
@@ -14461,7 +14483,7 @@ function renderViajesMovil(trip) {
         <span style="display:flex; gap:4px;">${pips}</span>
         <span style="color:${faltan ? "#B45309" : "#047857"}; font-weight:600;">${faltan ? "falta " + faltan + (faltan > 1 ? " datos" : " dato") : "lista para entrar"}</span>
       </div>
-      ${accFila(kj, r, wa, href)}
+      ${objBloque(kj, r)}${accFila(kj, r, wa, href)}
       <div style="display:flex; gap:7px; margin-top:9px;">
         <button class="vjm-btn full" onclick="vjFichaOpen('${kj}',${modoCarga ? 1 : 0})">${modoCarga ? "Cargar resultado →" : "Preparar →"}</button>
       </div>
