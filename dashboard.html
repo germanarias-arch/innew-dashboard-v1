@@ -13810,6 +13810,19 @@ async function vjUbiGuardar(kj, companyId, cual) {
     const est = document.getElementById("vj-ubi-est");
     if (est) { est.textContent = t; est.style.color = c || "#6b7280"; }
   };
+  /* 🚨 El error COMPLETO, en un bloque seleccionable. Antes se cortaba con `.slice(0, 140)` y el
+     recorte caía JUSTO donde HubSpot explica la causa: German vio `"message":"Se enco` y ahí
+     terminaba. Un error truncado es tan inútil como un "no se pudo": mismo pecado que ya está
+     documentado el 09/09. Se muestra además QUÉ se intentó escribir (company, propiedad, largo),
+     que es lo que permite diagnosticar de una sola captura en vez de tres idas y vueltas. */
+  const avisarDetalle = (titulo, detalle) => {
+    const est = document.getElementById("vj-ubi-est");
+    if (!est) return;
+    est.innerHTML = `<div style="color:#b91c1c; font-weight:700;">${escAttr(titulo)}</div>
+      <div style="margin-top:4px; padding:6px 8px; background:#FEF2F2; border:1px solid #fecaca; border-radius:7px;
+        font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:10.5px; line-height:1.45; color:#7f1d1d;
+        white-space:pre-wrap; word-break:break-word; max-height:180px; overflow:auto; user-select:text;">${escAttr(detalle)}</div>`;
+  };
   if (!txt) { avisar("Cargá primero la dirección.", "#B45309"); return; }
   if (vjEsLinkReunion(txt)) { avisar("Es el link de la call de hoy, no dónde queda la empresa: no se guarda.", "#B45309"); return; }
   avisar("Guardando en HubSpot…");
@@ -13826,9 +13839,11 @@ async function vjUbiGuardar(kj, companyId, cual) {
     avisar("✓ Guardada en HubSpot como " + vjUbiRot(companyId, cual), "#047857");  // …y después avisar
   } catch (e) {
     const m = String((e && e.message) || e);
-    avisar(/does not exist|PROPERTY_DOESNT_EXIST/i.test(m)
-      ? "Falta crear la propiedad " + prop + " en HubSpot."
-      : "HubSpot rechazó el guardado: " + m.slice(0, 140), "#b91c1c");
+    console.error("vjUbiGuardar falló", { companyId: companyId, propiedad: prop, largo: txt.length, valor: txt, error: m });
+    if (/does not exist|PROPERTY_DOESNT_EXIST/i.test(m)) { avisar("Falta crear la propiedad " + prop + " en HubSpot.", "#b91c1c"); return; }
+    avisarDetalle("HubSpot rechazó el guardado. Este es el error completo — copialo y pasámelo:",
+      m + "\n\n─── lo que se intentó escribir ───\n"
+      + "company: " + companyId + "\npropiedad: " + prop + "\nlargo: " + txt.length + " caracteres\nvalor: " + txt);
   }
 }
 
