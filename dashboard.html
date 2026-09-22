@@ -10135,6 +10135,51 @@ function cliTab(which) {
    tabla cuando en realidad no hay nada que medir. Van con "s/bolsa" y se ordenan aparte. */
 const CSM_UMBRAL = { rojo: 100, ambar: 85 };   // % de la bolsa consumida
 
+/* ===== Puente al portal de Jira (2026-09-22) =========================================
+   Mapa **companyId → clave(s) de proyecto**, verificado en Jira el 22/09. Va por ID y no
+   por nombre a propósito: los nombres de HubSpot cambian y no coinciden con los de Jira
+   (la company es "Velenet" con E y el proyecto `VALENET` con A; "Nuemasur" ↔ `DAYTONA`;
+   "SBS Librería" ↔ `PRTL`; "Atlantic" ↔ `TRAMONTINA`). La fuente de verdad del mapa es
+   `memory/jira-innew.md` — si se agrega una cuenta con portal, hay que tocar las dos.
+
+   **Guataporá tiene DOS proyectos** (`GUATA` soporte + `GUATAFS` FullService): por eso el
+   valor es un array y el JQL usa `project in (...)`. Sumar uno solo subestima la cuenta.
+
+   Las cuentas que NO están acá no tienen portal y es correcto: Bancard y Cabrales están en
+   IDP; Café Martinez, Electrocomponentes y Grupo Assa no tienen bolsa de S&G. */
+const JIRA_BASE = "https://innewla.atlassian.net";
+const JIRA_PROYECTO = {
+  // --- cartera German ---
+  "16037965381": ["CAB"], "54253362980": ["VANA"], "54943844512": ["ASSATEX"],
+  "8868020388": ["NA"], "46712018069": ["PERSONALPY"], "22486032201": ["BREMEN"],
+  "45899840267": ["PLM"], "43833822830": ["PMP"], "18941853346": ["LH"],
+  "46793616475": ["PETENATTI"], "43833693090": ["BILDER"],
+  // --- cartera Jennifer ---
+  "43469524404": ["ROUGE"], "8512953717": ["DRICCO"], "43720089223": ["DAYTONA"],
+  "9578550448": ["VALENET"], "7220299595": ["PFDP"], "47195963147": ["GUATA", "GUATAFS"],
+  "43650305408": ["PRTL"], "43488762992": ["TRAMONTINA"], "57061234101": ["ANTUAN"],
+  "7304107336": ["CORMORAN"], "43496453264": ["PEC"], "43833762916": ["PST"],
+  "18314104338": ["PSA"]
+};
+function csmKeys(id) { return JIRA_PROYECTO[String(id)] || null; }
+
+/* 🚨 Los contadores de esta tabla son la FOTO del lunes (los escribe el task en HubSpot).
+   Estos links, en cambio, abren la **lista viva** en Jira: por eso el número puede no
+   coincidir con lo que se ve al otro lado, y está bien — el link manda.
+   Se arma el JQL a mano en vez de guardar la lista de issues en una property: una lista con
+   títulos PARECE actual aunque tenga una semana, y eso engaña más que un número. */
+function csmJqlUrl(keys, soloPrioritarios) {
+  const p = keys.length > 1 ? "project in (" + keys.join(", ") + ")" : "project = " + keys[0];
+  /* Prioridades REALES de los portales de Innew: 10000 = 🚨Impide la compra ·
+     10002 = ⚡Urgente. `Highest`/`High` dan cero en las 24 cuentas — filtrar por ahí
+     devolvería una lista vacía y parecería que no hay urgencias. */
+  const jql = p + " AND statusCategory != Done"
+    + (soloPrioritarios ? " AND priority in (10000, 10002)" : "")
+    + " ORDER BY priority ASC, updated DESC";
+  return JIRA_BASE + "/issues/?jql=" + encodeURIComponent(jql);
+}
+function csmPortalUrl(keys) { return JIRA_BASE + "/browse/" + keys[0]; }
+
 function csmPct(cons, cont) {
   if (cont == null || !(cont > 0)) return null;   // sin bolsa → no aplica, NO 0%
   if (cons == null) return null;
@@ -10182,6 +10227,7 @@ function renderCsm() {
     return {
       id: c.id, cli: p.name || "(sin nombre)", csm: p.csm_asignado || "",
       cont: cont, cons: cons, pct: csmPct(cons, cont), ab: ab, pr: pr,
+      keys: csmKeys(c.id),                          // null = no tiene portal en Jira
       medida: cons != null || ab != null            // ¿el task la tocó alguna vez?
     };
   });
@@ -10234,18 +10280,34 @@ function renderCsm() {
           <div style="height:100%; width:${w}%; background:${t.c}; border-radius:4px;"></div></div>
         <b style="font-size:12px; color:${t.c}; min-width:38px; text-align:right;">${Math.round(f.pct)}%</b></div>`;
   };
-  const num = (v, col) => v == null ? `<span style="color:#d1d5db;">—</span>` : `<b style="color:${col || "#1f2937"};">${v}</b>`;
+  /* Contador clickeable → abre la lista VIVA en Jira con el JQL exacto.
+     El cero también es link: "¿de verdad no hay nada abierto?" es una pregunta legítima y
+     un 0 muerto la deja sin responder. Sin portal, el número no se linkea. */
+  const num = (v, col, f, soloPr) => {
+    if (v == null) return `<span style="color:#d1d5db;">—</span>`;
+    const b = `<b style="color:${col || "#1f2937"};">${v}</b>`;
+    if (!f.keys) return b;
+    const que = soloPr ? "prioritarios abiertos" : "tickets abiertos";
+    return `<a href="${csmJqlUrl(f.keys, soloPr)}" target="_blank" rel="noopener"
+       title="Ver en Jira los ${que} de ${escAttr(f.cli)} (${f.keys.join(" + ")}) — lista en vivo"
+       style="text-decoration:none; border-bottom:1px dotted ${col || "#9ca3af"};">${b}</a>`;
+  };
 
   const cuerpo = vis.map(f => {
     const t = csmTono(f.pct, mesPct);
+    const nombre = f.keys
+      ? `<a href="${csmPortalUrl(f.keys)}" target="_blank" rel="noopener"
+           title="Abrir el portal ${f.keys.join(" + ")} en Jira"
+           style="color:#4030C8; text-decoration:none; font-weight:600;">${escAttr(f.cli)} <span style="font-size:10px; color:#9ca3af; font-weight:500;">${escAttr(f.keys.join(" + "))} ↗</span></a>`
+      : `<span style="font-weight:600;" title="Esta cuenta no tiene portal de soporte en Jira">${escAttr(f.cli)}</span>`;
     return `<tr style="background:${t.bg};">
-      <td style="position:sticky; left:0; background:${t.bg === "transparent" ? "#fff" : t.bg}; font-weight:600;">${escAttr(f.cli)}</td>
+      <td style="position:sticky; left:0; background:${t.bg === "transparent" ? "#fff" : t.bg};">${nombre}</td>
       <td style="font-size:11.5px; color:#6b7280;">${escAttr(f.csm || "—")}</td>
       <td style="text-align:right;">${f.cont != null ? f.cont : `<span style="color:#d1d5db;">—</span>`}</td>
       <td style="text-align:right;">${f.cons != null ? f.cons.toFixed(1) : `<span style="color:#d1d5db;">—</span>`}</td>
       <td style="min-width:120px;">${barraPct(f)}</td>
-      <td style="text-align:right;">${num(f.ab)}</td>
-      <td style="text-align:right;">${num(f.pr, f.pr ? "#b91c1c" : null)}</td>
+      <td style="text-align:right;">${num(f.ab, null, f, false)}</td>
+      <td style="text-align:right;">${num(f.pr, f.pr ? "#b91c1c" : null, f, true)}</td>
       <td style="font-size:11px; color:#9ca3af;">${f.medida ? "" : "sin medir"}</td>
     </tr>`;
   }).join("");
@@ -10257,6 +10319,8 @@ function renderCsm() {
         <th>% de la bolsa</th><th style="text-align:right;">Tickets</th><th style="text-align:right;">Prioritarios</th><th></th>
       </tr></thead><tbody>${cuerpo || `<tr><td colspan="8" style="padding:18px; color:#9ca3af;">Sin cuentas para este filtro.</td></tr>`}</tbody></table></div>
     <div class="small" style="margin-top:10px; font-style:italic; color:#888;">
+      <b>Clic en el nombre</b> abre el portal de esa cuenta en Jira; <b>clic en un número</b> abre la lista de esos tickets.
+      Los números son la foto del lunes —los escribe el task <code>horas-jira-a-hubspot</code>—, pero los links abren la <b>lista viva</b>: si no coinciden, manda Jira.
       <b>Prioritarios</b> = tickets abiertos con prioridad <b>🚨 Impide la compra</b> o <b>⚡ Urgente</b>.
       Los portales de Innew no usan las prioridades estándar de Jira: filtrar por “Highest” da cero en las 24 cuentas.
       <b>s/bolsa</b> = la cuenta tiene portal pero no tiene horas contratadas, así que el % no aplica.
