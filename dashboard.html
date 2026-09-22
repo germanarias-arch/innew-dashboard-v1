@@ -1341,7 +1341,8 @@ const STATE_KEYS = [
      enteraba — parecía un bug del render móvil y era que el dato nunca salía del navegador. */
   "vj_resultados",             // ficha de cada reunión: objetivo, contacto, tel, lugar, resultado
   "vj_eventos",                // eventos/ferias del radar de destinos
-  "vj_partners"                // padrón de partners (VTEX, Tiendanube) que usa vjTipoCuenta
+  "vj_partners",               // padrón de partners (VTEX, Tiendanube) que usa vjTipoCuenta
+  "vj_ubi_titulos"             // título personalizado de la ubicación primaria/secundaria de cada cuenta (2026-09-22)
 ];
 const STATE_BASE_LS  = "dashState_base";     // NO se espeja: versión del server con la que estamos sincronizados
 const STATE_RELOAD_SS = "dashState_reloads"; // guard anti-loop de reload
@@ -1370,7 +1371,7 @@ function stateSnapshot() {
    todas las reuniones (objetivo, contacto, teléfono, lugar, resultado) del dispositivo donde las
    cargó. Mientras el server no conozca la clave, **lo local manda y se sube**. En cuanto el server
    la tiene, esta lista deja de tener efecto sola — no hay que acordarse de sacarla. */
-const STATE_KEYS_ADOPTAR = ["vj_resultados", "vj_eventos", "vj_partners"];
+const STATE_KEYS_ADOPTAR = ["vj_resultados", "vj_eventos", "vj_partners", "vj_ubi_titulos"];
 
 function stateApply(snap) {
   window.__stateApplying = true;
@@ -13458,6 +13459,60 @@ const VJ_LINK_REUNION = /(meet\.google|zoom\.us|teams\.microsoft|teams\.live|whe
 function vjEsLinkReunion(v) { const t = String(v || ""); return /^https?:/i.test(t) && VJ_LINK_REUNION.test(t); }
 window.__vjUbi = window.__vjUbi || {};      // companyId -> { estado, ppal, sec, msg }
 
+/* ===== TÍTULO PERSONALIZADO DE CADA UBICACIÓN (2026-09-22) ============================
+   "Ubicación primaria" no le dice nada a nadie: lo útil es "Oficina central" o "Depósito
+   Villa Elisa". El rótulo vive en el dashboard, **no** adentro de la property de HubSpot:
+   meterlo ahí ensuciaría el campo para el resto del equipo (la property es la dirección, no
+   la dirección + un apodo) y obligaría a crear dos properties más. Se espeja por /api/state,
+   así que el título que ponés en la compu lo ves en el celular. */
+const VJ_UBI_TIT_KEY = "vj_ubi_titulos";
+const VJ_UBI_ROT = { ppal: "Ubicación primaria", sec: "Ubicación secundaria", puntual: "Lugar puntual" };
+function vjUbiTitAll() { try { return JSON.parse(localStorage.getItem(VJ_UBI_TIT_KEY) || "{}"); } catch (e) { return {}; } }
+function vjUbiTit(companyId, cual) { return vjLimpio(((vjUbiTitAll()[String(companyId)] || {})[cual]) || ""); }
+function vjUbiRot(companyId, cual) { return vjUbiTit(companyId, cual) || VJ_UBI_ROT[cual] || "Ubicación"; }
+function vjUbiTitSet(kj, companyId, cual) {
+  const v = prompt("Título de la " + (cual === "sec" ? "ubicación secundaria" : "ubicación primaria")
+    + " de esta cuenta (ej: Oficina central, Depósito, Showroom).\nVacío = volver al nombre por defecto.",
+    vjUbiTit(companyId, cual) || "");
+  if (v === null) return;                                  // canceló: no tocar nada
+  const all = vjUbiTitAll(); const id = String(companyId);
+  all[id] = Object.assign({}, all[id] || {});
+  const lim = vjLimpio(v);
+  if (lim) all[id][cual] = lim; else delete all[id][cual];
+  if (!Object.keys(all[id]).length) delete all[id];
+  try { localStorage.setItem(VJ_UBI_TIT_KEY, JSON.stringify(all)); } catch (e) {}
+  vjFichaRender();
+}
+
+/* Qué es el lugar de HOY: la primaria de la cuenta, la secundaria, un lugar puntual (un café)
+   o el link de la call. Lo que German eligió manda; si todavía no eligió se infiere del texto,
+   y si no coincide con ninguna guardada devuelve "" para que la ficha **pregunte**.
+   🪤 Suponer "primaria" sería justo el error a evitar: un café terminaría escrito en la cuenta. */
+function vjUbiTipo(companyId, r) {
+  const txt = vjLimpio((r && r.lugar) || "");
+  if (vjEsLinkReunion(txt)) return "call";
+  const t = (r && r.lugarTipo) || "";
+  if (t === "ppal" || t === "sec" || t === "puntual") return t;
+  if (!txt) return "";
+  const u = (window.__vjUbi || {})[String(companyId)] || {};
+  if (txt === vjLimpio(u.ppal || "")) return "ppal";
+  if (txt === vjLimpio(u.sec || "")) return "sec";
+  return "";
+}
+
+/* Elegir de dónde sale el lugar de hoy. Al elegir primaria/secundaria se copia la dirección
+   guardada; si esa ranura está vacía se conserva lo que ya estaba escrito, que es justo lo que
+   después se va a guardar ahí. "Puntual" no toca el texto y deja la cuenta afuera. */
+function vjUbiElegir(kj, companyId, cual) {
+  const k = kj.replace(/\\'/g, "'");
+  const u = (window.__vjUbi || {})[String(companyId)] || {};
+  const patch = { lugarTipo: cual };
+  if (cual === "ppal" && vjLimpio(u.ppal || "")) patch.lugar = vjLimpio(u.ppal);
+  if (cual === "sec" && vjLimpio(u.sec || "")) patch.lugar = vjLimpio(u.sec);
+  vjPrepSet(k, patch);
+  vjFichaRender(); renderResultados(tripGet());
+}
+
 async function vjUbiCargar(companyId, forzar) {
   const id = String(companyId || ""); if (!id) return;
   const c = window.__vjUbi[id];
@@ -13486,30 +13541,33 @@ async function vjUbiCargar(companyId, forzar) {
 async function vjUbiGuardar(kj, companyId, cual) {
   const k = kj.replace(/\\'/g, "'");
   const txt = vjLimpio((vjResGet(k) || {}).lugar || "");
-  const est = document.getElementById("vj-ubi-est");
-  const avisar = (t, c) => { if (est) { est.textContent = t; est.style.color = c || "#6b7280"; } };
+  /* 🪤 El nodo se busca EN CADA aviso, no una vez arriba: entre el "Guardando…" y el "✓" hay un
+     `vjFichaRender()` que **destruye** el bloque, así que una referencia capturada antes queda
+     apuntando a un nodo muerto y el mensaje de éxito no se ve nunca. */
+  const avisar = (t, c) => {
+    const est = document.getElementById("vj-ubi-est");
+    if (est) { est.textContent = t; est.style.color = c || "#6b7280"; }
+  };
   if (!txt) { avisar("Cargá primero la dirección.", "#B45309"); return; }
   if (vjEsLinkReunion(txt)) { avisar("Es el link de la call de hoy, no dónde queda la empresa: no se guarda.", "#B45309"); return; }
   avisar("Guardando en HubSpot…");
   /* El armado de `props` va FUERA del try: adentro, un error de código (una const mal escrita,
      por ejemplo) se reportaría como "HubSpot rechazó el guardado" y mandaría a buscar el problema
      al lugar equivocado. El try envuelve sólo la llamada de red. */
-  const props = {}; props[cual === "sec" ? VJ_UBI_PROPS.sec : VJ_UBI_PROPS.ppal] = txt;
+  const prop = cual === "sec" ? VJ_UBI_PROPS.sec : VJ_UBI_PROPS.ppal;
+  const props = {}; props[prop] = txt;
   try {
     await hsWrite({ updateRequest: { objects: [{ objectType: "companies", objectId: Number(companyId), properties: props }] } });
     await vjUbiCargar(companyId, true);
-    avisar("✓ Guardada como " + (cual === "sec" ? "secundaria" : "principal"), "#047857");
+    vjPrepSet(k, { lugarTipo: cual });        // lo que guardó ES la ranura que eligió
+    vjFichaRender();                          // primero repintar…
+    avisar("✓ Guardada en HubSpot como " + vjUbiRot(companyId, cual), "#047857");  // …y después avisar
   } catch (e) {
     const m = String((e && e.message) || e);
     avisar(/does not exist|PROPERTY_DOESNT_EXIST/i.test(m)
-      ? "Falta crear la propiedad " + VJ_UBI_PROPS.sec + " en HubSpot."
+      ? "Falta crear la propiedad " + prop + " en HubSpot."
       : "HubSpot rechazó el guardado: " + m.slice(0, 140), "#b91c1c");
   }
-}
-function vjUbiUsar(kj, texto) {
-  const k = kj.replace(/\\'/g, "'");
-  vjPrepSet(k, { lugar: texto });
-  vjFichaRender(); renderResultados(tripGet());
 }
 
 async function vjCoResolver(cli, forzar) {
@@ -13876,42 +13934,81 @@ async function vjCtoGuardarCambios(k, companyId) {
   }
 }
 
-/* Bloque completo de contacto: selector de HubSpot + campos + alta. */
-/* Las guardadas de la empresa + el botón para guardar la de hoy.
-   Si la cuenta no resolvió a company (prospecto sin deals, típicamente) no se muestra nada:
-   sin id no hay dónde guardar, y un botón que no puede funcionar es peor que ninguno. */
-function vjUbiBloqueHtml(kj, co, r) {
+/* ===== DÓNDE ES: selector de ubicación (2026-09-22) ==================================
+   Rehecho por un pedido de German: antes el bloque mostraba dos chips ("Principal: …",
+   "Secundaria: …") y dos botones de guardar, y **no decía qué era la dirección que estaba
+   puesta**. Peor: cualquier texto cargado ofrecía guardarse en la cuenta, así que un café
+   donde te juntás una sola vez podía terminar siendo la dirección oficial de la empresa.
+   Ahora el lugar de hoy es siempre UNA de tres cosas, elegida explícitamente:
+     · la ubicación primaria de la cuenta   (HubSpot `ubicacion_oficina`)
+     · la secundaria                        (HubSpot `ubicacion_secundaria`)
+     · un lugar puntual — un café —         **no se guarda en ningún lado de la cuenta**
+   Las dos primeras llevan título personalizable ("Oficina central", "Depósito"), que vive en
+   el dashboard y se espeja por /api/state. El link de la call es un cuarto estado implícito:
+   se detecta solo y nunca se ofrece guardar. */
+function vjUbiPillsHtml(kj, co, r) {
   if (!co || !co.id) return "";
   const u = (window.__vjUbi || {})[String(co.id)];
-  if (!u) { setTimeout(() => vjUbiCargar(co.id), 0); return `<div style="font-size:11px; color:#9ca3af; margin-top:4px;">Buscando la ubicación guardada…</div>`; }
-  if (u.estado === "cargando") return `<div style="font-size:11px; color:#9ca3af; margin-top:4px;">Buscando la ubicación guardada…</div>`;
+  if (!u) { setTimeout(() => vjUbiCargar(co.id), 0); return ""; }
+  if (u.estado === "cargando" || u.estado === "error") return "";
+  const tipo = vjUbiTipo(co.id, r);
+  const pill = (cual, icono) => {
+    const act = tipo === cual;
+    const rot = cual === "puntual" ? VJ_UBI_ROT.puntual : vjUbiRot(co.id, cual);
+    const guard = cual === "puntual" ? "" : vjLimpio((cual === "sec" ? u.sec : u.ppal) || "");
+    const sub = cual === "puntual"
+      ? "no se guarda en la cuenta"
+      : (guard ? (guard.length > 30 ? guard.slice(0, 30) + "…" : guard) : "vacía · se carga acá");
+    return `<button onclick="vjUbiElegir('${kj}','${co.id}','${cual}')" title="${escAttr(guard || rot)}"
+      style="flex:1 1 140px; text-align:left; font-family:inherit; cursor:pointer; padding:5px 8px; border-radius:8px;
+      border:1px solid ${act ? "#430C89" : "#e5e7eb"}; background:${act ? "#F1EFFF" : "#fff"};">
+      <div style="font-size:11px; font-weight:${act ? 800 : 600}; color:${act ? "#4030C8" : "#4b5563"};">${act ? "✓ " : ""}${icono} ${escAttr(rot)}</div>
+      <div style="font-size:10px; color:#9ca3af; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escAttr(sub)}</div>
+    </button>`;
+  };
+  return `<div style="display:flex; gap:5px; flex-wrap:wrap; margin:0 0 5px;">${pill("ppal", "📍")}${pill("sec", "📍")}${pill("puntual", "☕")}</div>`;
+}
+
+/* Lo que va DEBAJO del input: qué es esta dirección, y el botón de guardar cuando corresponde. */
+function vjUbiBloqueHtml(kj, co, r) {
+  if (!co || !co.id) return "";
+  const nota = (t, c) => `<div style="font-size:11px; color:${c || "#6b7280"}; margin-top:4px;">${t}</div>`;
+  const est = `<div id="vj-ubi-est" style="font-size:11px; margin-top:4px; color:#6b7280;"></div>`;
+  const u = (window.__vjUbi || {})[String(co.id)];
+  if (!u) { setTimeout(() => vjUbiCargar(co.id), 0); return nota("Buscando la ubicación guardada…", "#9ca3af"); }
+  if (u.estado === "cargando") return nota("Buscando la ubicación guardada…", "#9ca3af");
+  if (u.estado === "error") return nota("No se pudo leer la ubicación de la empresa: " + escAttr(u.msg || ""), "#b91c1c");
+
   const actual = vjLimpio(r.lugar || "");
-  const esLink = vjEsLinkReunion(actual);   // sólo Meet/Zoom bloquean: un link de Maps se guarda
-  const chip = (txt, rot) => txt
-    ? `<button onclick="vjUbiUsar('${kj}', ${JSON.stringify(txt).replace(/"/g, "&quot;")})" title="Usar esta dirección en la reunión"
-         style="font-size:10.5px; font-weight:700; padding:3px 9px; border-radius:999px; cursor:pointer; font-family:inherit; max-width:100%;
-         border:1px solid ${actual === txt ? "#a7f3d0" : "#ddd6fe"}; background:${actual === txt ? "#ECFDF5" : "#F5F3FF"}; color:${actual === txt ? "#047857" : "#4030C8"};">
-         ${actual === txt ? "✓ " : ""}${rot}: ${escAttr(txt.slice(0, 34))}${txt.length > 34 ? "…" : ""}</button>`
-    : "";
-  const chips = chip(u.ppal, "Principal") + " " + chip(u.sec, "Secundaria");
-  const puedeGuardar = actual && !esLink && actual !== u.ppal;
-  const guardar = puedeGuardar
-    ? `<button onclick="vjUbiGuardar('${kj}', '${co.id}', 'ppal')" style="font-size:10.5px; font-weight:700; padding:3px 9px; border-radius:7px; cursor:pointer; font-family:inherit; border:1px solid #C7BDFF; background:#F1EFFF; color:#4030C8;">⬆ Guardar como principal</button>`
-      + ` <button onclick="vjUbiGuardar('${kj}', '${co.id}', 'sec')" style="font-size:10.5px; font-weight:600; padding:3px 9px; border-radius:7px; cursor:pointer; font-family:inherit; border:1px solid #e5e7eb; background:#fff; color:#6b7280;">como secundaria</button>`
-    : "";
-  /* 🪤 Antes acá se devolvía "" y el bloque quedaba MUDO: sin chips, sin botones y sin decir por
-     qué. German no tenía forma de saber si había guardado o no. Ahora siempre dice algo. */
-  if (!chips.trim() && !guardar) {
-    if (u.estado === "error") return `<div style="font-size:11px; color:#b91c1c; margin-top:4px;">No se pudo leer la ubicación de la empresa: ${escAttr(u.msg || "")}</div>`;
-    if (esLink) return `<div style="font-size:11px; color:#9ca3af; margin-top:4px;">Es el link de la call: no se guarda como ubicación de la empresa. Esta cuenta todavía no tiene dirección guardada.</div>`;
-    /* Si hay texto y no es link de call, `puedeGuardar` es true y ya salimos por el botón:
-       esta rama sólo se alcanza sin nada cargado. (Cuando la dirección YA está guardada, el chip
-       de arriba la muestra con ✓ — no hace falta una línea extra diciendo lo mismo.) */
-    return `<div style="font-size:11px; color:#9ca3af; margin-top:4px;">Esta cuenta no tiene ubicación guardada. Cargá la dirección o el link de Maps y aparece el botón para guardarla.</div>`;
-  }
-  return `<div style="margin-top:6px; display:flex; gap:5px; flex-wrap:wrap; align-items:center;">${chips}${guardar}</div>
-    <div id="vj-ubi-est" style="font-size:11px; margin-top:4px; color:#6b7280;"></div>
-    ${esLink && (u.ppal || u.sec) ? `<div style="font-size:10.5px; color:#9ca3af; margin-top:2px;">Hoy la reunión es por call; los chips de arriba son las ubicaciones guardadas de la cuenta.</div>` : ""}`;
+  const tipo = vjUbiTipo(co.id, r);
+
+  if (tipo === "call") return nota("Es el link de la call de hoy: <b>no</b> se guarda como ubicación de la cuenta."
+    + ((u.ppal || u.sec) ? " Arriba están las guardadas." : ""), "#9ca3af");
+
+  if (tipo === "puntual") return nota("☕ Lugar puntual: <b>no se guarda en la cuenta</b>. Si en realidad es una oficina fija, elegí arriba primaria o secundaria.", "#6b7280");
+
+  /* Sin elegir. No se supone nada: un café supuesto como primaria ensucia el CRM. */
+  if (!tipo) return nota(actual
+    ? "¿Qué es esta dirección? Elegí arriba <b>primaria</b>, <b>secundaria</b> o <b>lugar puntual</b> — así no queda guardada en la cuenta por error."
+    : "Elegí arriba de dónde sale el lugar, o escribí la dirección y después decí qué es.", "#b45309");
+
+  // ── primaria o secundaria ──
+  const rot = vjUbiRot(co.id, tipo);
+  const guard = vjLimpio((tipo === "sec" ? u.sec : u.ppal) || "");
+  const titBtn = `<span onclick="vjUbiTitSet('${kj}','${co.id}','${tipo}')" title="Ponerle un nombre a esta ubicación"
+    style="cursor:pointer; color:#4030C8; font-weight:700; font-size:10.5px; margin-left:6px;">✏️ título</span>`;
+  const btnGuardar = `<button onclick="vjUbiGuardar('${kj}','${co.id}','${tipo}')"
+    style="font-size:10.5px; font-weight:700; padding:3px 9px; border-radius:7px; cursor:pointer; font-family:inherit;
+    border:1px solid #C7BDFF; background:#F1EFFF; color:#4030C8;">⬆ Guardar como ${escAttr(rot)}</button>`;
+
+  let linea;
+  if (!actual) linea = `<b style="color:#4b5563;">${escAttr(rot)}</b> — todavía sin dirección. Escribila arriba y se guarda en la cuenta.`;
+  else if (actual === guard) linea = `<span style="color:#047857; font-weight:700;">✓ Guardada en HubSpot como ${escAttr(rot)}</span>`;
+  else linea = btnGuardar + (guard
+    ? ` <span style="color:#9ca3af;">hoy en HubSpot: ${escAttr(guard.length > 34 ? guard.slice(0, 34) + "…" : guard)}</span>`
+    : ` <span style="color:#9ca3af;">esta ranura está vacía</span>`);
+
+  return `<div style="font-size:11px; margin-top:5px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">${linea}${titBtn}</div>${est}`;
 }
 
 function vjCtoBloqueHtml(k, kj, co, r, pais, inS, lbS, coEstado, cli) {
@@ -14114,6 +14211,7 @@ function vjFichaRender() {
     ${dealsHtml}
     ${vjCtoBloqueHtml(k, kj, coCto, r, pais, inS, lbS, coEstado, cli)}
     <label style="${lbS}">Dónde es</label>
+    ${vjUbiPillsHtml(kj, co, r)}
     <div style="display:flex; gap:6px;">
       <input type="text" placeholder="Dirección, o link de Meet/Zoom" value="${escAttr(r.lugar || "")}" onchange="vjPrepSet('${kj}',{lugar:this.value}); vjFichaRender(); renderResultados(tripGet());" style="${inS}${(r.lugar || "").trim() ? "" : " border-color:#EF9F27; background:#FFFCF5;"}">
       ${href ? `<a href="${escAttr(href)}" target="_blank" rel="noopener" title="Abrir" style="flex:0 0 auto; padding:6px 12px; border:1px solid #C7BDFF; border-radius:7px; background:#F1EFFF; color:#4030C8; font-size:12px; font-weight:700; text-decoration:none;">↗</a>` : ""}
