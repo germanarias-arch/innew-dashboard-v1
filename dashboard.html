@@ -7988,6 +7988,60 @@ function cliFilSet(col, key, val) {
 function cliFilDrop(col) { delete CLI_FIL[col]; renderCuentas(); }
 function cliFilClear() { CLI_FIL = {}; renderCuentas(); }
 
+/* ── Copiar los nombres de las cuentas a la vista (2026-09-22) ──────────────────────────────
+   Pedido de German: "una vez filtrado quiero poder copiar la columna clientes… llevarme los
+   nombres de las cuentas que tengo asignadas". Copia `window.__cliView`, que son las filas YA
+   filtradas y ordenadas — no la lista completa —, uno por línea para pegar en Sheets o en un mail.
+   Tres intentos en cascada porque copiar NO siempre se puede: la API moderna pide contexto
+   seguro + gesto del usuario, y en algunos navegadores igual falla. Si los dos fallan, en vez
+   de no hacer nada mostramos el texto seleccionable: fallar mudo es peor que fallar feo. */
+function cliCopiarNombres() {
+  const rows = window.__cliView || [];
+  const nombres = rows.map(m => String(m.cli || "").trim()).filter(Boolean);
+  const btn = document.getElementById("cli-copiar");
+  const flash = txt => {
+    if (!btn) return;
+    const orig = btn.innerHTML;
+    btn.innerHTML = txt;
+    setTimeout(() => { btn.innerHTML = orig; }, 2200);
+  };
+  if (!nombres.length) { flash("no hay cuentas"); return; }
+  const texto = nombres.join("\n");
+  const ok = () => flash("✓ " + nombres.length + (nombres.length === 1 ? " copiada" : " copiadas"));
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(texto).then(ok).catch(() => cliCopiarFallback(texto, ok));
+      return;
+    }
+  } catch (e) {}
+  cliCopiarFallback(texto, ok);
+}
+function cliCopiarFallback(texto, ok) {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = texto;
+    ta.setAttribute("readonly", "");
+    ta.style.cssText = "position:fixed; top:0; left:-9999px; opacity:0;";
+    document.body.appendChild(ta);
+    ta.select(); ta.setSelectionRange(0, texto.length);   // el rango hace falta en iOS
+    const hecho = document.execCommand("copy");
+    document.body.removeChild(ta);
+    if (hecho) { ok(); return; }
+  } catch (e) {}
+  cliCopiarManual(texto);
+}
+function cliCopiarManual(texto) {
+  const box = document.getElementById("cli-copiar-box");
+  if (!box) return;
+  box.innerHTML = '<div style="border:1px solid #FDE68A; background:#FFFBEB; border-radius:8px; padding:9px 11px; margin-bottom:8px;">'
+    + '<div style="font-size:11px; color:#B45309; font-weight:700; margin-bottom:5px;">El navegador no dejó copiar solo — seleccioná y copiá a mano:</div>'
+    + '<textarea readonly style="width:100%; box-sizing:border-box; height:110px; font-size:11.5px; font-family:inherit; border:1px solid #e5e7eb; border-radius:6px; padding:6px;">'
+    + escAttr(texto) + '</textarea>'
+    + '<div style="text-align:right; margin-top:5px;"><a href="#" onclick="document.getElementById(\'cli-copiar-box\').innerHTML=\'\'; return false;" style="font-size:10.5px; color:#6b7280;">cerrar</a></div></div>';
+  const ta = box.querySelector("textarea");
+  if (ta) { ta.focus(); ta.select(); }
+}
+
 // Valores únicos de una columna enumerable, para los <select> de la fila de filtros.
 function cliFilOpts(rows, col) {
   const s = new Set();
@@ -11870,6 +11924,7 @@ async function renderCuentas() {
     };
   });
   const view = cliRowsView(mrows);
+  window.__cliView = view;   // lo que el botón "copiar" se lleva: exactamente lo que se ve
 
   /* --- encabezado ordenable --- */
   const cth = c => {
@@ -11902,11 +11957,14 @@ async function renderCuentas() {
     const txt = f.q !== undefined ? "“" + q + "”" : [f.min ? "≥ " + f.min : "", f.max ? "≤ " + f.max : ""].filter(Boolean).join(" · ");
     return `<span style="font-size:10px; background:#EDE9FE; color:#430C89; border-radius:10px; padding:2px 8px; font-weight:600;">${c.lbl}: ${escAttr(txt)} <a href="#" onclick="cliFilDrop('${col}'); return false;" style="color:#7c3aed; text-decoration:none;">×</a></span>`;
   }).join(" ");
-  const cbarra = (cchips || view.length !== mrows.length)
-    ? `<div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
+  /* La barra se muestra SIEMPRE (antes sólo con filtro activo): si no, el botón de copiar
+     desaparecía justo cuando no hay filtro, que es cuando querés llevarte la lista entera. */
+  const cbarra = `<div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
         <span style="font-size:11px; color:#6b7280; font-weight:600;">${view.length} de ${mrows.length} cuentas</span>
         ${cchips}${cchips ? ` <a href="#" onclick="cliFilClear(); return false;" style="font-size:10px; color:#dc2626;">limpiar filtros</a>` : ""}
-      </div>` : "";
+        <button id="cli-copiar" onclick="cliCopiarNombres()" title="Copia los nombres de las cuentas que están a la vista, uno por línea"
+          style="margin-left:auto; font-size:10.5px; font-weight:700; color:#4030C8; background:#F1EFFF; border:1px solid #C7BDFF; border-radius:7px; padding:3px 10px; cursor:pointer; font-family:inherit;">⧉ copiar nombres</button>
+      </div><div id="cli-copiar-box"></div>`;
 
   let html = cotBar + bcgLegendHtml() + cbarra
     + `<div style="overflow-x:auto; border:1px solid #e5e5e5; border-radius:8px;"><table class="std">
