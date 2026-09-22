@@ -947,6 +947,7 @@ table.std tr:hover td { background: #fafafa; }
     <div style="display:flex; gap:6px; margin-bottom:12px; border-bottom:2px solid #e5e7eb;">
       <button id="clitab-btn-cuentas" class="clitab active" onclick="cliTab('cuentas')">🏬 Lista de clientes</button>
       <button id="clitab-btn-fc" class="clitab" onclick="cliTab('fc')">📈 Forecasting</button>
+      <button id="clitab-btn-csm" class="clitab" onclick="cliTab('csm')">🛠️ Seguimiento CSM</button>
     </div>
 
     <div id="clitab-cuentas">
@@ -980,6 +981,11 @@ table.std tr:hover td { background: #fafafa; }
     <div id="clitab-fc" style="display:none">
       <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">📈 <b>Forecasting de cuentas</b> — qué le podés vender a cada cliente y cuánto suma eso en los próximos meses. Cargá oportunidades por cuenta, mirá la proyección contra el MRR y el run-rate actual, y recién cuando estés conforme mandalas a HubSpot como deals en <b>SQL – Discovery</b>.</div>
       <div id="fc-body"></div>
+    </div>
+
+    <div id="clitab-csm" style="display:none">
+      <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">🛠️ <b>Seguimiento CSM</b> — cómo va el consumo de la bolsa de S&amp;G y qué hay abierto en soporte, por cuenta. Los números vienen de <b>Jira</b>, los escribe el task <code>horas-jira-a-hubspot</code> los lunes a las 7:00 y el dashboard los lee de HubSpot: <b>acá no se edita nada</b>.</div>
+      <div id="csm-body"></div>
     </div>
 
     <!-- Panel lateral de la ficha del cliente. Vive fuera de la tabla y por debajo del popup
@@ -10104,15 +10110,160 @@ function cartRowsView() {
    responde otra pregunta (cuánto le puedo vender a esta cuenta), no repinta los mismos datos
    con otro nombre. Si alguna vez una columna aparece igual en las dos, es señal de alarma. */
 function cliTab(which) {
-  ["cuentas", "fc"].forEach(t => {
+  ["cuentas", "fc", "csm"].forEach(t => {
     const pane = document.getElementById("clitab-" + t);
     const btn = document.getElementById("clitab-btn-" + t);
     if (pane) pane.style.display = (t === which) ? "block" : "none";
     if (btn) btn.className = "clitab" + (t === which ? " active" : "");
   });
   if (which === "fc") renderForecast();
+  else if (which === "csm") renderCsm();
   else { renderCuentas(); renderCartera(); }
 }
+
+/* ===== SEGUIMIENTO CSM (2026-09-22) ==================================================
+   Consumo de la bolsa de S&G y cola de soporte, por cuenta.
+
+   🚨 REGLA DE ARQUITECTURA: **el dashboard NO habla con Jira.** Su proxy (`/api/hubspot`)
+   sólo llega a HubSpot. Todo lo que se ve acá lo escribió antes el task programado
+   `horas-jira-a-hubspot` en las properties de la company. Si una columna está vacía no es
+   un bug de esta vista: o el task no corrió, o esa cuenta no tiene portal en Jira.
+
+   🪤 **"Sin bolsa" NO es "0% consumido".** Cinco cuentas tienen portal pero no tienen
+   `horas_de_sg_contratadas` (Assatex, Nueva Americana, Bilder, Rouge, Sanitarios Arieta).
+   Dividir por cero ahí daría Infinity, y poner 0% las mostraría como las más sanas de la
+   tabla cuando en realidad no hay nada que medir. Van con "s/bolsa" y se ordenan aparte. */
+const CSM_UMBRAL = { rojo: 100, ambar: 85 };   // % de la bolsa consumida
+
+function csmPct(cons, cont) {
+  if (cont == null || !(cont > 0)) return null;   // sin bolsa → no aplica, NO 0%
+  if (cons == null) return null;
+  /* 🪤 `(cons / cont) * 100` da 57.49999999999999 para 23 de 40 y redondea a 57%.
+     Multiplicar ANTES de dividir mantiene el .5 exacto. Un punto de porcentaje no cambia
+     una decisión, pero un número que no cierra con la cuenta que hace German a mano le
+     quita confianza a toda la tabla. */
+  return (cons * 100) / cont;
+}
+/* Cuánto del mes pasó, para comparar consumo contra tiempo transcurrido: 40% de la bolsa
+   el día 5 es otra cosa que el mismo 40% el día 28. */
+function csmMesPct() {
+  const h = new Date(), d = h.getDate();
+  const fin = new Date(h.getFullYear(), h.getMonth() + 1, 0).getDate();
+  return (d / fin) * 100;
+}
+function csmTono(pct, mesPct) {
+  if (pct == null) return { c: "#9ca3af", bg: "transparent", t: "" };
+  if (pct >= CSM_UMBRAL.rojo) return { c: "#b91c1c", bg: "#FEF2F2", t: "Se pasó de la bolsa: lo que venga es hora extra o regalada" };
+  if (pct >= CSM_UMBRAL.ambar) return { c: "#b45309", bg: "#FFFBEB", t: "Cerca del tope de la bolsa" };
+  /* Subconsumo: sólo se marca pasada la mitad del mes. Antes del día 15, ir al 20% es normal. */
+  if (mesPct > 50 && pct < 40) return { c: "#4030C8", bg: "#F5F3FF", t: "Subconsumo: el cliente no está pidiendo, o no le estamos mostrando valor. Las dos son riesgo de renovación." };
+  return { c: "#047857", bg: "transparent", t: "" };
+}
+
+function renderCsm() {
+  const host = document.getElementById("csm-body"); if (!host) return;
+  const data = window.__cuentasData;
+  if (!data) {
+    host.innerHTML = `<div style="padding:18px; color:#9ca3af; font-size:13px;">Cargando cuentas…</div>`;
+    /* Mismo patrón que Viajes: se pide una sola vez y se repinta al llegar. No se cachea
+       un índice armado sobre datos que todavía no están. */
+    if (typeof vjCuentasReady === "function") vjCuentasReady().then(() => { if (window.__cuentasData) renderCsm(); }).catch(() => {});
+    else renderCuentas();
+    return;
+  }
+
+  const mesPct = csmMesPct();
+  const filas = data.map(c => {
+    const p = c.properties || {};
+    const cont = p.horas_de_sg_contratadas ? parseFloat(p.horas_de_sg_contratadas) : null;
+    const cons = (p.horas_consumidas_mes != null && p.horas_consumidas_mes !== "") ? parseFloat(p.horas_consumidas_mes) : null;
+    const ab = (p.tickets_abiertos != null && p.tickets_abiertos !== "") ? parseInt(p.tickets_abiertos, 10) : null;
+    const pr = (p.tickets_prioritarios != null && p.tickets_prioritarios !== "") ? parseInt(p.tickets_prioritarios, 10) : null;
+    return {
+      id: c.id, cli: p.name || "(sin nombre)", csm: p.csm_asignado || "",
+      cont: cont, cons: cons, pct: csmPct(cons, cont), ab: ab, pr: pr,
+      medida: cons != null || ab != null            // ¿el task la tocó alguna vez?
+    };
+  });
+
+  const sel = window.__csmFiltro || "all";
+  const vis = filas.filter(f => sel === "all" ? true : (sel === "__sin" ? !f.medida : f.csm === sel));
+  /* Orden: primero lo que pide acción. Las sin bolsa al fondo — no compiten por atención
+     con las que están al 96%. */
+  vis.sort((a, b) => {
+    if ((a.pct == null) !== (b.pct == null)) return a.pct == null ? 1 : -1;
+    if (a.pct != null) return b.pct - a.pct;
+    return (b.cons || 0) - (a.cons || 0);
+  });
+
+  const csms = [];
+  filas.forEach(f => { if (f.csm && csms.indexOf(f.csm) < 0) csms.push(f.csm); });
+  csms.sort();
+  const chip = (v, lbl, n) => `<button onclick="csmFiltro('${String(v).replace(/'/g, "\\'")}')" style="font-family:inherit; cursor:pointer; font-size:12px; font-weight:${sel === v ? 700 : 500};
+      padding:5px 11px; border-radius:999px; border:1px solid ${sel === v ? "#430C89" : "#e5e7eb"}; background:${sel === v ? "#F1EFFF" : "#fff"}; color:${sel === v ? "#4030C8" : "#4b5563"};">
+      ${escAttr(lbl)} <span style="color:#9ca3af; font-weight:500;">${n}</span></button>`;
+  const barra = `<div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; align-items:center;">
+      ${chip("all", "Todas", filas.length)}
+      ${csms.map(x => chip(x, x, filas.filter(f => f.csm === x).length)).join("")}
+      ${chip("__sin", "Sin medir", filas.filter(f => !f.medida).length)}
+      <span style="margin-left:auto; font-size:11px; color:#9ca3af;">Día ${new Date().getDate()} del mes · ${Math.round(mesPct)}% transcurrido</span>
+    </div>`;
+
+  // KPIs: sólo sobre lo que SÍ tiene bolsa, que es lo único donde el % significa algo.
+  const conBolsa = vis.filter(f => f.pct != null);
+  const sumCons = conBolsa.reduce((s, f) => s + (f.cons || 0), 0);
+  const sumCont = conBolsa.reduce((s, f) => s + (f.cont || 0), 0);
+  const pasadas = conBolsa.filter(f => f.pct >= CSM_UMBRAL.rojo).length;
+  const cerca = conBolsa.filter(f => f.pct >= CSM_UMBRAL.ambar && f.pct < CSM_UMBRAL.rojo).length;
+  const sub = conBolsa.filter(f => mesPct > 50 && f.pct < 40).length;
+  const totPr = vis.reduce((s, f) => s + (f.pr || 0), 0);
+  const kpis = `<div class="cue-kpis" style="margin-bottom:12px;">
+      <div class="cue-kpi"><div class="kl">Bolsa consumida</div><div class="kv">${sumCont ? Math.round(sumCons / sumCont * 100) + "%" : "—"}<span class="ks"> ${sumCons.toFixed(1)} de ${sumCont} h</span></div></div>
+      <div class="cue-kpi"><div class="kl">Pasadas de bolsa</div><div class="kv" style="color:${pasadas ? "#b91c1c" : ""}">${pasadas}</div></div>
+      <div class="cue-kpi"><div class="kl">Cerca del tope</div><div class="kv" style="color:${cerca ? "#b45309" : ""}">${cerca}</div></div>
+      <div class="cue-kpi"><div class="kl">Subconsumo</div><div class="kv" style="color:${sub ? "#4030C8" : ""}">${mesPct > 50 ? sub : "—"}<span class="ks">${mesPct > 50 ? " bajo 40%" : " se mide pasado el día 15"}</span></div></div>
+      <div class="cue-kpi"><div class="kl">Tickets prioritarios</div><div class="kv" style="color:${totPr ? "#b91c1c" : ""}">${totPr}</div></div>
+    </div>`;
+
+  const barraPct = (f) => {
+    if (f.pct == null) return `<span style="font-size:11px; color:#9ca3af;">s/bolsa</span>`;
+    const t = csmTono(f.pct, mesPct);
+    const w = Math.max(2, Math.min(100, f.pct));
+    return `<div title="${escAttr(t.t)}" style="display:flex; align-items:center; gap:7px;">
+        <div style="flex:1; min-width:54px; height:7px; background:#f0f0f6; border-radius:4px; overflow:hidden;">
+          <div style="height:100%; width:${w}%; background:${t.c}; border-radius:4px;"></div></div>
+        <b style="font-size:12px; color:${t.c}; min-width:38px; text-align:right;">${Math.round(f.pct)}%</b></div>`;
+  };
+  const num = (v, col) => v == null ? `<span style="color:#d1d5db;">—</span>` : `<b style="color:${col || "#1f2937"};">${v}</b>`;
+
+  const cuerpo = vis.map(f => {
+    const t = csmTono(f.pct, mesPct);
+    return `<tr style="background:${t.bg};">
+      <td style="position:sticky; left:0; background:${t.bg === "transparent" ? "#fff" : t.bg}; font-weight:600;">${escAttr(f.cli)}</td>
+      <td style="font-size:11.5px; color:#6b7280;">${escAttr(f.csm || "—")}</td>
+      <td style="text-align:right;">${f.cont != null ? f.cont : `<span style="color:#d1d5db;">—</span>`}</td>
+      <td style="text-align:right;">${f.cons != null ? f.cons.toFixed(1) : `<span style="color:#d1d5db;">—</span>`}</td>
+      <td style="min-width:120px;">${barraPct(f)}</td>
+      <td style="text-align:right;">${num(f.ab)}</td>
+      <td style="text-align:right;">${num(f.pr, f.pr ? "#b91c1c" : null)}</td>
+      <td style="font-size:11px; color:#9ca3af;">${f.medida ? "" : "sin medir"}</td>
+    </tr>`;
+  }).join("");
+
+  host.innerHTML = barra + kpis + `<div style="overflow-x:auto;"><table class="cue-table">
+      <thead><tr>
+        <th style="position:sticky; left:0; background:#fafafa; min-width:180px;">Cuenta</th>
+        <th>CSM</th><th style="text-align:right;">Bolsa h</th><th style="text-align:right;">Consumidas</th>
+        <th>% de la bolsa</th><th style="text-align:right;">Tickets</th><th style="text-align:right;">Prioritarios</th><th></th>
+      </tr></thead><tbody>${cuerpo || `<tr><td colspan="8" style="padding:18px; color:#9ca3af;">Sin cuentas para este filtro.</td></tr>`}</tbody></table></div>
+    <div class="small" style="margin-top:10px; font-style:italic; color:#888;">
+      <b>Prioritarios</b> = tickets abiertos con prioridad <b>🚨 Impide la compra</b> o <b>⚡ Urgente</b>.
+      Los portales de Innew no usan las prioridades estándar de Jira: filtrar por “Highest” da cero en las 24 cuentas.
+      <b>s/bolsa</b> = la cuenta tiene portal pero no tiene horas contratadas, así que el % no aplica.
+      <b>Sin medir</b> = no tiene portal en Jira (está en IDP o no tiene S&amp;G) — no es deuda.
+    </div>`;
+}
+function csmFiltro(v) { window.__csmFiltro = v; renderCsm(); }
 
 // Cajón de ingesta de exports: plegado por defecto, porque cargar archivos es una tarea puntual.
 function cliToggleIngesta() {
@@ -11187,7 +11338,10 @@ async function fetchCuentas() {
     const res = await mcpCall("mcp__aaaa9eed-76e4-4bc8-a1a2-fad976f54ccb__search_crm_objects", {
       objectType: "companies",
       filterGroups: [{ filters: [{ propertyName: "lifecyclestage", operator: "EQ", value: "customer" }] }],
-      properties: ["name", "csm_asignado", "horas_de_sg_contratadas", "country", "num_associated_deals", "calificacion_matriz_bcg", "valor_hora", "valor_hora_us", "monto_mensual_us", "tipo_de_plan", "fin_acuerdo", "semaforo", "gmv_mensual", "horas_consumidas_mes", "horas_hist", "es_scale", "estado_facturacion"],
+      /* `tickets_abiertos` y `tickets_prioritarios` las escribe el task `horas-jira-a-hubspot`
+         (lunes 7:00). El dashboard NO habla con Jira —su proxy sólo llega a HubSpot—, así que
+         éste es el único camino por el que el dato de soporte entra al dashboard. */
+      properties: ["name", "csm_asignado", "horas_de_sg_contratadas", "country", "num_associated_deals", "calificacion_matriz_bcg", "valor_hora", "valor_hora_us", "monto_mensual_us", "tipo_de_plan", "fin_acuerdo", "semaforo", "gmv_mensual", "horas_consumidas_mes", "horas_hist", "es_scale", "estado_facturacion", "tickets_abiertos", "tickets_prioritarios"],
       sorts: [{ propertyName: "name", direction: "ASCENDING" }],
       limit: 100, offset,
       chatInsights: { userIntent: "Dashboard: cuentas activas (customer) con CSM y horas S&G", satisfaction: "NEUTRAL" }
