@@ -13946,8 +13946,8 @@ async function vjCtoGuardarCambios(k, companyId) {
    Las dos primeras llevan título personalizable ("Oficina central", "Depósito"), que vive en
    el dashboard y se espeja por /api/state. El link de la call es un cuarto estado implícito:
    se detecta solo y nunca se ofrece guardar. */
-function vjUbiPillsHtml(kj, co, r) {
-  if (!co || !co.id) return "";
+function vjUbiPillsHtml(kj, co, r, coEstado) {
+  if (!co || !co.id) return "";      // sin company no hay ranuras que elegir; el bloque de abajo explica por qué
   const u = (window.__vjUbi || {})[String(co.id)];
   if (!u) { setTimeout(() => vjUbiCargar(co.id), 0); return ""; }
   if (u.estado === "cargando" || u.estado === "error") return "";
@@ -13970,10 +13970,14 @@ function vjUbiPillsHtml(kj, co, r) {
 }
 
 /* Lo que va DEBAJO del input: qué es esta dirección, y el botón de guardar cuando corresponde. */
-function vjUbiBloqueHtml(kj, co, r) {
-  if (!co || !co.id) return "";
+function vjUbiBloqueHtml(kj, co, r, coEstado) {
   const nota = (t, c) => `<div style="font-size:11px; color:${c || "#6b7280"}; margin-top:4px;">${t}</div>`;
   const est = `<div id="vj-ubi-est" style="font-size:11px; margin-top:4px; color:#6b7280;"></div>`;
+  /* Sin company tampoco se queda mudo: German tiene que poder distinguir "todavía la estoy
+     buscando" de "esta cuenta no existe como company y por eso no hay dónde guardar". */
+  if (!co || !co.id) return coEstado === "buscando"
+    ? nota("Buscando la cuenta en HubSpot para poder guardar la ubicación…", "#9ca3af")
+    : nota("Esta cuenta todavía no está vinculada a una company en HubSpot: la dirección queda sólo en esta reunión.", "#9ca3af");
   const u = (window.__vjUbi || {})[String(co.id)];
   if (!u) { setTimeout(() => vjUbiCargar(co.id), 0); return nota("Buscando la ubicación guardada…", "#9ca3af"); }
   if (u.estado === "cargando") return nota("Buscando la ubicación guardada…", "#9ca3af");
@@ -14211,13 +14215,20 @@ function vjFichaRender() {
     ${dealsHtml}
     ${vjCtoBloqueHtml(k, kj, coCto, r, pais, inS, lbS, coEstado, cli)}
     <label style="${lbS}">Dónde es</label>
-    ${vjUbiPillsHtml(kj, co, r)}
+    ${/* 🪤 ACÁ VA `coCto`, NO `co` — pisada la misma trampa dos veces (22/09).
+          `co = vjCompanyDe(cli)` sólo conoce **clientes activos**, así que en un prospecto vale
+          `null` y el bloque de ubicación devolvía "" — invisible en escritorio y en celular.
+          Caso testigo: Ferrex, prospecto con 3 deals, contactos cargados y el selector de
+          contacto andando perfecto al lado (porque ése sí usa `coCto`).
+          `coCto` viene de `vjCoDeCuenta` → resuelve por deals, que es el vínculo que declara
+          HubSpot. Regla: cualquier cosa que escriba en la company usa `coCto`. */ ""}
+    ${vjUbiPillsHtml(kj, coCto, r, coEstado)}
     <div style="display:flex; gap:6px;">
       <input type="text" placeholder="Dirección, o link de Meet/Zoom" value="${escAttr(r.lugar || "")}" onchange="vjPrepSet('${kj}',{lugar:this.value}); vjFichaRender(); renderResultados(tripGet());" style="${inS}${(r.lugar || "").trim() ? "" : " border-color:#EF9F27; background:#FFFCF5;"}">
       ${href ? `<a href="${escAttr(href)}" target="_blank" rel="noopener" title="Abrir" style="flex:0 0 auto; padding:6px 12px; border:1px solid #C7BDFF; border-radius:7px; background:#F1EFFF; color:#4030C8; font-size:12px; font-weight:700; text-decoration:none;">↗</a>` : ""}
     </div>
     ${(r.lugar || "").trim() && !/^https?:/i.test(r.lugar) ? `<div style="font-size:11px; color:#6b7280; margin-top:3px;">Abre en Google Maps.</div>` : ""}
-    ${vjUbiBloqueHtml(kj, co, r)}
+    ${vjUbiBloqueHtml(kj, coCto, r, coEstado)}
     <label style="${lbS}">Documentación <span onclick="vjPrepDocAdd('${kj}')" style="cursor:pointer; color:#4030C8; font-weight:800; text-transform:none; letter-spacing:0;">＋ link</span></label>
     ${docsHtml}
     <label style="${lbS}">Info de interés previa</label>
