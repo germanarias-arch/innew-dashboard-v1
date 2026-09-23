@@ -14511,6 +14511,12 @@ function vjUbiBloqueHtml(kj, co, r, coEstado) {
 
   // ── primaria o secundaria ──
   const rot = vjUbiRot(co.id, tipo);
+  /* Backfill silencioso del título dentro de la reunión (2026-09-23). Las reuniones agendadas
+     ANTES de que existiera `lugarTit` no lo tienen, así que en el celular caían al rótulo
+     genérico. Acá la company está resuelta, así que se aprovecha para dejar la copia hecha.
+     Sin re-render y sólo si cambió: es sincronizar una copia, no modificar un dato. */
+  const kBf = kj.replace(/\\'/g, "'"), titBf = vjUbiTit(co.id, tipo);
+  if (vjLimpio(r.lugarTit || "") !== titBf) vjPrepSet(kBf, { lugarTit: titBf });
   const guard = vjLimpio((tipo === "sec" ? u.sec : u.ppal) || "");
   const titBtn = `<span onclick="vjUbiTitSet('${kj}','${co.id}','${tipo}')" title="Ponerle un nombre a esta ubicación"
     style="cursor:pointer; color:#4030C8; font-weight:700; font-size:10.5px; margin-left:6px;">✏️ título</span>`;
@@ -15134,7 +15140,12 @@ function vjmLugarSello(r) {
       <span style="font-size:13px;">◌</span><span>Dirección sin confirmar con el cliente</span></div>`;
 }
 
-function accFila(kj, r, wa, href) {
+/* companyId de la cuenta SIN disparar una request: sólo lee lo que ya está en memoria. En un
+   cliente `vjCompanyDe` lo resuelve al toque; en un prospecto depende de que la ficha lo haya
+   resuelto antes en esta sesión — por eso el título ADEMÁS viaja copiado en `r.lugarTit`. */
+function vjCoIdDeCuenta(cli) { const c = vjCoDeCuenta(cli); return (c && c.co && c.co.id) ? String(c.co.id) : ""; }
+
+function accFila(kj, r, wa, href, companyId) {
   const quien = String(r.cto || "").trim();
   const fWa = wa.ok
     ? `<a class="vjm-acc" href="https://wa.me/${wa.num}" target="_blank" rel="noopener">
@@ -15150,14 +15161,23 @@ function accFila(kj, r, wa, href) {
      ocupando el único renglón útil de la tarjeta, y sin decir a qué lugar vas.
      Ahora manda el TÍTULO que cargaste en la ficha ("Oficina central"), con el rótulo
      genérico de la ranura como red y "Dónde es" como último recurso.
-     🧷 Todo sale de `r`: cero consultas desde el celular. El título vive en `vj_ubi_titulos`
-     indexado por companyId, y resolver la company de un prospecto en la calle cuesta una
-     request y arranca en frío — justo cuando peor anda. Por eso se copia en la reunión
-     (`lugarTit`) al elegir la ranura, y viaja por /api/state con el resto de la ficha. */
+     🧷 Cero consultas de red. El título vive en `vj_ubi_titulos` **indexado por companyId**, y
+     `vj_ubi_titulos` ya se espeja por /api/state — o sea que en el celular está, lo único que
+     faltaba era el companyId para buscarlo (ese fue el bug del 23/09: la tarjeta de Grupo David
+     mostraba "Ubicación primaria" en vez del título cargado).
+     Cascada, de lo más específico a lo más genérico:
+       1. el título guardado de la ranura, si se pudo resolver la company sin red
+       2. `r.lugarTit`, la copia que viaja dentro de la reunión (cubre prospectos y modo avión)
+       3. el rótulo genérico de la ranura, y al final "Dónde es"
+     El paso 2 existe porque el 1 no siempre está: en un prospecto la company no se resuelve
+     hasta que alguien abre la ficha. */
   const txtLugar = vjLimpio(r.lugar || "");
   const esCall = vjEsLinkReunion(txtLugar);
-  const tit = vjLimpio(r.lugarTit || "")
-    || (esCall ? "Reunión por link" : (VJ_UBI_ROT[r.lugarTipo] || "Dónde es"));
+  const tipoUbi = vjUbiTipo(companyId, r);
+  const titGuardado = (companyId && (tipoUbi === "ppal" || tipoUbi === "sec")) ? vjUbiTit(companyId, tipoUbi) : "";
+  const tit = titGuardado
+    || vjLimpio(r.lugarTit || "")
+    || (esCall ? "Reunión por link" : (VJ_UBI_ROT[tipoUbi || r.lugarTipo] || "Dónde es"));
   /* La URL de Maps no se muestra; una dirección escrita SÍ, que es la que le dictás al taxi. */
   const dir = esCall ? txtLugar.replace(/^https?:\/\//i, "").split("/")[0]
             : (/^https?:/i.test(txtLugar) ? "Google Maps · tocá para ir" : txtLugar);
@@ -15278,7 +15298,7 @@ function renderViajesMovil(trip) {
         <span style="display:flex; gap:4px;">${pips}</span>
         <span style="color:${faltan ? "#B45309" : "#047857"}; font-weight:600;">${faltan ? "falta " + faltan + (faltan > 1 ? " datos" : " dato") : "lista para entrar"}</span>
       </div>
-      ${objBloque(kj, r)}${accFila(kj, r, wa, href)}${vjmLugarSello(r)}
+      ${objBloque(kj, r)}${accFila(kj, r, wa, href, vjCoIdDeCuenta(s2.cli))}${vjmLugarSello(r)}
       <div style="display:flex; gap:7px; margin-top:9px;">
         ${(() => {
           /* Por reunión, no por día: con el orden cronológico puede haber una vencida sin cargar
