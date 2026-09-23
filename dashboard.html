@@ -8604,9 +8604,11 @@ function cliFichaRender() {
   const vhRow = !mdef.hora
     ? kv("Valor hora", `<span style="font-size:11px; color:#9ca3af;">n/a · ${escAttr(mdef.l)}</span>`, mdef.l + ": " + mdef.d)
     : (isArg
-      ? kv("Valor hora $", `<input type="number" value="${meta.vhPeso != null ? meta.vhPeso : ""}" placeholder="$/h" onchange="cuSetVhPeso('${cliJs}','${r.id}',this.value)" style="${inS} width:100px; text-align:right;">`
-          + (cuVhUsdEff(cli, isArg) !== null ? `<div style="font-size:10px; color:#075985; margin-top:2px;">= U$S ${cuVhUsdEff(cli, isArg).toFixed(1)}/h</div>` : `<div style="font-size:10px; color:#9ca3af; margin-top:2px;">cargá la cotización</div>`), "En Argentina el valor hora se carga en pesos y se convierte con la cotización manual de arriba.")
-      : kv("Valor hora u$s", `<input type="number" value="${meta.vhUsd != null ? meta.vhUsd : ""}" placeholder="u$s/h" onchange="cuSetVhUsd('${cliJs}','${r.id}',this.value)" style="${inS} width:100px; text-align:right;">`));
+      /* Mismo input de plata que la grilla (2026-09-23): si la ficha siguiera con `type="number"`,
+         el mismo campo se vería "104902" acá y "$ 104.902" en la tabla. */
+      ? kv("Valor hora $", cuMonedaInput(meta.vhPeso, `cuSetVhPeso('${cliJs}','${r.id}',__V__)`, "$/h", "$", 0, inS + " width:120px; text-align:right;")
+          + (cuVhUsdEff(cli, isArg) !== null ? `<div style="font-size:10px; color:#075985; margin-top:2px;">= ${cuFmtMoneda(cuVhUsdEff(cli, isArg), "U$S", 1)}/h</div>` : `<div style="font-size:10px; color:#9ca3af; margin-top:2px;">cargá la cotización</div>`), "En Argentina el valor hora se carga en pesos y se convierte con la cotización manual de arriba.")
+      : kv("Valor hora u$s", cuMonedaInput(meta.vhUsd, `cuSetVhUsd('${cliJs}','${r.id}',__V__)`, "u$s/h", "u$s", 2, inS + " width:110px; text-align:right;")));
   const montoMan = cuNum(meta.montoUsd);
   const montoAuto = (mdef.hora && cuVhUsdEff(cli, isArg) !== null && r.sgh) ? cuVhUsdEff(cli, isArg) * r.sgh : null;
   const varUsd = mdef.varb ? cuVarUsd(cli) : null;
@@ -8619,12 +8621,12 @@ function cliFichaRender() {
   const montoRow = !mdef.monto
     ? kv("Contratado /mes", `<span style="color:#9ca3af; font-size:11.5px;">— sin recurrente</span>`, mdef.l + ": " + mdef.d + (montoMan !== null ? " Quedó U$S " + Math.round(montoMan).toLocaleString("es-AR") + " de un modelo anterior: se conserva pero no suma al MRR." : ""))
     : isArg
-      ? kv(mdef.varb ? "Fijo /mes $" : "Plan mensual $", `<input type="number" value="${montoArs !== null ? montoArs : ""}" placeholder="${montoAuto !== null ? "auto u$s " + Math.round(montoAuto).toLocaleString("es-AR") : "$/mes"}" onchange="cuSetMontoArs('${cliJs}','${r.id}',this.value)" style="${inS} width:120px; text-align:right; font-weight:600; color:#047857; background:${montoArs !== null ? "#ECFDF5" : "#fff"};">`
-          + (contratado !== null ? `<div style="font-size:10px; color:#075985; margin-top:2px;">= U$S ${Math.round(contratado).toLocaleString("es-AR")}/mes</div>` : (montoArs !== null ? `<div style="font-size:10px; color:#b45309; margin-top:2px;">cargá la cotización</div>` : "")),
+      ? kv(mdef.varb ? "Fijo /mes $" : "Plan mensual $", cuMonedaInput(montoArs, `cuSetMontoArs('${cliJs}','${r.id}',__V__)`, montoAuto !== null ? "auto " + cuFmtMoneda(montoAuto, "u$s", 0) : "$/mes", "$", 0, inS + ` width:140px; text-align:right; font-weight:600; color:#047857; background:${montoArs !== null ? "#ECFDF5" : "#fff"};`)
+          + (contratado !== null ? `<div style="font-size:10px; color:#075985; margin-top:2px;">= ${cuFmtMoneda(contratado, "U$S", 0)}/mes</div>` : (montoArs !== null ? `<div style="font-size:10px; color:#b45309; margin-top:2px;">cargá la cotización</div>` : "")),
           "En Argentina el plan se carga en pesos y el u$s se deriva con la cotización, igual que el valor hora. Vacío = se calcula solo con valor hora × horas.")
-      : kv(mdef.varb ? "Fijo /mes u$s" : "Contratado /mes u$s", `<input type="number" value="${montoMan !== null ? montoMan : ""}" placeholder="${montoAuto !== null ? "auto " + Math.round(montoAuto).toLocaleString("es-AR") : "u$s/mes"}" onchange="cuSetMonto('${cliJs}','${r.id}',this.value)" style="${inS} width:110px; text-align:right; font-weight:600; color:#047857; background:${montoMan !== null ? "#ECFDF5" : "#fff"};">`);
+      : kv(mdef.varb ? "Fijo /mes u$s" : "Contratado /mes u$s", cuMonedaInput(montoMan, `cuSetMonto('${cliJs}','${r.id}',__V__)`, montoAuto !== null ? "auto " + cuFmtMoneda(montoAuto, "u$s", 0) : "u$s/mes", "u$s", 0, inS + ` width:130px; text-align:right; font-weight:600; color:#047857; background:${montoMan !== null ? "#ECFDF5" : "#fff"};`));
   const varRow = mdef.varb
-    ? kv("Variable /mes u$s", `<input type="number" value="${varUsd != null ? varUsd : ""}" placeholder="var u$s" onchange="cuSetVarUsd('${cliJs}','${r.id}',this.value)" style="${inS} width:110px; text-align:right; font-weight:600; color:#6d28d9; background:${varUsd != null ? "#F5F3FF" : "#fff"};">`, "Componente variable del mes en valor ABSOLUTO (u$s), no en porcentaje. Se suma al fijo para dar el MRR.")
+    ? kv("Variable /mes u$s", cuMonedaInput(varUsd, `cuSetVarUsd('${cliJs}','${r.id}',__V__)`, "var u$s", "u$s", 0, inS + ` width:130px; text-align:right; font-weight:600; color:#6d28d9; background:${varUsd != null ? "#F5F3FF" : "#fff"};`), "Componente variable del mes en valor ABSOLUTO (u$s), no en porcentaje. Se suma al fijo para dar el MRR.")
     : "";
   const totalRow = contratado === null ? "" : kv("<b>Total contratado</b>", `<b style="color:#047857; font-size:14px;">${fmtMoney(contratado)}</b>${contratado > CU_MONTO_MAX ? `<div style="font-size:10px; color:#b91c1c; font-weight:700;">⚠ fuera de rango — revisá</div>` : ""}`, mdef.varb ? "Fijo + variable del mes." : "");
   const dgF = cuFinDanger(meta.finAcuerdo || "");
@@ -8638,11 +8640,11 @@ function cliFichaRender() {
 
   /* ---------- bloque CONSUMO ---------- */
   const consumoBlk = blk("Consumo de horas",
-    kv("S&amp;G contratadas /mes", `<input type="number" value="${r.sgh != null ? r.sgh : ""}" placeholder="h/mes" onchange="cuSetSgh('${r.id}',this.value)" style="${inS} width:80px; text-align:right;">`, "Se escribe en horas_de_sg_contratadas de HubSpot.")
-    + kv("Horas del plan", `<input type="number" value="${cuHorasPlan(cli) != null ? cuHorasPlan(cli) : ""}" placeholder="h totales" onchange="cuSetHorasPlan('${cliJs}',this.value)" style="${inS} width:80px; text-align:right;">`
+    kv("S&amp;G contratadas /mes", cuMonedaInput(r.sgh, `cuSetSgh('${r.id}',__V__)`, "h/mes", "", 1, inS + " width:90px; text-align:right;"), "Se escribe en horas_de_sg_contratadas de HubSpot.")
+    + kv("Horas del plan", cuMonedaInput(cuHorasPlan(cli), `cuSetHorasPlan('${cliJs}',__V__)`, "h totales", "", 1, inS + " width:90px; text-align:right;")
         + ((cuHorasPlan(cli) && r.sgh) ? `<div style="font-size:10px; color:#9ca3af; margin-top:2px;">≈ ${Math.round(cuHorasPlan(cli) / r.sgh * 10) / 10} meses de plan</div>` : ""),
         "Bolsa TOTAL del contrato (ej. 240 en un semestral de 40). Es independiente de las del mes a propósito: el S&G deja concentrar hasta 25% de la bolsa en un mes, así que plan ÷ meses no es lo que dice el contrato. Vive sólo en el dashboard: HubSpot no tiene property para esto.")
-    + kv("Consumidas este mes", `<input type="number" value="${cuHorasCurrent(cli)}" placeholder="hs" onchange="cuSetHorasConsumidas('${cliJs}','${r.id}',this.value)" style="${inS} width:80px; text-align:right;">`)
+    + kv("Consumidas este mes", cuMonedaInput(cuHorasCurrent(cli), `cuSetHorasConsumidas('${cliJs}','${r.id}',__V__)`, "hs", "", 1, inS + " width:90px; text-align:right;"), "Las reescribe el task horas-jira-a-hubspot los lunes 7:00: lo que edites a mano se pisa en la próxima corrida.")
     + kv("Uso", cuHorasCell(cli, r.id), mdef.cupo ? "Consumidas ÷ contratadas. Por encima de 100% estás poniendo horas que no cobrás." : mdef.l + " no tiene bolsa de horas: el sobreconsumo no se pinta en rojo.")
     + `<div style="padding:7px 13px; font-size:11px; color:#9ca3af;">${escAttr(mdef.l)}: ${escAttr(mdef.d)}</div>`);
 
@@ -8678,7 +8680,7 @@ function cliFichaRender() {
   } else {
     const gmvMan = cuGmvCurrent(cli);
     saludBody = `<div style="padding:11px 13px; font-size:12px; color:#92400e; background:#FFFBEB; border-bottom:1px solid #FDE68A;">Sin export de pedidos cargado. Sin eso no hay GMV real, ni tendencia, ni % del P&amp;L. Cargalo desde <b>📥 Cargar exports</b> arriba de la lista.</div>`
-      + kv("GMV /mes (manual)", `<input type="number" value="${gmvMan}" placeholder="GMV/mes u$s" onchange="cuSetGmv('${cliJs}','${r.id}',this.value)" style="${inS} width:120px; text-align:right;">`, "Carga a mano mientras no haya export. Al subir el export esta celda pasa a ser la mediana calculada y deja de editarse.")
+      + kv("GMV /mes (manual)", cuMonedaInput(gmvMan, `cuSetGmv('${cliJs}','${r.id}',__V__)`, "GMV/mes u$s", "u$s", 0, inS + " width:150px; text-align:right;"), "Carga a mano mientras no haya export. Al subir el export esta celda pasa a ser la mediana calculada y deja de editarse.")
       + kv("Tendencia", cuGmvSparkCell(cli, r.id), "Se arma con el histórico de GMV manual mes a mes.");
   }
   const saludBlk = blk("Salud del cliente", saludBody);
@@ -8759,6 +8761,62 @@ function cuHsDate(v) {
   return "";
 }
 function cuNum(v) { const n = parseFloat(v); return isFinite(n) ? n : null; }
+
+/* ===== FORMATO MONEDA EN LAS CELDAS EDITABLES (2026-09-23) ==========================
+   Pedido de German: `104902` se lee mal; tiene que decir `$ 104.902`.
+   `<input type="number">` NO puede mostrar separadores —el navegador sólo acepta el formato
+   máquina, sin puntos— así que las celdas de plata pasan a `type="text"` con
+   `inputmode="decimal"`, que en el celular sigue abriendo el teclado numérico.
+   🚨 El precio es un parser propio: **`cuNum` NO sirve acá**. `cuNum` es `parseFloat`, y
+   `parseFloat("104.902")` devuelve **104,902** — un valor hora de cien mil pesos convertido
+   en ciento cuatro. Por eso todo lo que entra por estas celdas pasa antes por
+   `cuParseMoneda`, y los setters siguen recibiendo un número limpio. */
+function cuParseMoneda(v) {
+  if (v === null || v === undefined) return null;
+  let s = String(v).trim().replace(/[^\d,.\-]/g, "");      // saca $, u$s, espacios y NBSP
+  if (!s) return null;
+  const lc = s.lastIndexOf(","), ld = s.lastIndexOf(".");
+  if (lc > -1 && ld > -1) {
+    /* Con los dos separadores manda el ÚLTIMO: "1.234,56" es es-AR y "1,234.56" es en-US, y
+       German pega de las dos fuentes. Suponer un formato rompe silenciosamente el otro. */
+    s = lc > ld ? s.replace(/\./g, "").replace(",", ".") : s.replace(/,/g, "");
+  } else if (lc > -1) {
+    s = s.replace(",", ".");
+  } else {
+    /* Sólo puntos, que es el caso ambiguo: "104.902" son miles, "68.3" es un decimal.
+       Se decide por el largo del último grupo — exactamente 3 dígitos = separador de miles. */
+    const p = s.split(".");
+    if (p.length > 1 && p[p.length - 1].length === 3) s = p.join("");
+  }
+  const n = parseFloat(s);
+  return isFinite(n) ? n : null;
+}
+function cuFmtMoneda(v, pre, dec) {
+  const n = (typeof v === "number") ? v : cuParseMoneda(v);
+  if (n === null) return "";
+  return (pre ? pre + " " : "") + n.toLocaleString("es-AR", { minimumFractionDigits: 0, maximumFractionDigits: dec == null ? 2 : dec });
+}
+/* Al entrar se muestra el número pelado: editar "$ 104.902" con el cursor entre los puntos es
+   incómodo y cualquier borrado deja un string raro. Al salir se vuelve a formatear. */
+function cuMonedaFocus(el) {
+  const n = cuParseMoneda(el.value);
+  el.value = n === null ? "" : String(n).replace(".", ",");
+  el.select();
+}
+function cuMonedaBlur(el) {
+  const d = el.dataset || {};
+  el.value = cuFmtMoneda(el.value, d.pre || "", d.dec === undefined || d.dec === "" ? null : parseInt(d.dec, 10));
+}
+/* Input de plata reutilizable: formatea lo que muestra y entrega un número limpio al setter.
+   `handler` recibe el valor ya parseado a través del placeholder __V__. */
+function cuMonedaInput(val, handler, ph, pre, dec, extra) {
+  const n = (val === null || val === undefined || val === "") ? null : (typeof val === "number" ? val : cuParseMoneda(val));
+  return `<input type="text" inputmode="decimal" data-pre="${escAttr(pre || "")}" data-dec="${dec == null ? "" : dec}"
+    value="${escAttr(cuFmtMoneda(n, pre, dec))}" placeholder="${escAttr(ph || "")}"
+    onfocus="cuMonedaFocus(this)" onblur="cuMonedaBlur(this)"
+    onchange="${handler.replace(/__V__/g, "cuParseMoneda(this.value)")}"
+    style="${extra || ""}">`;
+}
 /* Techo de plausibilidad para "Monto mensual u$s". Referencia: los planes de S&C van de
    U$S 790 a U$S 2.100/mes y Scale ronda U$S 2.900/mes — un monto MENSUAL de seis cifras es
    un error de orden de magnitud, casi siempre un GMV pegado en la celda equivocada.
@@ -12169,7 +12227,7 @@ async function renderCuentas() {
   const cotBar = `<div id="cue-cot" style="display:flex; gap:10px; align-items:center; margin-bottom:10px; padding:8px 12px; background:${usdRate ? "#F1EFFF" : "#FFFBEB"}; border:1px solid ${usdRate ? "#C7BDFF" : "#FDE68A"}; border-radius:8px; flex-wrap:wrap;">
     <span style="font-size:12px; color:${usdRate ? "#4030C8" : "#92400e"}; font-weight:600;">💵 Dólar de ${cuMonthLabel(cuMonthKey())}</span>
     <span style="font-size:12px; color:#6b7280;">$</span>
-    <input type="number" value="${usdRate || ""}" placeholder="ej. 1350" onchange="cuSetUsdRate(this.value)" title="Dólar oficial Banco Nación, columna VENTA (bna.com.ar/Personas). Se carga a mano: el navegador no puede pegarle al BNA por CORS." style="padding:5px 9px; font-size:13px; border:1px solid ${usdRate ? "#C7BDFF" : "#FDE68A"}; border-radius:6px; width:120px; font-weight:700;">
+    ${cuMonedaInput(usdRate || null, "cuSetUsdRate(__V__)", "ej. 1350", "", 2, `padding:5px 9px; font-size:13px; border:1px solid ${usdRate ? "#C7BDFF" : "#FDE68A"}; border-radius:6px; width:120px; font-weight:700; font-family:inherit; text-align:right;`)}
     <span style="font-size:11px; color:${usdRate ? "#9ca3af" : "#92400e"};">${usdRate ? "BNA venta · convierte <b>Valor hora $</b> y <b>Plan mensual $</b> a u$s en las cuentas de Argentina" : "<b>Sin esto, las columnas en u$s de las cuentas argentinas quedan vacías.</b> BNA venta."}</span>
     <button class="fc-btn secondary" onclick="cuSyncAllToHS()" title="Escribe los campos financieros de todas las cuentas visibles en HubSpot (valor hora, monto mensual —en Scale ya con el variable sumado—, plan, fin acuerdo, semáforo, GMV, horas consumidas, histórico de horas, flag Scale, estado de facturación). El modelo Grow Pro y el desglose del variable quedan sólo en el dashboard: HubSpot no tiene properties para eso." style="font-size:12px; margin-left:auto;">⬆ Sincronizar a HubSpot</button>
     <span id="cufin-sync-st" style="font-size:11px; color:#4030C8;"></span>
@@ -12297,10 +12355,12 @@ async function renderCuentas() {
        lo que se escribe en HubSpot es idéntico desde los dos lados. */
     const meta = m.meta, isArg = m.isArg;
     /* `onchange` y no `oninput`: los setters re-renderizan la tabla entera y con `oninput` el
-       re-render te roba el foco en cada tecla. */
-    const numCell = (val, handler, ph, extra) => `<input type="number" value="${val === null || val === undefined ? "" : val}" placeholder="${escAttr(ph || "")}"
-      onchange="${handler}" style="width:76px; text-align:right; font-size:11px; padding:2px 4px; border:1px solid #e5e7eb;
-      border-radius:5px; font-family:inherit; font-variant-numeric:tabular-nums; ${extra || ""}">`;
+       re-render te roba el foco en cada tecla.
+       Todo lo que es plata pasa por `cuMonedaInput`, que muestra "$ 104.902" y le entrega al
+       setter el número limpio (ver cuParseMoneda). `__V__` es el valor ya parseado. */
+    const inSty = w => `width:${w}px; text-align:right; font-size:11px; padding:2px 5px; border:1px solid #e5e7eb; border-radius:5px; font-family:inherit; font-variant-numeric:tabular-nums;`;
+    const numCell = (val, handler, ph, extra, pre, dec, w) =>
+      cuMonedaInput(val, handler, ph, pre === undefined ? "" : pre, dec === undefined ? null : dec, inSty(w || 80) + (extra || ""));
     /* Un "—" mudo se lee como "falta cargarlo". Estas celdas están vacías porque NO APLICAN,
        así que siempre llevan el motivo en el title. */
     const naCell = tip => `<span title="${escAttr(tip)}" style="color:#d1d5db; font-size:11px; cursor:help;">—</span>`;
@@ -12311,28 +12371,29 @@ async function renderCuentas() {
 
     const vhArsTxt = !mdef.hora ? naCell(mdef.l + ": " + mdef.d)
       : !isArg ? naCell(soloArg)
-      : numCell(meta.vhPeso, `cuSetVhPeso('${cliJs}','${r.id}',this.value)`, "$/h");
+      : numCell(meta.vhPeso, `cuSetVhPeso('${cliJs}','${r.id}',__V__)`, "$/h", "", "$", 0, 96);
     /* En Argentina el u$s se DERIVA y no se edita: dos inputs para el mismo precio se
        desincronizan en el primer cambio de cotización y no hay forma de saber cuál manda. */
     const vhUsdTxt = !mdef.hora ? naCell(mdef.l + ": " + mdef.d)
-      : !isArg ? numCell(meta.vhUsd, `cuSetVhUsd('${cliJs}','${r.id}',this.value)`, "u$s/h")
+      : !isArg ? numCell(meta.vhUsd, `cuSetVhUsd('${cliJs}','${r.id}',__V__)`, "u$s/h", "", "u$s", 2, 88)
       : (m.vhUsd !== null
-        ? `<span title="Derivado del valor hora en pesos con la cotización de arriba. Para cambiarlo, editá la columna en $." style="color:#075985; font-weight:600; cursor:help;">${m.vhUsd.toFixed(1)}</span>`
+        ? `<span title="Derivado del valor hora en pesos con la cotización de arriba. Para cambiarlo, editá la columna en $." style="color:#075985; font-weight:600; cursor:help;">${cuFmtMoneda(m.vhUsd, "u$s", 1)}</span>`
         : (meta.vhPeso == null || meta.vhPeso === ""
           ? naCell("Cargá primero el valor hora en pesos.")
           : `<a href="#" onclick="document.querySelector('#cue-cot input') && document.querySelector('#cue-cot input').focus(); return false;" title="Hay valor hora en pesos pero falta la cotización del dólar para convertirlo." style="font-size:10px; color:#b45309; background:#FFFBEB; border:1px solid #FDE68A; border-radius:8px; padding:1px 6px; text-decoration:none; white-space:nowrap;">falta cotización</a>`));
 
-    const hsMesTxt = numCell(r.sgh, `cuSetSgh('${r.id}',this.value)`, "h/mes");
+    // Las horas NO llevan prefijo de moneda, pero sí separador de miles: "1.200 h" se lee, "1200" no.
+    const hsMesTxt = numCell(r.sgh, `cuSetSgh('${r.id}',__V__)`, "h/mes", "", "", 1, 70);
     /* Si están las dos, se muestra en cuántos meses entra la bolsa. Es una lectura, NO un
        cálculo que pise ningún campo: German pidió explícitamente que sean independientes. */
     const mesesPlan = (m.hsPlan && r.sgh) ? Math.round(m.hsPlan / r.sgh * 10) / 10 : null;
-    const hsPlanTxt = numCell(m.hsPlan, `cuSetHorasPlan('${cliJs}',this.value)`, "h total")
+    const hsPlanTxt = numCell(m.hsPlan, `cuSetHorasPlan('${cliJs}',__V__)`, "h total", "", "", 1, 74)
       + (mesesPlan ? `<div style="font-size:9px; color:#9ca3af;" title="Horas del plan ÷ horas por mes. Es informativo: los dos campos se cargan a mano.">≈ ${mesesPlan} meses</div>` : "");
 
     const planArsTxt = !mdef.monto ? naCell(mdef.l + ": " + mdef.d)
       : !isArg ? naCell(soloArg)
-      : numCell(m.planArs, `cuSetMontoArs('${cliJs}','${r.id}',this.value)`, "$/mes",
-          m.planArs !== null ? "background:#ECFDF5; font-weight:600;" : "");
+      : numCell(m.planArs, `cuSetMontoArs('${cliJs}','${r.id}',__V__)`, "$/mes",
+          m.planArs !== null ? "background:#ECFDF5; font-weight:600;" : "", "$", 0, 104);
 
     /* Contratado /mes: mismo criterio que el valor hora. En AR sale del plan en pesos (no se
        edita acá). En Scale tampoco se edita: la celda muestra fijo + variable, así que un
@@ -12343,8 +12404,9 @@ async function renderCuentas() {
         ? (m.contratado === null
           ? naCell(isArg ? "Cargá el plan mensual en pesos (o el valor hora y las horas) y la cotización." : "Cargá el fijo de Scale en la ficha.")
           : `<span title="${escAttr(isArg ? "Derivado de lo cargado en pesos con la cotización de arriba." : "Fijo + variable. El desglose se edita en la ficha.")}" style="font-weight:600; color:#047857; cursor:help;">${fmtMoneyK(m.contratado)}</span>`)
-        : numCell(cuNum(meta.montoUsd), `cuSetMonto('${cliJs}','${r.id}',this.value)`, m.contratado !== null ? "auto " + Math.round(m.contratado) : "u$s/mes",
-            "font-weight:600; color:#047857;" + (cuNum(meta.montoUsd) !== null ? " background:#ECFDF5;" : ""));
+        : numCell(cuNum(meta.montoUsd), `cuSetMonto('${cliJs}','${r.id}',__V__)`,
+            m.contratado !== null ? "auto " + cuFmtMoneda(m.contratado, "u$s", 0) : "u$s/mes",
+            "font-weight:600; color:#047857;" + (cuNum(meta.montoUsd) !== null ? " background:#ECFDF5;" : ""), "u$s", 0, 96);
 
     /* ACV Run-rate: lo facturado en la ventana proyectado a 12 meses. Debajo va el ACV crudo
        con la CANTIDAD DE MESES, porque comparar un ACV de 6 meses contra uno de 2 no dice nada
