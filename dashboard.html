@@ -7974,7 +7974,15 @@ const CLI_COLS = [
   { id: "pais",       lbl: "País",              t: "sel",   al: "center" },
   { id: "modelo",     lbl: "Modelo",            t: "sel",   al: "center" },
   { id: "semaforo",   lbl: "Semáforo",          t: "sel",   al: "center" },
-  { id: "contratado", lbl: "Contratado /mes",   t: "money", al: "right"  },
+  /* Bloque comercial editable (2026-09-23). Orden deliberado: primero el precio (hora), después
+     el volumen (horas) y recién ahí el resultado (plan mensual) — se lee como la cuenta que hacés
+     al armar el contrato. Las columnas en $ sólo se llenan en cuentas de Argentina. */
+  { id: "vhArs",      lbl: "Valor hora $",      t: "money", al: "right"  },
+  { id: "vhUsd",      lbl: "Valor hora u$s",    t: "money", al: "right"  },
+  { id: "hsMes",      lbl: "Horas /mes",        t: "money", al: "right"  },
+  { id: "hsPlan",     lbl: "Horas del plan",    t: "money", al: "right"  },
+  { id: "planArs",    lbl: "Plan mensual $",    t: "money", al: "right"  },
+  { id: "contratado", lbl: "Contratado /mes u$s", t: "money", al: "right"  },
   { id: "runrate",    lbl: "ACV Run-rate",      t: "money", al: "right"  },
   { id: "gmv",        lbl: "GMV cliente /mes",  t: "money", al: "right"  },
   { id: "trend",      lbl: "Tendencia",         t: "pct",   al: "left"   },
@@ -8116,9 +8124,14 @@ const CLI_TIP = {
   cli: "Clic en el nombre (o en Ficha ↗) para abrir la ficha del cliente: ahí se edita todo.",
   csm: "CSM asignado en HubSpot. Se cambia en la ficha.",
   pais: "País de la empresa en HubSpot.",
-  modelo: "Modelo de cobro. Por hora = valor hora × horas. ⚡ Scale = fijo + variable. 🌱 Grow Pro = fijo puro. 🧰 Bajo Demanda y 🚧 En IDP no tienen recurrente contratado.",
-  semaforo: "Estado de la cuenta. Se cambia en la ficha.",
-  contratado: "Lo que la cuenta tiene FIRMADO por mes (fijo + variable en Scale). Sale del contrato cargado en la ficha, no de lo facturado.",
+  modelo: "Modelo de cobro, EDITABLE acá. Por hora = valor hora × horas. ⚡ Scale = fijo + variable. 🌱 Grow Pro = fijo puro. 🧰 Bajo Demanda y 🚧 En IDP no tienen recurrente contratado.",
+  semaforo: "Estado de la cuenta, EDITABLE acá. Se escribe también en HubSpot.",
+  vhArs: "Valor hora en pesos. Sólo en cuentas de Argentina: es la moneda en la que se firma. En el resto va vacía y el valor hora se carga directo en u$s.",
+  vhUsd: "Valor hora en u$s. En Argentina se DERIVA del valor en pesos con la cotización de arriba (no se edita acá); en el resto de los países se edita.",
+  hsMes: "Horas contratadas POR MES (la bolsa mensual). Se escribe en horas_de_sg_contratadas de HubSpot y es el denominador del % de consumo.",
+  hsPlan: "Horas TOTALES del plan (ej. 240 en un semestral de 40). Independiente de las del mes a propósito: el S&C deja usar hasta 25% de la bolsa en un mes, así que plan ÷ meses no es el contrato. Vive sólo en el dashboard.",
+  planArs: "Plan mensual en pesos. Sólo en cuentas de Argentina. Cargarlo pisa el cálculo automático de valor hora × horas.",
+  contratado: "Lo FIRMADO por mes en u$s (fijo + variable en Scale). En Argentina se deriva del plan en pesos; en el resto se edita acá. Vacío = se calcula solo con valor hora × horas.",
   runrate: "Lo facturado en la ventana proyectado a 12 meses. Debajo, el ACV crudo con la cantidad de meses, para poder comparar cuentas de distinto plazo.",
   gmv: "GMV de un mes típico del cliente en USD: MEDIANA de los meses completos del export. Mediana y no promedio para que un Hot Sale no infle el número.",
   trend: "Serie mensual de GMV en USD, sólo meses completos. Se ordena y se filtra por la variación del último mes contra el anterior.",
@@ -8598,9 +8611,18 @@ function cliFichaRender() {
   const montoAuto = (mdef.hora && cuVhUsdEff(cli, isArg) !== null && r.sgh) ? cuVhUsdEff(cli, isArg) * r.sgh : null;
   const varUsd = mdef.varb ? cuVarUsd(cli) : null;
   const contratado = cuMontoEff(cli, isArg, r.sgh);
+  /* 🪤 En las cuentas de Argentina el plan se carga en PESOS también acá (2026-09-23). Si la
+     ficha siguiera ofreciendo sólo el input en u$s, German lo cargaría por acá, `montoArs`
+     le ganaría en `cuMontoManUsd` y el número escrito desaparecería sin decir nada — dos
+     inputs para el mismo dato con uno que pierde en silencio es peor que no tener el campo. */
+  const montoArs = cuMontoArs(cli);
   const montoRow = !mdef.monto
     ? kv("Contratado /mes", `<span style="color:#9ca3af; font-size:11.5px;">— sin recurrente</span>`, mdef.l + ": " + mdef.d + (montoMan !== null ? " Quedó U$S " + Math.round(montoMan).toLocaleString("es-AR") + " de un modelo anterior: se conserva pero no suma al MRR." : ""))
-    : kv(mdef.varb ? "Fijo /mes u$s" : "Contratado /mes u$s", `<input type="number" value="${montoMan !== null ? montoMan : ""}" placeholder="${montoAuto !== null ? "auto " + Math.round(montoAuto).toLocaleString("es-AR") : "u$s/mes"}" onchange="cuSetMonto('${cliJs}','${r.id}',this.value)" style="${inS} width:110px; text-align:right; font-weight:600; color:#047857; background:${montoMan !== null ? "#ECFDF5" : "#fff"};">`);
+    : isArg
+      ? kv(mdef.varb ? "Fijo /mes $" : "Plan mensual $", `<input type="number" value="${montoArs !== null ? montoArs : ""}" placeholder="${montoAuto !== null ? "auto u$s " + Math.round(montoAuto).toLocaleString("es-AR") : "$/mes"}" onchange="cuSetMontoArs('${cliJs}','${r.id}',this.value)" style="${inS} width:120px; text-align:right; font-weight:600; color:#047857; background:${montoArs !== null ? "#ECFDF5" : "#fff"};">`
+          + (contratado !== null ? `<div style="font-size:10px; color:#075985; margin-top:2px;">= U$S ${Math.round(contratado).toLocaleString("es-AR")}/mes</div>` : (montoArs !== null ? `<div style="font-size:10px; color:#b45309; margin-top:2px;">cargá la cotización</div>` : "")),
+          "En Argentina el plan se carga en pesos y el u$s se deriva con la cotización, igual que el valor hora. Vacío = se calcula solo con valor hora × horas.")
+      : kv(mdef.varb ? "Fijo /mes u$s" : "Contratado /mes u$s", `<input type="number" value="${montoMan !== null ? montoMan : ""}" placeholder="${montoAuto !== null ? "auto " + Math.round(montoAuto).toLocaleString("es-AR") : "u$s/mes"}" onchange="cuSetMonto('${cliJs}','${r.id}',this.value)" style="${inS} width:110px; text-align:right; font-weight:600; color:#047857; background:${montoMan !== null ? "#ECFDF5" : "#fff"};">`);
   const varRow = mdef.varb
     ? kv("Variable /mes u$s", `<input type="number" value="${varUsd != null ? varUsd : ""}" placeholder="var u$s" onchange="cuSetVarUsd('${cliJs}','${r.id}',this.value)" style="${inS} width:110px; text-align:right; font-weight:600; color:#6d28d9; background:${varUsd != null ? "#F5F3FF" : "#fff"};">`, "Componente variable del mes en valor ABSOLUTO (u$s), no en porcentaje. Se suma al fijo para dar el MRR.")
     : "";
@@ -8617,6 +8639,9 @@ function cliFichaRender() {
   /* ---------- bloque CONSUMO ---------- */
   const consumoBlk = blk("Consumo de horas",
     kv("S&amp;G contratadas /mes", `<input type="number" value="${r.sgh != null ? r.sgh : ""}" placeholder="h/mes" onchange="cuSetSgh('${r.id}',this.value)" style="${inS} width:80px; text-align:right;">`, "Se escribe en horas_de_sg_contratadas de HubSpot.")
+    + kv("Horas del plan", `<input type="number" value="${cuHorasPlan(cli) != null ? cuHorasPlan(cli) : ""}" placeholder="h totales" onchange="cuSetHorasPlan('${cliJs}',this.value)" style="${inS} width:80px; text-align:right;">`
+        + ((cuHorasPlan(cli) && r.sgh) ? `<div style="font-size:10px; color:#9ca3af; margin-top:2px;">≈ ${Math.round(cuHorasPlan(cli) / r.sgh * 10) / 10} meses de plan</div>` : ""),
+        "Bolsa TOTAL del contrato (ej. 240 en un semestral de 40). Es independiente de las del mes a propósito: el S&G deja concentrar hasta 25% de la bolsa en un mes, así que plan ÷ meses no es lo que dice el contrato. Vive sólo en el dashboard: HubSpot no tiene property para esto.")
     + kv("Consumidas este mes", `<input type="number" value="${cuHorasCurrent(cli)}" placeholder="hs" onchange="cuSetHorasConsumidas('${cliJs}','${r.id}',this.value)" style="${inS} width:80px; text-align:right;">`)
     + kv("Uso", cuHorasCell(cli, r.id), mdef.cupo ? "Consumidas ÷ contratadas. Por encima de 100% estás poniendo horas que no cobrás." : mdef.l + " no tiene bolsa de horas: el sobreconsumo no se pinta en rojo.")
     + `<div style="padding:7px 13px; font-size:11px; color:#9ca3af;">${escAttr(mdef.l)}: ${escAttr(mdef.d)}</div>`);
@@ -8806,6 +8831,45 @@ function cuSetMonto(cli, companyId, v) {
   const der = cuFinDerivedProps(cli, companyId);
   cuFinWrite(companyId, { monto_mensual_us: der.monto_mensual_us != null ? der.monto_mensual_us : "" });
   renderCuentas();
+}
+
+/* ===== PLAN MENSUAL EN PESOS + HORAS DEL PLAN (2026-09-23) ===========================
+   Pedido de German para la lista maestra. Dos campos nuevos, y el criterio del valor hora
+   se extiende al monto: **en Argentina se carga en $ y el u$s se deriva; fuera de Argentina
+   se carga en u$s y la columna en $ no se muestra.** El contrato se firma en la moneda del
+   país: guardar el u$s de una cuenta argentina lo congela contra una cotización vieja y al
+   mes siguiente el número miente sin avisar.
+     montoArs   — plan mensual en pesos. SÓLO tiene sentido en cuentas AR.
+     horasPlan  — horas TOTALES de la bolsa (240 en un semestral de 40 h/mes).
+   `horasPlan` es **independiente** de las horas del mes por decisión de German (23/09): no se
+   deriva una de la otra. Motivo real: el S&C deja consumir hasta el 25% de la bolsa del
+   semestre en un solo mes, así que plan ÷ meses sería una cuenta que el contrato no hace.
+   Las dos viven sólo en `cuentas_meta`: HubSpot no tiene property para ninguna y acá no se
+   inventan nombres de propiedad. Lo que sí viaja es el total en u$s (`monto_mensual_us`). */
+function cuMontoArs(cli) { return cuNum(cuentasGetMeta(cli).montoArs); }
+function cuSetMontoArs(cli, companyId, v) {
+  const n = cuNum(v);
+  cuentasSetMeta(cli, { montoArs: n === null ? undefined : n });
+  const der = cuFinDerivedProps(cli, companyId);
+  cuFinWrite(companyId, { monto_mensual_us: der.monto_mensual_us != null ? der.monto_mensual_us : "" });
+  renderCuentas();
+}
+function cuHorasPlan(cli) { return cuNum(cuentasGetMeta(cli).horasPlan); }
+function cuSetHorasPlan(cli, v) {
+  const n = cuNum(v);
+  cuentasSetMeta(cli, { horasPlan: n === null ? undefined : n });
+  renderCuentas();
+}
+/* El monto mensual cargado A MANO, siempre devuelto en u$s. En AR manda el valor en pesos;
+   si no hay cotización devuelve null en vez de un número inventado — mostrar "falta la
+   cotización" es honesto, mostrar el monto sin convertir sería un error de 3 órdenes.
+   El `montoUsd` sigue de respaldo en AR para no romper las cuentas que ya lo tenían cargado. */
+function cuMontoManUsd(cli, isArg) {
+  if (isArg) {
+    const a = cuMontoArs(cli);
+    if (a !== null) { const r = cuUsdRate(); return r > 0 ? a / r : null; }
+  }
+  return cuNum(cuentasGetMeta(cli).montoUsd);
 }
 // S&G h/mes editable inline → prop horas_de_sg_contratadas (optimista) + snapshot al histórico
 function cuSetSgh(companyId, v) {
@@ -9065,8 +9129,12 @@ function cuFinHydrateFromHS(list) {
     if (p.es_scale != null && p.es_scale !== "") patch.esScale = (String(p.es_scale) === "true");
     if (p.estado_facturacion) patch.estadoFact = p.estado_facturacion;
     if (Object.keys(patch).length) cuentasSetMeta(cli, patch);
-    // monto: sólo se toma como override manual si local está vacío y difiere del auto computable
-    if (p.monto_mensual_us != null && p.monto_mensual_us !== "" && cuNum(cuentasGetMeta(cli).montoUsd) === null) {
+    /* monto: sólo se toma como override manual si local está vacío y difiere del auto computable.
+       🪤 Si la cuenta ya tiene el plan cargado en PESOS, no se hidrata el u$s (2026-09-23):
+       `monto_mensual_us` en HubSpot es justamente el resultado de convertir esos pesos, así que
+       guardarlo también como override dejaría una copia congelada contra la cotización de hoy,
+       lista para resucitar con un número viejo el día que se borre el valor en pesos. */
+    if (p.monto_mensual_us != null && p.monto_mensual_us !== "" && cuMontoArs(cli) === null && cuNum(cuentasGetMeta(cli).montoUsd) === null) {
       const isArg = normPais(p.country) === "AR";
       const sgh = p.horas_de_sg_contratadas ? parseFloat(p.horas_de_sg_contratadas) : null;
       const vh = cuVhUsdEff(cli, isArg); const auto = (vh !== null && sgh) ? vh * sgh : null;
@@ -9145,8 +9213,10 @@ async function cuSyncAllToHS() {
    El valor no se borra (por si German vuelve al modelo anterior), simplemente no se lee.
    Es el número que alimenta el KPI de MRR de cartera y `monto_mensual_us` en HubSpot. */
 function cuMontoEff(cli, isArg, sgh) {
-  const m = cuentasGetMeta(cli);
-  const man = cuNum(m.montoUsd);
+  /* 2026-09-23: `man` dejó de ser `montoUsd` a secas y pasa por `cuMontoManUsd`, que en las
+     cuentas AR lee primero el plan en pesos y lo convierte. Con `montoArs` vacío el resultado
+     es idéntico al de antes, así que ninguna cuenta ya cargada cambia de número. */
+  const man = cuMontoManUsd(cli, isArg);
   const mod = cuModelo(cli);
   const def = cuModeloDef(mod);
   if (!def.monto) return null;
@@ -12091,11 +12161,16 @@ async function renderCuentas() {
     <div class="cue-kpi"><div class="kl">Con CSM asignado</div><div class="kv">${conCsm}<span class="ks"> / ${accounts.length}</span></div></div>
     <div class="cue-kpi"><div class="kl">MRR cartera u$s</div><div class="kv" style="${mrrFs ? "font-size:" + mrrFs + ";" : ""} white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${mrrTxt ? escAttr(mrrTxt) : '<span style="color:#9ca3af; font-size:15px;">cargá valor hora</span>'}${mrrSub}</div></div>`;
 
-  const cotBar = `<div style="display:flex; gap:10px; align-items:center; margin-bottom:10px; padding:8px 12px; background:#F1EFFF; border:1px solid #C7BDFF; border-radius:8px; flex-wrap:wrap;">
-    <span style="font-size:12px; color:#4030C8; font-weight:600;">💵 Cotización dólar (manual)</span>
+  /* La cotización manda sobre TODAS las columnas en u$s de las cuentas argentinas (valor hora y
+     plan mensual), así que desde el 23/09 la barra dice de qué mes es y de dónde sale el número.
+     Es UNA sola cotización, la del mes en curso — decisión de German: una por mes obligaría a
+     cargar la de cada mes o las columnas quedarían vacías hacia atrás. Regla fija: dólar oficial
+     Banco Nación, columna VENTA (el criterio conservador para convertir lo que se cobra). */
+  const cotBar = `<div id="cue-cot" style="display:flex; gap:10px; align-items:center; margin-bottom:10px; padding:8px 12px; background:${usdRate ? "#F1EFFF" : "#FFFBEB"}; border:1px solid ${usdRate ? "#C7BDFF" : "#FDE68A"}; border-radius:8px; flex-wrap:wrap;">
+    <span style="font-size:12px; color:${usdRate ? "#4030C8" : "#92400e"}; font-weight:600;">💵 Dólar de ${cuMonthLabel(cuMonthKey())}</span>
     <span style="font-size:12px; color:#6b7280;">$</span>
-    <input type="number" value="${usdRate || ""}" placeholder="ej. 1350" onchange="cuSetUsdRate(this.value)" style="padding:5px 9px; font-size:13px; border:1px solid #C7BDFF; border-radius:6px; width:120px;">
-    <span style="font-size:11px; color:#9ca3af;">se usa para convertir Valor hora $ → u$s en las cuentas de Argentina</span>
+    <input type="number" value="${usdRate || ""}" placeholder="ej. 1350" onchange="cuSetUsdRate(this.value)" title="Dólar oficial Banco Nación, columna VENTA (bna.com.ar/Personas). Se carga a mano: el navegador no puede pegarle al BNA por CORS." style="padding:5px 9px; font-size:13px; border:1px solid ${usdRate ? "#C7BDFF" : "#FDE68A"}; border-radius:6px; width:120px; font-weight:700;">
+    <span style="font-size:11px; color:${usdRate ? "#9ca3af" : "#92400e"};">${usdRate ? "BNA venta · convierte <b>Valor hora $</b> y <b>Plan mensual $</b> a u$s en las cuentas de Argentina" : "<b>Sin esto, las columnas en u$s de las cuentas argentinas quedan vacías.</b> BNA venta."}</span>
     <button class="fc-btn secondary" onclick="cuSyncAllToHS()" title="Escribe los campos financieros de todas las cuentas visibles en HubSpot (valor hora, monto mensual —en Scale ya con el variable sumado—, plan, fin acuerdo, semáforo, GMV, horas consumidas, histórico de horas, flag Scale, estado de facturación). El modelo Grow Pro y el desglose del variable quedan sólo en el dashboard: HubSpot no tiene properties para eso." style="font-size:12px; margin-left:auto;">⬆ Sincronizar a HubSpot</button>
     <span id="cufin-sync-st" style="font-size:11px; color:#4030C8;"></span>
   </div>`
@@ -12145,6 +12220,15 @@ async function renderCuentas() {
       r: r, meta: meta, mdef: mdef, cartR: cartR, isArg: isArg, ct: ct,
       cli: r.cli, csm: r.csm || "", pais: r.pais || "",
       modelo: mdef.l, semaforo: (CUENTAS_SEMAFORO[meta.semaforo || ""] || {}).label || "",
+      /* Valores de las columnas comerciales (2026-09-23). Se calculan ACÁ, antes de filtrar y
+         ordenar, porque si no no se podría pedir "las de más de 40 u$s la hora con menos de 20
+         horas al mes", que es justo para lo que sirven juntas. En las cuentas que no son de
+         Argentina las columnas en $ valen `null` y caen al fondo del orden, que es lo correcto:
+         no es un cero, es que no aplica. */
+      vhArs: isArg ? cuNum(meta.vhPeso) : null,
+      vhUsd: cuVhUsdEff(r.cli, isArg),
+      hsMes: r.sgh, hsPlan: cuHorasPlan(r.cli),
+      planArs: isArg ? cuMontoArs(r.cli) : null,
       contratado: contratado, runrate: cartR ? cartR.runrate : null, gmv: gmv || null,
       trend: trend, pen: penReal !== null ? penReal : penEst, penTipo: penReal !== null ? "real" : (penEst !== null ? "estimado" : ""),
       alertas: alertas, alertaScore: alertas.reduce((s, a) => s + (sc[a.tone] || 0), 0)
@@ -12197,14 +12281,70 @@ async function renderCuentas() {
     + `<div style="overflow-x:auto; border:1px solid #e5e5e5; border-radius:8px;"><table class="std">
       <thead><tr>${CLI_COLS.map(cth).join("")}</tr><tr style="background:#fafafa;">${CLI_COLS.map(cfc).join("")}</tr></thead><tbody>`;
 
-  if (!view.length) html += `<tr><td colspan="12" class="empty">Sin cuentas en esta selección.</td></tr>`;
+  // colspan derivado: quedó en 12 cuando la tabla pasó a 17 columnas. Que lo cuente el código.
+  if (!view.length) html += `<tr><td colspan="${CLI_COLS.length}" class="empty">Sin cuentas en esta selección.</td></tr>`;
   view.forEach(m => {
     const r = m.r, cartR = m.cartR, mdef = m.mdef;
     const cliJs = cliAttr(r.cli);
 
-    const contratadoTxt = m.contratado === null
-      ? `<span style="color:#cbd5e1;" title="${escAttr(mdef.l + ": " + mdef.d)}">—</span>`
-      : `<span style="font-weight:600; color:#047857;">${fmtMoneyK(m.contratado)}</span>`;
+    /* ===== CELDAS COMERCIALES EDITABLES (2026-09-23) ==============================
+       Pedido de German: editar Modelo, Semáforo, valor hora, horas y plan mensual SIN abrir
+       la ficha. Revierte en parte la regla de 2026-09-07 ("la lista es sólo lectura"), y a
+       propósito: esa regla existía porque las DOS pestañas de Clientes mostraban los mismos
+       campos con números distintos, no porque editar en la grilla estuviera mal. Acá cada
+       dato sigue apareciendo una sola vez, así que el motivo original no aplica.
+       Los handlers son los MISMOS de la ficha (cuSetVhPeso, cuSetSgh, cuSetModelo…), así que
+       lo que se escribe en HubSpot es idéntico desde los dos lados. */
+    const meta = m.meta, isArg = m.isArg;
+    /* `onchange` y no `oninput`: los setters re-renderizan la tabla entera y con `oninput` el
+       re-render te roba el foco en cada tecla. */
+    const numCell = (val, handler, ph, extra) => `<input type="number" value="${val === null || val === undefined ? "" : val}" placeholder="${escAttr(ph || "")}"
+      onchange="${handler}" style="width:76px; text-align:right; font-size:11px; padding:2px 4px; border:1px solid #e5e7eb;
+      border-radius:5px; font-family:inherit; font-variant-numeric:tabular-nums; ${extra || ""}">`;
+    /* Un "—" mudo se lee como "falta cargarlo". Estas celdas están vacías porque NO APLICAN,
+       así que siempre llevan el motivo en el title. */
+    const naCell = tip => `<span title="${escAttr(tip)}" style="color:#d1d5db; font-size:11px; cursor:help;">—</span>`;
+    const soloArg = "Las columnas en pesos sólo se completan en cuentas de Argentina: es la moneda en la que se firma el contrato.";
+
+    const modeloCell = `<select onchange="cuSetModelo('${cliJs}','${r.id}',this.value)" title="${escAttr(mdef.l + ": " + mdef.d)}"
+      style="font-size:10.5px; font-weight:600; color:${mdef.c}; padding:2px 4px; border:1px solid #e5e7eb; border-radius:5px; background:#fff; font-family:inherit; max-width:118px;">${CU_MODELOS.map(mm => `<option value="${mm.v}"${cuModelo(r.cli) === mm.v ? " selected" : ""}>${mm.ic ? mm.ic + " " : ""}${mm.l}</option>`).join("")}</select>`;
+
+    const vhArsTxt = !mdef.hora ? naCell(mdef.l + ": " + mdef.d)
+      : !isArg ? naCell(soloArg)
+      : numCell(meta.vhPeso, `cuSetVhPeso('${cliJs}','${r.id}',this.value)`, "$/h");
+    /* En Argentina el u$s se DERIVA y no se edita: dos inputs para el mismo precio se
+       desincronizan en el primer cambio de cotización y no hay forma de saber cuál manda. */
+    const vhUsdTxt = !mdef.hora ? naCell(mdef.l + ": " + mdef.d)
+      : !isArg ? numCell(meta.vhUsd, `cuSetVhUsd('${cliJs}','${r.id}',this.value)`, "u$s/h")
+      : (m.vhUsd !== null
+        ? `<span title="Derivado del valor hora en pesos con la cotización de arriba. Para cambiarlo, editá la columna en $." style="color:#075985; font-weight:600; cursor:help;">${m.vhUsd.toFixed(1)}</span>`
+        : (meta.vhPeso == null || meta.vhPeso === ""
+          ? naCell("Cargá primero el valor hora en pesos.")
+          : `<a href="#" onclick="document.querySelector('#cue-cot input') && document.querySelector('#cue-cot input').focus(); return false;" title="Hay valor hora en pesos pero falta la cotización del dólar para convertirlo." style="font-size:10px; color:#b45309; background:#FFFBEB; border:1px solid #FDE68A; border-radius:8px; padding:1px 6px; text-decoration:none; white-space:nowrap;">falta cotización</a>`));
+
+    const hsMesTxt = numCell(r.sgh, `cuSetSgh('${r.id}',this.value)`, "h/mes");
+    /* Si están las dos, se muestra en cuántos meses entra la bolsa. Es una lectura, NO un
+       cálculo que pise ningún campo: German pidió explícitamente que sean independientes. */
+    const mesesPlan = (m.hsPlan && r.sgh) ? Math.round(m.hsPlan / r.sgh * 10) / 10 : null;
+    const hsPlanTxt = numCell(m.hsPlan, `cuSetHorasPlan('${cliJs}',this.value)`, "h total")
+      + (mesesPlan ? `<div style="font-size:9px; color:#9ca3af;" title="Horas del plan ÷ horas por mes. Es informativo: los dos campos se cargan a mano.">≈ ${mesesPlan} meses</div>` : "");
+
+    const planArsTxt = !mdef.monto ? naCell(mdef.l + ": " + mdef.d)
+      : !isArg ? naCell(soloArg)
+      : numCell(m.planArs, `cuSetMontoArs('${cliJs}','${r.id}',this.value)`, "$/mes",
+          m.planArs !== null ? "background:#ECFDF5; font-weight:600;" : "");
+
+    /* Contratado /mes: mismo criterio que el valor hora. En AR sale del plan en pesos (no se
+       edita acá). En Scale tampoco se edita: la celda muestra fijo + variable, así que un
+       input escribiría el fijo y mostraría otro número — la trampa clásica de editar un total. */
+    const contratadoTxt = m.contratado === null && !mdef.monto
+      ? `<span style="color:#cbd5e1; cursor:help;" title="${escAttr(mdef.l + ": " + mdef.d)}">—</span>`
+      : (isArg || mdef.varb)
+        ? (m.contratado === null
+          ? naCell(isArg ? "Cargá el plan mensual en pesos (o el valor hora y las horas) y la cotización." : "Cargá el fijo de Scale en la ficha.")
+          : `<span title="${escAttr(isArg ? "Derivado de lo cargado en pesos con la cotización de arriba." : "Fijo + variable. El desglose se edita en la ficha.")}" style="font-weight:600; color:#047857; cursor:help;">${fmtMoneyK(m.contratado)}</span>`)
+        : numCell(cuNum(meta.montoUsd), `cuSetMonto('${cliJs}','${r.id}',this.value)`, m.contratado !== null ? "auto " + Math.round(m.contratado) : "u$s/mes",
+            "font-weight:600; color:#047857;" + (cuNum(meta.montoUsd) !== null ? " background:#ECFDF5;" : ""));
 
     /* ACV Run-rate: lo facturado en la ventana proyectado a 12 meses. Debajo va el ACV crudo
        con la CANTIDAD DE MESES, porque comparar un ACV de 6 meses contra uno de 2 no dice nada
@@ -12253,9 +12393,14 @@ async function renderCuentas() {
       </td>
       <td>${r.csm ? escAttr(r.csm) : `<span style="font-size:10px; color:#b45309; background:#fffbeb; border-radius:8px; padding:1px 7px;">⚠ sin CSM</span>`}</td>
       <td style="text-align:center;">${r.pais || "—"}</td>
-      <td style="text-align:center;"><span title="${escAttr(mdef.l + ": " + mdef.d)}" style="font-size:10.5px; font-weight:600; color:${mdef.c}; white-space:nowrap;">${mdef.ic ? mdef.ic + " " : ""}${mdef.l}</span></td>
-      <td style="text-align:center;">${semPill(m.meta.semaforo || "")}</td>
-      <td style="text-align:center; font-variant-numeric:tabular-nums;">${contratadoTxt}</td>
+      <td style="text-align:center;">${modeloCell}</td>
+      <td style="text-align:center;">${cuSemaforoSelect(r.cli, r.id)}</td>
+      <td style="text-align:right; font-variant-numeric:tabular-nums;">${vhArsTxt}</td>
+      <td style="text-align:right; font-variant-numeric:tabular-nums;">${vhUsdTxt}</td>
+      <td style="text-align:right; font-variant-numeric:tabular-nums;">${hsMesTxt}</td>
+      <td style="text-align:right; font-variant-numeric:tabular-nums;">${hsPlanTxt}</td>
+      <td style="text-align:right; font-variant-numeric:tabular-nums;">${planArsTxt}</td>
+      <td style="text-align:right; font-variant-numeric:tabular-nums;">${contratadoTxt}</td>
       <td style="text-align:center; font-variant-numeric:tabular-nums;">${rrTxt}</td>
       <td style="text-align:center; font-variant-numeric:tabular-nums;">${gmvTxt}</td>
       <td style="text-align:center;">${trendTxt}</td>
