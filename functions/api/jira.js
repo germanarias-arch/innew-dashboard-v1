@@ -7,9 +7,13 @@
 // una foto de hasta 2 h, no depende de un task que puede estar apagado (el de horas lo estuvo un
 // mes sin que nadie se enterara) y deja de meter un blob JSON adentro del CRM.
 //
-// 🚨 SÓLO LECTURA, por decisión de German (23/09). Nada de comentar ni mover estados desde el
-// dashboard: en los portales de Innew **un comentario que no sea interno le llega al cliente por
-// mail y borrarlo NO lo deshace**. Un botón mal apretado acá se convierte en un mail al cliente.
+// 🚨 LECTURA + NOTAS INTERNAS, nada más (decisión de German 23/09, ampliada el 24/09).
+// Única escritura permitida: `nota_interna` — un comentario de Jira Service Management marcado
+// `sd.public.comment.internal = true`, que el cliente NO ve. La bandera está clavada en el
+// código, no viene del navegador: no existe forma de que este proxy publique un comentario
+// público, porque en los portales de Innew **un comentario público le llega al cliente por mail
+// y borrarlo NO lo deshace**. Los mensajes al cliente se ARMAN en el dashboard y se mandan a mano.
+// Tampoco mueve estados.
 //
 // Variables de entorno (las carga German en Cloudflare → Settings → Environment variables):
 //   JIRA_EMAIL     = german.arias@innew.la
@@ -153,6 +157,45 @@ async function doAbiertos(env, args) {
   return { ts: new Date().toISOString(), proyectos: keys, truncado: !!token, t: out };
 }
 
+/* ── Nota INTERNA en un ticket (2026-09-24) ─────────────────────────────────────────────
+   Lo que German aprueba en el dashboard se publica acá como comentario interno de JSM. Tres
+   guardas que no se negocian:
+   1. La clave tiene que ser de un proyecto de la lista blanca — mismo perímetro que la lectura.
+   2. `internal: true` está fijo en el código. El front no puede pedir un comentario público
+      ni por error ni a propósito: la property `sd.public.comment` es lo que JSM mira para
+      decidir si el cliente lo ve y lo recibe por mail.
+   3. Texto plano → ADF (párrafos por línea). Sin markup del navegador, sin HTML.
+   Devuelve el id del comentario y el link al ticket para que la pantalla lo muestre. */
+function claveOk(key) {
+  const k = String(key || "").toUpperCase().trim();
+  const m = k.match(/^([A-Z][A-Z0-9]+)-(\d+)$/);
+  return (m && PROY_OK[m[1]]) ? k : null;
+}
+function textoADF(texto) {
+  const parrafos = String(texto).replace(/\r/g, "").split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+  return {
+    type: "doc", version: 1,
+    content: parrafos.map(p => ({
+      type: "paragraph",
+      content: p.split("\n").flatMap((linea, i) => (i ? [{ type: "hardBreak" }] : []).concat(linea ? [{ type: "text", text: linea }] : []))
+    }))
+  };
+}
+async function doNotaInterna(env, args) {
+  const key = claveOk(args && args.key);
+  if (!key) throw Object.assign(new Error("Clave de ticket inválida o fuera de los proyectos permitidos: " + String(args && args.key)), { status: 400 });
+  const texto = String((args && args.texto) || "").trim();
+  if (!texto) throw Object.assign(new Error("La nota está vacía"), { status: 400 });
+  if (texto.length > 6000) throw Object.assign(new Error("La nota supera los 6.000 caracteres"), { status: 400 });
+  const body = {
+    body: textoADF(texto),
+    properties: [{ key: "sd.public.comment", value: { internal: true } }]   // ← clavado. Nunca público.
+  };
+  const r = await jiraFetch(env, "/rest/api/3/issue/" + encodeURIComponent(key) + "/comment", body);
+  const base = (env.JIRA_BASE || JIRA_DEFAULT).replace(/\/+$/, "");
+  return { ok: true, key: key, id: r && r.id, ts: new Date().toISOString(), url: base + "/browse/" + key, interna: true };
+}
+
 export async function onRequestPost(context) {
   const { request, env } = context;
   const SECRET = env.SESSION_SECRET || "cambia-esto-en-cloudflare";
@@ -173,6 +216,7 @@ export async function onRequestPost(context) {
     const parsed = await request.json().catch(() => ({}));
     const op = parsed.op || "";
     if (op === "abiertos") return json(await doAbiertos(env, parsed.args || {}), 200);
+    if (op === "nota_interna") return json(await doNotaInterna(env, parsed.args || {}), 200);
     return json({ error: "Operación de Jira no soportada: " + op }, 400);
   } catch (e) {
     /* 401 de Jira = token vencido, mal copiado, o apuntando al destino equivocado. Hay que
