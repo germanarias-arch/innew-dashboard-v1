@@ -10793,6 +10793,7 @@ function renderCsm() {
     </div>`;
 }
 function csmFiltro(v) { window.__csmFiltro = v; renderCsm(); }
+function rsopCsm(v) { window.__rsopCsm = v; renderRadarSoporte(); }
 /* Vuelve a preguntarle a Jira y repinta las dos vistas que dependen del dato. */
 function jtRefrescar() {
   JT_LIVE = null; JT_LIVE_PROM = null;
@@ -10852,16 +10853,53 @@ async function renderRadarSoporte() {
     return;
   }
 
-  const conDato = data.filter(c => jtDeCuenta(c).estado !== "sin");
-  const rotas = data.filter(c => jtDeCuenta(c).estado === "roto");
+  /* ── Filtro por CSM (2026-09-24, pedido de German) ──────────────────────────────────
+     Arranca en **su cartera**, que es la pregunta que se hace todos los días ("¿cuál de MIS
+     cuentas tiene este tema?"). Pero el filtro se muestra siempre y dice cuántas cuentas
+     quedaron afuera: un panel filtrado por defecto que no avisa que filtra es la forma más
+     fácil de que algo grave quede invisible. */
+  const todasConDato = data.filter(c => jtDeCuenta(c).estado !== "sin");
+  const csmSel = window.__rsopCsm === undefined ? "German Arias" : window.__rsopCsm;
+  const csmDe = c => ((c.properties || {}).csm_asignado || "").trim();
+  const conDato = csmSel === "__all" ? todasConDato : todasConDato.filter(c => csmDe(c) === csmSel);
+  const rotas = conDato.filter(c => jtDeCuenta(c).estado === "roto");
+
+  /* Chips de CSM. Se arman sobre TODAS las cuentas con dato, no sobre las filtradas: si se
+     armaran sobre el resultado, al elegir un CSM desaparecerían los demás chips y no habría
+     forma de volver. */
+  const csms = [];
+  todasConDato.forEach(c => { const x = csmDe(c); if (x && csms.indexOf(x) < 0) csms.push(x); });
+  csms.sort();
+  const nAnom = c => { const j = jtDeCuenta(c); return j.real.filter(t => jtPrio(t.p).crit || (t.venceEn != null && t.venceEn < 0) || (t.quieto != null && t.quieto >= JT_DORMIDO)).length; };
+  const chipCsm = (v, lbl) => {
+    const set = v === "__all" ? todasConDato : todasConDato.filter(c => csmDe(c) === v);
+    const alerta = set.reduce((s, c) => s + nAnom(c), 0);
+    const on = csmSel === v;
+    return `<button onclick="rsopCsm('${String(v).replace(/'/g, "\\'")}')" style="font-family:inherit; cursor:pointer; font-size:12px; font-weight:${on ? 700 : 500};
+      padding:5px 11px; border-radius:999px; border:1px solid ${on ? "#430C89" : "#e5e7eb"}; background:${on ? "#F1EFFF" : "#fff"}; color:${on ? "#4030C8" : "#4b5563"};">
+      ${escAttr(lbl)} <span style="color:${alerta ? "#b91c1c" : "#9ca3af"}; font-weight:${alerta ? 700 : 500};">${alerta || set.length}</span></button>`;
+  };
+  const chipsCsm = `<div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-bottom:11px;">
+      <span style="font-size:11.5px; color:#6b7280; font-weight:600;">Cartera:</span>
+      ${chipCsm("German Arias", "Mías")}
+      ${csms.filter(x => x !== "German Arias").map(x => chipCsm(x, x)).join("")}
+      ${chipCsm("__all", "Todas")}
+      <span style="font-size:10.5px; color:#9ca3af; margin-left:4px;">el número son los tickets que piden acción</span>
+    </div>`;
 
   /* Sin datos no hay vista, y hay que decir POR QUÉ con el error REAL del proxy. Un panel
      vacío y mudo acá se lee como "no hay problemas", que es la conclusión más peligrosa
-     posible: el punto de esta vista es justamente avisar que algo está frenado. */
+     posible: el punto de esta vista es justamente avisar que algo está frenado.
+     🚨 Y hay que distinguir "Jira no contestó" de "tu cartera está limpia pero hay cosas en
+     otras": son dos vacíos que significan lo contrario. */
   if (!conDato.length) {
     const err = JT_LIVE && JT_LIVE.error;
-    host.innerHTML = `<div style="padding:16px 18px; background:${err ? "#FEF2F2" : "#FFFBEB"}; border:1px solid ${err ? "#FECACA" : "#FDE68A"}; border-radius:10px; font-size:13px; line-height:1.65; color:${err ? "#b91c1c" : "#92400e"};">
-      <b>${err ? "Jira no respondió." : "No hay tickets abiertos para mostrar."}</b>
+    const hayOtras = todasConDato.length > 0;
+    host.innerHTML = (hayOtras ? chipsCsm : "") + `<div style="padding:16px 18px; background:${err ? "#FEF2F2" : "#FFFBEB"}; border:1px solid ${err ? "#FECACA" : "#FDE68A"}; border-radius:10px; font-size:13px; line-height:1.65; color:${err ? "#b91c1c" : "#92400e"};">
+      <b>${err ? "Jira no respondió." : (hayOtras
+        ? "No hay tickets abiertos en esta cartera — pero sí en otras."
+        : "No hay tickets abiertos para mostrar.")}</b>
+      ${!err && hayOtras ? `<div style="margin-top:6px; font-size:12.5px;">Estás viendo <b>${escAttr(csmSel === "__all" ? "todas" : csmSel)}</b>. Hay <b>${todasConDato.length}</b> cuenta(s) con cola en el resto: tocá <b>Todas</b> arriba para verlas.</div>` : ""}
       ${err ? `<div style="margin-top:7px; padding:9px 11px; background:#fff; border:1px solid #FECACA; border-radius:8px;
              font-family:ui-monospace,Menlo,monospace; font-size:11.5px; white-space:pre-wrap; word-break:break-word;
              max-height:220px; overflow:auto; user-select:text;">${escAttr(err)}</div>
@@ -10882,7 +10920,7 @@ async function renderRadarSoporte() {
 
   const kpi = (l, v, sub, col) => `<div class="cue-kpi"><div class="kl">${l}</div><div class="kv" style="font-size:21px;${col ? "color:" + col + ";" : ""}">${v}</div><div class="ks">${sub}</div></div>`;
   const kpis = `<div class="cue-kpis" style="margin-bottom:12px;">
-      ${kpi("Tickets de cliente", totReal, conDato.length + " cuentas con portal")}
+      ${kpi("Tickets de cliente", totReal, conDato.length + " cuenta(s)" + (csmSel === "__all" ? "" : " · " + csmSel))}
       ${kpi("Impide la compra", grupos.critico.items.length, "o urgentes", grupos.critico.items.length ? "#b91c1c" : "")}
       ${kpi("Vencidos", grupos.vencido.items.length, "fecha comprometida pasada", grupos.vencido.items.length ? "#b91c1c" : "")}
       ${kpi("Dormidos", grupos.dormido.items.length, JT_DORMIDO + "+ días sin moverse", grupos.dormido.items.length ? "#b45309" : "")}
@@ -10941,7 +10979,7 @@ async function renderRadarSoporte() {
         <b>${totReal}</b> tickets de cliente${totAdmin ? ` · <span title="Los contenedores de worklog mensuales (Reuniones &amp; minutas, Gestión y reportería). No son cola: se cuentan aparte para que no inflen las cuentas." style="cursor:help; border-bottom:1px dotted #9ca3af;">${totAdmin} administrativos aparte</span>` : ""}
       </span>
     </div>
-    ${avisoRotas}${kpis}
+    ${chipsCsm}${avisoRotas}${kpis}
     ${bloque(grupos.frenado)}
     ${bloque(grupos.vencido)}
     ${bloque(grupos.dormido, "quieto")}
