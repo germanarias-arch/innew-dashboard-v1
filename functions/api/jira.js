@@ -124,7 +124,12 @@ function plano(it) {
 /* La única operación: los tickets abiertos de un set de proyectos permitidos.
    No existe un `op` que acepte JQL libre, y es deliberado (ver la nota de la lista blanca). */
 async function doAbiertos(env, args) {
-  const pedidos = Array.isArray(args && args.proyectos) ? args.proyectos : PROY_GERMAN;
+  /* Por defecto trae **las 25 claves** (German + Jennifer), no sólo las de German.
+     Motivo: el Radar filtra por CSM en el front, y un filtro que sólo puede mostrar una
+     cartera no es un filtro — encima daría a entender que las otras cuentas están limpias
+     cuando en realidad nunca se consultaron. El front decide qué mostrar; el proxy trae todo
+     lo que la lista blanca permite. */
+  const pedidos = Array.isArray(args && args.proyectos) ? args.proyectos : PROY_GERMAN.concat(PROY_JENNY);
   const keys = pedidos.map(x => String(x || "").toUpperCase().trim()).filter(k => PROY_OK[k]);
   if (!keys.length) throw Object.assign(new Error("Ningún proyecto válido en la consulta"), { status: 400 });
 
