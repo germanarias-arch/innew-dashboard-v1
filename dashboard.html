@@ -10821,12 +10821,8 @@ function jtFilaTicket(t, mostrar, gid) {
   const nota = rsopNotaDe(t.k);
   const acciones = gid === "mios"
     ? `<span style="font-size:10.5px; color:#9ca3af;">tuyo</span>`
-    : `<div style="display:flex; gap:5px; flex-wrap:wrap; justify-content:flex-end;">
-        <button onclick="rsopAccion('${escAttr(t.k)}','interno')" title="Arma una nota INTERNA para el equipo. La revisás y la publicás en Jira con un clic. El cliente no la ve."
-          style="font-family:inherit; cursor:pointer; font-size:11px; font-weight:700; padding:4px 9px; border-radius:7px; border:1px solid #C7BDFF; background:#F1EFFF; color:#4030C8; white-space:nowrap;">✎ Interno</button>
-        <button onclick="rsopAccion('${escAttr(t.k)}','cliente')" title="Arma el texto para el cliente. Desde acá NO se envía: lo copiás y lo mandás vos."
-          style="font-family:inherit; cursor:pointer; font-size:11px; font-weight:700; padding:4px 9px; border-radius:7px; border:1px solid #FDE68A; background:#FFFBEB; color:#92400e; white-space:nowrap;">✉ Cliente</button>
-       </div>${nota ? `<div style="font-size:10px; color:#047857; margin-top:3px; text-align:right;">✓ nota interna ${escAttr(nota.hora)}</div>` : ""}`;
+    : `<button onclick="rsopAccion('${escAttr(t.k)}','interno')" title="Arma la nota interna (la misma opción 'Añadir nota interna' de Jira). La revisás y la publicás con un clic. El cliente no la ve."
+          style="font-family:inherit; cursor:pointer; font-size:11px; font-weight:700; padding:4px 9px; border-radius:7px; border:1px solid #C7BDFF; background:#F1EFFF; color:#4030C8; white-space:nowrap;">✎ Nota interna</button>${nota ? `<div style="font-size:10px; color:#047857; margin-top:3px; text-align:right;">✓ publicada ${escAttr(nota.hora)}</div>` : ""}`;
   const bits = [];
   if (mostrar !== "quieto" && t.quieto != null) bits.push(t.quieto === 0 ? "movido hoy" : t.quieto + " d quieto");
   if (t.edad != null) bits.push(t.edad + " d abierto");
@@ -10853,14 +10849,12 @@ function jtFilaTicket(t, mostrar, gid) {
 /* ═══ ACCIONES DEL RADAR (2026-09-24) ════════════════════════════════════════════════
    Pedido de German: "lo mismo pero con botones accionables — que me armes el push para
    enviar los mensajes internos y externos, pero yo doy el ok final en la plataforma".
-   Dos carriles, deliberadamente asimétricos:
-   · ✎ INTERNO → borrador de nota interna de Jira, editable, y un botón que la PUBLICA.
-     Sale por /api/jira op `nota_interna`, que clava `internal: true` en el proxy: el
-     cliente no la ve ni la recibe por mail. Es la conversación que Sonia pidió tener con
-     el equipo, escrita en el ticket para que quede.
-   · ✉ CLIENTE → borrador del mensaje al cliente. **Desde acá NO se envía, nunca.** Sólo se
-     copia. Un comentario público en el portal le llega al cliente por mail y borrarlo no lo
-     deshace, así que ese clic no existe en el dashboard: lo pega German donde corresponda.
+   UN solo carril, por decisión de German (24/09): **"no le mando nada [al cliente]; siempre
+   debe ir con la opción Añadir nota interna"**. El botón arma la nota interna de Jira —la misma
+   que "Añadir nota interna" en el ticket—, editable, y la PUBLICA con su OK. Sale por /api/jira
+   op `nota_interna`, que clava `internal: true` en el proxy: el cliente no la ve ni la recibe
+   por mail. No existe botón de mensaje al cliente: un comentario público del portal le llega
+   por mail y borrarlo no lo deshace. (`rsopBorrador` conserva la rama "cliente" sin uso.)
    Los borradores salen del GRUPO que trajo al ticket (frenado, vencido, dormido…), porque
    el problema es distinto y el pedido también. El estado "✓ nota interna HH:MM" vive en
    localStorage (`rsop_notas`) para que un mismo ticket no reciba dos notas iguales en el
@@ -10909,7 +10903,8 @@ function rsopCerrar() { const m = document.getElementById("rsop-modal"); if (m) 
 function rsopAccion(k, tipo) {
   const t = RSOP_T[k]; if (!t) return;
   rsopCerrar();
-  const interno = tipo === "interno";
+  tipo = "interno";                 // único carril: nota interna. No hay mensaje al cliente desde acá.
+  const interno = true;
   const nota = rsopNotaDe(k);
   const est = jtEst(t.s);
   const m = document.createElement("div");
@@ -10919,7 +10914,7 @@ function rsopAccion(k, tipo) {
   m.innerHTML = `<div style="background:#fff; border-radius:14px; width:min(680px,100%); max-height:92vh; overflow:auto; box-shadow:0 20px 60px rgba(0,0,0,.25); font-family:inherit;">
     <div style="padding:14px 18px; border-bottom:1px solid #eee; display:flex; align-items:center; gap:10px;">
       <div style="flex:1;">
-        <div style="font-size:14px; font-weight:800; color:${interno ? "#4030C8" : "#92400e"};">${interno ? "✎ Nota interna en Jira" : "✉ Borrador para el cliente"}</div>
+        <div style="font-size:14px; font-weight:800; color:#4030C8;">✎ Añadir nota interna</div>
         <div style="font-size:11.5px; color:#6b7280; margin-top:2px;">
           <a href="${jtLink(k)}" target="_blank" rel="noopener" style="font-family:ui-monospace,Menlo,monospace; font-weight:700; color:#4030C8; text-decoration:none;">${escAttr(k)} ↗</a>
           · ${escAttr(t.cli || "")} · <span style="font-weight:700; border-radius:9px; padding:1px 7px; background:${est.bg}; color:${est.c};">${escAttr(t.s)}</span>
@@ -10929,20 +10924,14 @@ function rsopAccion(k, tipo) {
       <button onclick="rsopCerrar()" style="font-family:inherit; cursor:pointer; border:0; background:#f3f4f6; border-radius:8px; padding:6px 10px; font-size:13px;">✕</button>
     </div>
     <div style="padding:14px 18px;">
-      <div style="font-size:11.5px; line-height:1.55; padding:8px 11px; border-radius:8px; margin-bottom:10px; ${interno
-        ? "background:#F1EFFF; color:#4030C8; border:1px solid #C7BDFF;"
-        : "background:#FFFBEB; color:#92400e; border:1px solid #FDE68A;"}">
-        ${interno
-          ? "Se publica como <b>comentario interno</b> del ticket: lo ve el equipo, <b>no el cliente</b>. La bandera está fija en el backend — desde acá no se puede publicar nada público."
-          : "<b>Esto no se envía desde el dashboard.</b> Copiá el texto y mandalo vos por el canal que corresponda (portal, mail, WhatsApp). Los [corchetes] son datos que no están en Jira: completalos antes."}
-        ${nota && interno ? `<div style="margin-top:5px; color:#047857;">✓ Hoy a las ${nota.hora} ya publicaste una nota interna en este ticket.</div>` : ""}
+      <div style="font-size:11.5px; line-height:1.55; padding:8px 11px; border-radius:8px; margin-bottom:10px; background:#F1EFFF; color:#4030C8; border:1px solid #C7BDFF;">
+        Se publica como <b>nota interna</b> del ticket — la misma opción "Añadir nota interna" de Jira. La ve el equipo, <b>no el cliente</b>. La bandera está fija en el backend: desde acá no se puede publicar nada público.
+        ${nota ? `<div style="margin-top:5px; color:#047857;">✓ Hoy a las ${nota.hora} ya publicaste una nota interna en este ticket.</div>` : ""}
       </div>
       <textarea id="rsop-txt" spellcheck="true" style="width:100%; min-height:190px; box-sizing:border-box; font-family:inherit; font-size:13px; line-height:1.55; padding:10px 12px; border:1px solid #d1d5db; border-radius:9px; resize:vertical;">${escAttr(rsopBorrador(t, tipo))}</textarea>
       <div style="display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap;">
-        ${interno
-          ? `<button id="rsop-go" onclick="rsopPublicar('${escAttr(k)}')" style="font-family:inherit; cursor:pointer; font-size:12.5px; font-weight:800; padding:8px 14px; border-radius:9px; border:0; background:#430C89; color:#fff;">Publicar nota interna en Jira</button>`
-          : `<button onclick="rsopCopiar()" style="font-family:inherit; cursor:pointer; font-size:12.5px; font-weight:800; padding:8px 14px; border-radius:9px; border:0; background:#92400e; color:#fff;">Copiar texto</button>`}
-        <button onclick="rsopCopiar()" style="font-family:inherit; cursor:pointer; font-size:12px; font-weight:600; padding:7px 12px; border-radius:9px; border:1px solid #d1d5db; background:#fff; color:#374151;">${interno ? "Copiar" : "Copiar"}</button>
+        <button id="rsop-go" onclick="rsopPublicar('${escAttr(k)}')" style="font-family:inherit; cursor:pointer; font-size:12.5px; font-weight:800; padding:8px 14px; border-radius:9px; border:0; background:#430C89; color:#fff;">Añadir nota interna en Jira</button>
+        <button onclick="rsopCopiar()" style="font-family:inherit; cursor:pointer; font-size:12px; font-weight:600; padding:7px 12px; border-radius:9px; border:1px solid #d1d5db; background:#fff; color:#374151;">Copiar</button>
         <a href="${jtLink(k)}" target="_blank" rel="noopener" style="font-size:12px; font-weight:600; color:#4030C8; text-decoration:none; margin-left:auto;">Abrir en Jira ↗</a>
       </div>
       <div id="rsop-est" style="margin-top:10px; font-size:12px; line-height:1.5;"></div>
@@ -11146,9 +11135,8 @@ async function renderRadarSoporte() {
       son contenedores de worklog, y contarlos infla cada cuenta en +1 o +2 de forma constante.
       <b>Dormido</b> = ${JT_DORMIDO}+ días sin que nadie lo toque; se mide así y no por fecha de vencimiento porque
       dos tercios de los tickets no tienen vencimiento cargado.
-      <b>✎ Interno</b> arma una nota interna del ticket y la publica en Jira con tu OK (el cliente no la ve).
-      <b>✉ Cliente</b> arma el texto para el cliente pero <b>no lo envía</b>: un comentario público del portal le llega
-      por mail y borrarlo no lo deshace, así que ese envío lo hacés vos. Mover estados sigue siendo en Jira.
+      <b>✎ Nota interna</b> arma la nota interna del ticket (la misma opción "Añadir nota interna" de Jira) y la publica
+      con tu OK. <b>El cliente nunca la ve</b>; desde acá no se le manda nada al cliente. Mover estados sigue siendo en Jira.
     </div>`;
 }
 
