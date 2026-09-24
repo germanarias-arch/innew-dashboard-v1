@@ -10433,14 +10433,58 @@ function jtDias(iso) {
 /* Lee `jira_tickets` de una company. Devuelve SIEMPRE un objeto con forma, para que el render
    no tenga que distinguir "sin datos" de "explotó el parseo" con ifs desparramados.
    `estado`: "ok" | "vacio" (el task corrió y no hay cola) | "sin" (nunca corrió) | "roto". */
-function jtDeCuenta(c) {
-  const raw = ((c && c.properties) || {}).jira_tickets;
-  if (raw == null || raw === "") return { estado: "sin", ts: null, real: [], admin: [] };
-  let o = null;
-  try { o = typeof raw === "string" ? JSON.parse(raw) : raw; } catch (e) { return { estado: "roto", ts: null, real: [], admin: [] }; }
-  const lista = (o && Array.isArray(o.t)) ? o.t : [];
+/* ═══ DATO EN VIVO: /api/jira (2026-09-24) ═══════════════════════════════════════════
+   Hasta hoy esto leía la property `jira_tickets`, que escribía un task cada 2 h. Ahora hay
+   proxy propio (`functions/api/jira.js`) y el dato es **de ahora**: sin lag, sin depender de
+   un task que puede estar apagado (el de horas lo estuvo un mes sin que nadie se enterara) y
+   sin meter un blob JSON adentro del CRM.
+   El snapshot queda como **respaldo**, no como fuente: en Cowork no existe `/api/jira`, y si
+   el proxy falla es mejor mostrar datos de hace un rato que una pantalla vacía — pero siempre
+   diciendo de cuándo son. */
+let JT_LIVE = null;          // { ok, ts, porCo: {companyId: [...]}, error }
+let JT_LIVE_PROM = null;
+
+/* Proyecto → companyId, invirtiendo JIRA_PROYECTO. 🪤 Guataporá tiene DOS claves que apuntan
+   a la misma cuenta (`GUATA` + `GUATAFS`), así que el inverso es muchos-a-uno y hay que
+   recorrer el array, no tomar el primero. */
+function jtCoPorProyecto() {
+  const m = {};
+  Object.keys(JIRA_PROYECTO).forEach(co => (JIRA_PROYECTO[co] || []).forEach(k => { m[k] = co; }));
+  return m;
+}
+async function jtCargarVivo(forzar) {
+  if (!forzar && JT_LIVE_PROM) return JT_LIVE_PROM;
+  JT_LIVE_PROM = (async () => {
+    /* En Cowork no hay backend propio: no se intenta y se cae al snapshot sin ruido. */
+    if (typeof WEB_MODE !== "undefined" && !WEB_MODE) { JT_LIVE = { ok: false, error: "", porCo: {} }; return JT_LIVE; }
+    try {
+      const r = await fetch("/api/jira", {
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
+        body: JSON.stringify({ op: "abiertos", args: {} })
+      });
+      if (r.status === 401) { location.href = "/login.html"; throw new Error("Sesión expirada"); }
+      const js = await r.json().catch(() => ({}));
+      /* El error de Jira viaja ENTERO hasta la pantalla: sin `.slice()`. El corte siempre cae
+         donde está la información — regla ganada a los golpes el 22/09. */
+      if (!r.ok) throw new Error((js && js.error) || ("Error del backend (" + r.status + ")"));
+      const mapa = jtCoPorProyecto(), porCo = {};
+      (js.t || []).forEach(t => {
+        const co = mapa[String(t.k || "").split("-")[0]];
+        if (co) (porCo[co] = porCo[co] || []).push(t);
+      });
+      JT_LIVE = { ok: true, ts: js.ts || null, porCo: porCo, error: "" };
+    } catch (e) {
+      JT_LIVE = { ok: false, ts: null, porCo: {}, error: e.message || String(e) };
+    }
+    return JT_LIVE;
+  })();
+  return JT_LIVE_PROM;
+}
+/* Arma la forma que consumen las vistas. `fuente` viaja para que la pantalla pueda decir si
+   está mirando el vivo o el respaldo — un número sin su procedencia se lee como actual. */
+function jtArmar(lista, ts, fuente) {
   const real = [], admin = [];
-  lista.forEach(t => {
+  (lista || []).forEach(t => {
     const x = {
       k: t.k || "", s: t.s || "", p: t.p, a: t.a || "", r: t.r || "",
       creado: t.c || null, tocado: t.u || null, vence: t.d || null,
@@ -10448,7 +10492,25 @@ function jtDeCuenta(c) {
     };
     (t.m ? admin : real).push(x);
   });
-  return { estado: lista.length ? "ok" : "vacio", ts: (o && o.ts) || null, real: real, admin: admin };
+  return { estado: (lista || []).length ? "ok" : "vacio", ts: ts || null, fuente: fuente, real: real, admin: admin };
+}
+function jtDeCuenta(c) {
+  // 1º el vivo
+  if (JT_LIVE && JT_LIVE.ok) {
+    const arr = JT_LIVE.porCo[String((c && c.id) || "")];
+    if (arr) return jtArmar(arr, JT_LIVE.ts, "vivo");
+    /* El proxy respondió y esta cuenta no trajo tickets. Que eso sea "sin cola" o "no aplica"
+       depende de si tiene portal: una cuenta en IDP nunca va a tener cola, y pintarla igual que
+       una que la tiene vacía sería decir que está sana cuando no hay nada que medir. */
+    if (csmKeys(c && c.id)) return jtArmar([], JT_LIVE.ts, "vivo");
+    return { estado: "sin", ts: JT_LIVE.ts, fuente: "vivo", real: [], admin: [] };
+  }
+  // 2º el respaldo: el snapshot que dejó el task en la property
+  const raw = ((c && c.properties) || {}).jira_tickets;
+  if (raw == null || raw === "") return { estado: "sin", ts: null, fuente: "", real: [], admin: [] };
+  let o = null;
+  try { o = typeof raw === "string" ? JSON.parse(raw) : raw; } catch (e) { return { estado: "roto", ts: null, fuente: "snapshot", real: [], admin: [] }; }
+  return jtArmar((o && Array.isArray(o.t)) ? o.t : [], (o && o.ts) || null, "snapshot");
 }
 /* Las anomalías, en el orden en que hay que mirarlas. Cada una sabe explicarse: un ticket que
    aparece sin motivo obliga a abrir Jira para entender por qué, que es justo lo que esto evita. */
@@ -10576,6 +10638,10 @@ function renderCsm() {
     else renderCuentas();
     return;
   }
+
+  /* La columna "Salud de la cola" sale del vivo: se pide una vez y se repinta al llegar.
+     No se bloquea la tabla esperándolo — las horas y la bolsa ya están y son útiles solas. */
+  if (!JT_LIVE) jtCargarVivo().then(() => renderCsm()).catch(() => {});
 
   const mesPct = csmMesPct();
   const filas = data.map(c => {
@@ -10727,6 +10793,14 @@ function renderCsm() {
     </div>`;
 }
 function csmFiltro(v) { window.__csmFiltro = v; renderCsm(); }
+/* Vuelve a preguntarle a Jira y repinta las dos vistas que dependen del dato. */
+function jtRefrescar() {
+  JT_LIVE = null; JT_LIVE_PROM = null;
+  jtCargarVivo(true).then(() => {
+    if (document.getElementById("rsop-body") && document.getElementById("clitab-rsop") && document.getElementById("clitab-rsop").style.display !== "none") renderRadarSoporte();
+    if (document.getElementById("clitab-csm") && document.getElementById("clitab-csm").style.display !== "none") renderCsm();
+  }).catch(() => {});
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════
    VISTA · RADAR DE SOPORTE (2026-09-24)
@@ -10770,20 +10844,33 @@ async function renderRadarSoporte() {
     return;
   }
 
+  /* El vivo se pide UNA vez y se repinta al llegar. Mismo patrón que `vjCuentasReady`: no se
+     cachea un índice armado sobre datos que todavía no están (trampa del 17/09). */
+  if (!JT_LIVE) {
+    host.innerHTML = `<div style="padding:18px; color:#9ca3af; font-size:13px;">Consultando Jira…</div>`;
+    jtCargarVivo().then(() => renderRadarSoporte()).catch(() => {});
+    return;
+  }
+
   const conDato = data.filter(c => jtDeCuenta(c).estado !== "sin");
   const rotas = data.filter(c => jtDeCuenta(c).estado === "roto");
 
-  /* Sin cañería no hay vista, y hay que decir POR QUÉ. Un panel vacío y mudo se lee como
-     "no hay problemas", que es la conclusión más peligrosa posible acá. */
+  /* Sin datos no hay vista, y hay que decir POR QUÉ con el error REAL del proxy. Un panel
+     vacío y mudo acá se lee como "no hay problemas", que es la conclusión más peligrosa
+     posible: el punto de esta vista es justamente avisar que algo está frenado. */
   if (!conDato.length) {
-    host.innerHTML = `<div style="padding:16px 18px; background:#FFFBEB; border:1px solid #FDE68A; border-radius:10px; font-size:13px; line-height:1.65; color:#92400e;">
-      <b>Todavía no hay datos de la cola de soporte.</b><br>
-      Los escribe el task <code>jira-radar-soporte</code> cada 2 h en la property <code>jira_tickets</code> de cada cuenta —
-      <b>el dashboard no habla con Jira</b>, su proxy sólo llega a HubSpot.<br>
-      Si el task ya corrió y esto sigue vacío, lo más probable es que <b>falte crear la property</b>:
-      en HubSpot, <b>Empresa → <code>jira_tickets</code> → tipo “Texto de varias líneas”</b>.
+    const err = JT_LIVE && JT_LIVE.error;
+    host.innerHTML = `<div style="padding:16px 18px; background:${err ? "#FEF2F2" : "#FFFBEB"}; border:1px solid ${err ? "#FECACA" : "#FDE68A"}; border-radius:10px; font-size:13px; line-height:1.65; color:${err ? "#b91c1c" : "#92400e"};">
+      <b>${err ? "Jira no respondió." : "No hay tickets abiertos para mostrar."}</b>
+      ${err ? `<div style="margin-top:7px; padding:9px 11px; background:#fff; border:1px solid #FECACA; border-radius:8px;
+             font-family:ui-monospace,Menlo,monospace; font-size:11.5px; white-space:pre-wrap; word-break:break-word;
+             max-height:220px; overflow:auto; user-select:text;">${escAttr(err)}</div>
+           <div style="margin-top:8px; font-size:12px;">Las credenciales se cargan en <b>Cloudflare → el proyecto → Settings → Environment variables</b>:
+           <code>JIRA_EMAIL</code>, <code>JIRA_TOKEN</code> y <code>JIRA_CLOUD_ID</code> (esta última <b>sólo</b> si el token tiene scopes).
+           Ojo: Cloudflare toma las variables nuevas <b>en el próximo deploy</b>.</div>`
+        : `<div style="margin-top:6px; font-size:12.5px;">El proxy respondió bien y no hay nada abierto en tus 11 proyectos. Es una buena noticia, no un error.</div>`}
       <div style="margin-top:9px;"><a href="${JIRA_BASE}/jira/dashboards/${JIRA_DASH_GERMAN}" target="_blank" rel="noopener"
-        style="font-size:12px; font-weight:700; color:#92400e;">Mientras tanto, abrir el tablero de Jira ↗</a></div>
+        style="font-size:12px; font-weight:700; color:inherit;">Abrir el tablero de Jira ↗</a></div>
     </div>`;
     return;
   }
@@ -10844,8 +10931,13 @@ async function renderRadarSoporte() {
       <a href="${JIRA_BASE}/jira/dashboards/${JIRA_DASH_GERMAN}" target="_blank" rel="noopener"
         style="display:inline-flex; align-items:center; gap:7px; background:#430C89; color:#fff; border-radius:9px; padding:8px 14px; font-size:12.5px; font-weight:700; text-decoration:none;">
         📊 Abrir mi tablero de Jira <span style="opacity:.75; font-weight:500;">en vivo ↗</span></a>
+      <button onclick="jtRefrescar()" title="Vuelve a preguntarle a Jira ahora mismo"
+        style="font-family:inherit; cursor:pointer; font-size:12px; font-weight:700; padding:7px 12px; border-radius:9px;
+        border:1px solid #C7BDFF; background:#F1EFFF; color:#4030C8;">⟳ Actualizar</button>
       <span style="font-size:11.5px; color:#6b7280;">
-        ${ts ? `Datos de <b>${escAttr(jtFresco(ts))}</b>` : "Sin marca de tiempo"} ·
+        ${JT_LIVE && JT_LIVE.ok
+          ? `<b style="color:#047857;">en vivo</b> · ${escAttr(jtFresco(ts))}`
+          : `<b style="color:#b45309;">respaldo</b> · el proxy de Jira no respondió, esto es lo último que dejó el task${ts ? " (" + escAttr(jtFresco(ts)) + ")" : ""}`} ·
         <b>${totReal}</b> tickets de cliente${totAdmin ? ` · <span title="Los contenedores de worklog mensuales (Reuniones &amp; minutas, Gestión y reportería). No son cola: se cuentan aparte para que no inflen las cuentas." style="cursor:help; border-bottom:1px dotted #9ca3af;">${totAdmin} administrativos aparte</span>` : ""}
       </span>
     </div>
