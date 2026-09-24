@@ -956,6 +956,7 @@ table.std tr:hover td { background: #fafafa; }
       <button id="clitab-btn-cuentas" class="clitab active" onclick="cliTab('cuentas')">🏬 Lista de clientes</button>
       <button id="clitab-btn-fc" class="clitab" onclick="cliTab('fc')">📈 Forecasting</button>
       <button id="clitab-btn-csm" class="clitab" onclick="cliTab('csm')">🛠️ Seguimiento CSM</button>
+      <button id="clitab-btn-rsop" class="clitab" onclick="cliTab('rsop')">🚨 Radar de soporte</button>
     </div>
 
     <div id="clitab-cuentas">
@@ -994,6 +995,11 @@ table.std tr:hover td { background: #fafafa; }
     <div id="clitab-csm" style="display:none">
       <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">🛠️ <b>Seguimiento CSM</b> — cómo va el consumo de la bolsa de S&amp;G y qué hay abierto en soporte, por cuenta. Los números vienen de <b>Jira</b>, los escribe el task <code>horas-jira-a-hubspot</code> los lunes a las 7:00 y el dashboard los lee de HubSpot: <b>acá no se edita nada</b>.</div>
       <div id="csm-body"></div>
+    </div>
+
+    <div id="clitab-rsop" style="display:none">
+      <div class="cue-alert" style="background:#FEF2F2; border-color:#FECACA; color:#b91c1c;">🚨 <b>Radar de soporte</b> — no lista tickets, <b>lista problemas</b>. Cruza estado, días sin moverse, vencimiento y prioridad para cazar lo que se está durmiendo. Jira ya te muestra los tickets; esto te dice <b>a cuál ir</b>. Datos del task <code>jira-radar-soporte</code>, cada 2 h.</div>
+      <div id="rsop-body"></div>
     </div>
 
     <!-- Panel lateral de la ficha del cliente. Vive fuera de la tabla y por debajo del popup
@@ -1401,6 +1407,10 @@ function stateApply(snap) {
       _lsRem(k);
     });
   } catch (e) {}
+  /* El sync escribe con `_lsSet`, saltándose los setters, así que cualquier cache en memoria
+     que lea de localStorage queda viejo. Sin esto, después de un sync la vista Clientes
+     mostraría los datos anteriores y parecería que el espejo no anda. */
+  try { cuentasMetaInvalidar(); } catch (e) {}
   window.__stateApplying = false;
   // Fuera del flag: stateSchedulePush se auto-ignora mientras __stateApplying está prendido.
   if (adoptar) { try { stateSchedulePush(); } catch (e) {} }
@@ -7712,9 +7722,41 @@ const CUENTAS_ESTADOS = {
   riesgo: { label: "En riesgo", bg: "#FCEBEB", fg: "#A32D2D", dot: "#E24B4A" }
 };
 window.__csmSel = window.__csmSel || "all";
-function cuentasMetaAll() { try { return JSON.parse(localStorage.getItem("cuentas_meta") || "{}"); } catch (e) { return {}; } }
+/* ===== `cuentas_meta` EN MEMORIA (2026-09-23) =======================================
+   German: *"esta lento el dashboard... hago clic en clientes y tarda en activar"*.
+   Causa medida: `cuentasMetaAll` hacía **un JSON.parse de todo el blob en CADA llamada**, y
+   `cuentasGetMeta` la llama por cuenta, por celda y por función del motor (cuModelo, cuMontoEff,
+   cuVhUsdEff, cuHorasHist, cartTiendasOf…). Con 40 cuentas × ~15 lecturas por fila son ~600
+   parseos por render, y el blob pesa de verdad: además de las notas y el histórico de horas
+   guarda el **GMV mensual por marca de los exports de cartera**. Medido con un blob realista de
+   154 KB: 0,53 ms por parse → **200-500 ms de puro JSON.parse**, y `cliTab('cuentas')` dispara
+   DOS renders (renderCuentas + renderCartera). Eso era la demora.
+   Ahora se parsea una vez y se cachea. El cache es la MISMA referencia que devuelven todas las
+   lecturas, así que hay una sola regla: **nadie muta el objeto devuelto**; para escribir se usa
+   `cuentasSetMeta`, que hace copia.
+   🚨 `cuentas_meta` está en STATE_KEYS: `stateApply` lo pisa con `_lsSet` **sin pasar por acá**.
+   Si no se invalidara ahí, el dashboard seguiría mostrando los datos viejos después de un sync
+   y parecería que el sync no funciona. Mismo caso el `storage` de otra pestaña. */
+let CU_META_CACHE = null;
+function cuentasMetaInvalidar() { CU_META_CACHE = null; }
+function cuentasMetaAll() {
+  if (CU_META_CACHE) return CU_META_CACHE;
+  try { CU_META_CACHE = JSON.parse(localStorage.getItem("cuentas_meta") || "{}"); } catch (e) { CU_META_CACHE = {}; }
+  return CU_META_CACHE;
+}
 function cuentasGetMeta(cli) { return cuentasMetaAll()[cli] || {}; }
-function cuentasSetMeta(cli, patch) { const a = cuentasMetaAll(); a[cli] = Object.assign({}, a[cli] || {}, patch); try { localStorage.setItem("cuentas_meta", JSON.stringify(a)); } catch (e) {} }
+function cuentasSetMeta(cli, patch) {
+  /* Copia superficial del nivel de arriba (40 claves, nada) en vez de mutar en el lugar. Dos
+     motivos: no le cambiamos el objeto abajo de los pies a nadie que lo esté leyendo, y —clave—
+     cada escritura genera una IDENTIDAD nueva, que es lo que usan los caches derivados
+     (cartStorageBytes) para saber que tienen que recalcular. */
+  const prev = cuentasMetaAll();
+  const a = Object.assign({}, prev);
+  a[cli] = Object.assign({}, prev[cli] || {}, patch);
+  CU_META_CACHE = a;                       // el cache queda al día sin volver a parsear
+  try { localStorage.setItem("cuentas_meta", JSON.stringify(a)); } catch (e) { cuentasMetaInvalidar(); }
+}
+try { window.addEventListener("storage", e => { if (!e || e.key === "cuentas_meta" || e.key === null) cuentasMetaInvalidar(); }); } catch (e) {}
 function csmSetView(v) { window.__csmSel = v; renderCuentas(); }
 function cuentasSetEstado(cli, v) { cuentasSetMeta(cli, { estado: v }); renderCuentas(); }
 function cuentasSetNota(cli, v) { cuentasSetMeta(cli, { nota: v }); }
@@ -9291,7 +9333,9 @@ function cuMigrateEstadoToSemaforo() {
   if (localStorage.getItem("cuentas_estado_migrado") === "1") return;
   const all = cuentasMetaAll(); const map = { riesgo: "riesgo", renovacion: "normal", al_dia: "normal" };
   Object.keys(all).forEach(cli => { const m = all[cli]; if (m && m.estado && !m.semaforo) m.semaforo = map[m.estado] || "normal"; });
+  // escribe directo, sin pasar por cuentasSetMeta → hay que tirar el cache a mano
   try { localStorage.setItem("cuentas_meta", JSON.stringify(all)); localStorage.setItem("cuentas_estado_migrado", "1"); } catch (e) {}
+  cuentasMetaInvalidar();
 }
 // Valor hora u$s efectivo: Arg = convierte desde $ (cotización manual); resto = valor manual en u$s
 function cuVhUsdEff(cli, isArg) {
@@ -10095,12 +10139,19 @@ function cartSaveToAccount(cli, agg, filename, tienda, industria) {
 }
 
 /* --- tamaño de lo guardado (el modelo mensual + breakdowns come localStorage) --- */
+/* Cuánto ocupan los exports de cartera. Es un número DECORATIVO (el subtítulo del cajón de
+   ingesta) y era de las cosas más caras del render: parseaba el blob entero y encima hacía un
+   JSON.stringify del `vtex` de CADA cuenta, en cada `renderCartera`.
+   Ahora lee del cache y memoiza el resultado **por identidad del objeto**: como `cuentasSetMeta`
+   devuelve una identidad nueva en cada escritura, el número se recalcula solo cuando cambió algo,
+   y nunca porque sí. */
+let CART_BYTES_VAL = null, CART_BYTES_REF = null;
 function cartStorageBytes() {
+  const meta = cuentasMetaAll();
+  if (CART_BYTES_REF === meta && CART_BYTES_VAL !== null) return CART_BYTES_VAL;
   let n = 0;
-  try {
-    const meta = JSON.parse(localStorage.getItem("cuentas_meta") || "{}");
-    Object.keys(meta).forEach(k => { if (meta[k] && meta[k].vtex) n += JSON.stringify(meta[k].vtex).length; });
-  } catch (e) {}
+  try { Object.keys(meta).forEach(k => { if (meta[k] && meta[k].vtex) n += JSON.stringify(meta[k].vtex).length; }); } catch (e) {}
+  CART_BYTES_REF = meta; CART_BYTES_VAL = n;
   return n;
 }
 
@@ -10246,7 +10297,7 @@ function cartRowsView() {
    responde otra pregunta (cuánto le puedo vender a esta cuenta), no repinta los mismos datos
    con otro nombre. Si alguna vez una columna aparece igual en las dos, es señal de alarma. */
 function cliTab(which) {
-  ["cuentas", "fc", "csm"].forEach(t => {
+  ["cuentas", "fc", "csm", "rsop"].forEach(t => {
     const pane = document.getElementById("clitab-" + t);
     const btn = document.getElementById("clitab-btn-" + t);
     if (pane) pane.style.display = (t === which) ? "block" : "none";
@@ -10254,6 +10305,11 @@ function cliTab(which) {
   });
   if (which === "fc") renderForecast();
   else if (which === "csm") renderCsm();
+  /* Radar de soporte (2026-09-24). Va aparte de Seguimiento CSM a pedido de German: son dos
+     preguntas distintas. CSM responde "¿cómo está cada cuenta?"; el Radar, "¿qué toco ahora?".
+     Meterlas en una sola tabla promediaría — una cuenta con 8 tickets sanos y 1 que impide
+     comprar se vería amarilla, y lo que hay que saber es que hay uno que bloquea la venta. */
+  else if (which === "rsop") renderRadarSoporte();
   else { renderCuentas(); renderCartera(); }
 }
 
@@ -10284,6 +10340,8 @@ const CSM_UMBRAL = { rojo: 100, ambar: 85 };   // % de la bolsa consumida
    Las cuentas que NO están acá no tienen portal y es correcto: Bancard y Cabrales están en
    IDP; Café Martinez, Electrocomponentes y Grupo Assa no tienen bolsa de S&G. */
 const JIRA_BASE = "https://innewla.atlassian.net";
+// Tablero de Jira de German (id 10283, pasado por él el 23/09). Sólo el id: la URL se arma abajo.
+const JIRA_DASH_GERMAN = "10283";
 const JIRA_PROYECTO = {
   // --- cartera German ---
   "16037965381": ["CAB"], "54253362980": ["VANA"], "54943844512": ["ASSATEX"],
@@ -10315,6 +10373,172 @@ function csmJqlUrl(keys, soloPrioritarios) {
   return JIRA_BASE + "/issues/?jql=" + encodeURIComponent(jql);
 }
 function csmPortalUrl(keys) { return JIRA_BASE + "/browse/" + keys[0]; }
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════
+   MOTOR DE LA COLA DE SOPORTE (2026-09-24)
+   ---------------------------------------------------------------------------------------
+   Sale de la capacitación de Sonia Paniagua a German (23/09, Fathom 834821850) y de los 38
+   tickets abiertos reales medidos ese día. Detalle completo → `memory/rol-csm-innew.md`.
+
+   El rol de CSM **no es atender tickets: es gobernar la cola.** Empuja, audita estados y
+   comunica. Las dos patologías que hay que cazar, textuales de Sonia:
+     · el técnico no mueve el estado → *"si la persona no cambia el estado, vos vas a estar
+       viendo ciego"*
+     · el ticket se duerme → *"lo que no puede pasar es que pasen semanas sin saber si hubo un fin"*
+
+   Este motor alimenta DOS vistas: **Radar de soporte** (las anomalías) y **Seguimiento CSM**
+   (la salud por cuenta). El dato lo escribe el task `jira-radar-soporte` cada 2 h en la
+   property `jira_tickets` de cada company — **el dashboard no habla con Jira.**
+
+   🪤 LAS TRES TRAMPAS QUE DEFINEN SI EL NÚMERO SIRVE
+   1. **El 37% de los tickets no son trabajo de cliente.** Son los contenedores de worklog
+      mensuales de German. Contarlos infla cada cuenta en +1/+2 de forma constante: La
+      Herramienta figuraba con 2 tickets abiertos y en realidad **no tiene cola**. Llegan con
+      `m:1` y acá se separan siempre.
+   2. **`updated` miente.** 18 de 38 figuraban "actualizados hoy" y 14 era porque German cargó
+      horas en su contenedor. Por eso los días quietos se miden **sólo sobre trabajo real**.
+   3. **El 66% no tiene fecha de vencimiento**, incluidos los 2 que impiden la compra. Medir
+      atraso sólo por `duedate` deja la vista ciega en dos tercios de la cartera — de ahí que
+      "dormido" se calcule por días sin moverse y no por fecha. */
+const JT_PRIO = {
+  10000: { t: "Impide la compra", ic: "🚨", c: "#b91c1c", crit: 1 },
+  10001: { t: "No impide la compra", ic: "🟡", c: "#854D0E", crit: 0 },
+  10002: { t: "Urgente", ic: "⚡", c: "#b91c1c", crit: 1 },
+  10003: { t: "Lo puedo planificar", ic: "🗓️", c: "#6b7280", crit: 0 }
+};
+/* Estados literales de Jira. 🪤 Los 8 caen en `statusCategory = indeterminate` y
+   `Modelo de Solución` hasta trae el ícono de CERRADO: agrupar por categoría no sirve,
+   hay que ir por el nombre. `cierra` = suena a terminado y no lo está. */
+const JT_EST = {
+  "En Curso":               { c: "#3730A3", bg: "#EEF2FF" },
+  "En Curso - Evolutivo":   { c: "#6d28d9", bg: "#F5F3FF" },
+  "Prueba":                 { c: "#047857", bg: "#ECFDF5", cierra: 1 },
+  "Prueba Aprobada":        { c: "#047857", bg: "#ECFDF5", cierra: 1 },
+  "Modelo de Solución":     { c: "#374151", bg: "#F3F4F6", cierra: 1 },
+  "En espera del cliente":  { c: "#9a3412", bg: "#FFF7ED", cliente: 1 },
+  "Preparando Presupuesto": { c: "#854D0E", bg: "#FEF9C3", cliente: 1 },
+  "Pausado":                { c: "#b91c1c", bg: "#FEF2F2", frena: 1 }
+};
+function jtEst(s) { return JT_EST[s] || { c: "#6b7280", bg: "#f3f4f6" }; }
+function jtPrio(p) { return JT_PRIO[p] || { t: "—", ic: "", c: "#9ca3af", crit: 0 }; }
+const JT_DORMIDO = 7;     // días sin moverse a partir de los cuales se considera dormido
+
+function jtDias(iso) {
+  if (!iso) return null;
+  const d = new Date(String(iso).slice(0, 10) + "T00:00:00");
+  if (isNaN(d)) return null;
+  const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+  return Math.round((hoy - d) / 86400000);
+}
+/* Lee `jira_tickets` de una company. Devuelve SIEMPRE un objeto con forma, para que el render
+   no tenga que distinguir "sin datos" de "explotó el parseo" con ifs desparramados.
+   `estado`: "ok" | "vacio" (el task corrió y no hay cola) | "sin" (nunca corrió) | "roto". */
+function jtDeCuenta(c) {
+  const raw = ((c && c.properties) || {}).jira_tickets;
+  if (raw == null || raw === "") return { estado: "sin", ts: null, real: [], admin: [] };
+  let o = null;
+  try { o = typeof raw === "string" ? JSON.parse(raw) : raw; } catch (e) { return { estado: "roto", ts: null, real: [], admin: [] }; }
+  const lista = (o && Array.isArray(o.t)) ? o.t : [];
+  const real = [], admin = [];
+  lista.forEach(t => {
+    const x = {
+      k: t.k || "", s: t.s || "", p: t.p, a: t.a || "", r: t.r || "",
+      creado: t.c || null, tocado: t.u || null, vence: t.d || null,
+      quieto: jtDias(t.u), edad: jtDias(t.c), venceEn: t.d ? -jtDias(t.d) : null
+    };
+    (t.m ? admin : real).push(x);
+  });
+  return { estado: lista.length ? "ok" : "vacio", ts: (o && o.ts) || null, real: real, admin: admin };
+}
+/* Las anomalías, en el orden en que hay que mirarlas. Cada una sabe explicarse: un ticket que
+   aparece sin motivo obliga a abrir Jira para entender por qué, que es justo lo que esto evita. */
+function jtAnomalias(cuentas) {
+  const A = {
+    frenado: { ic: "🚨", t: "Bloquea la compra y está frenado", d: "Pausar congela el SLA. Un ticket que impide comprar no puede estar pausado ni esperando al cliente sin fecha.", tono: "bad", items: [] },
+    vencido: { ic: "⏰", t: "Vencidos y nadie movió la fecha", d: "La fecha comprometida ya pasó y sigue abierto. Duplicar un ticket arrastra el vencimiento viejo: puede ser eso.", tono: "bad", items: [] },
+    dormido: { ic: "😴", t: "Quietos hace " + JT_DORMIDO + " días o más", d: "Nadie lo tocó en una semana. Es la patología que Sonia marcó como la más cara: se duerme y nadie avisa.", tono: "warn", items: [] },
+    cierra:  { ic: "🫥", t: "Suenan a terminado y están abiertos", d: "Prueba, Prueba Aprobada y Modelo de Solución se leen como cerrados pero siguen corriendo SLA. Si ya está validado, hay que cerrarlo.", tono: "info", items: [] },
+    critico: { ic: "🔴", t: "Impide la compra o urgente", d: "Máxima prioridad del esquema de Innew. Van todos, estén como estén.", tono: "bad", items: [] },
+    /* 🪤 Este grupo es el ÚNICO que mira los administrativos, y existe porque el test lo
+       destapó: los tickets mensuales quedaban fuera de todos los grupos por ser contenedores
+       de worklog, pero Sonia le pidió a German explícitamente que los ponga En Curso durante
+       el mes — *"ya está sucediendo septiembre, esas dos tendrían que estar ya en curso"*.
+       El cliente ve el estado, así que uno que dice "Modelo de Solución" a fin de mes le
+       está mintiendo. Excluirlos de las patologías del equipo era correcto; excluirlos de
+       SU propia tarea era perder trabajo real. */
+    mios: { ic: "📋", t: "Tus mensuales sin poner En Curso", d: "Los contenedores de worklog del mes tienen que estar En Curso mientras el mes corre, aunque todavía no hayas imputado horas. El cliente ve el estado.", tono: "info", items: [] }
+  };
+  const porTec = {};
+  (cuentas || []).forEach(c => {
+    const jt = jtDeCuenta(c);
+    if (jt.estado !== "ok") return;
+    const cli = ((c.properties || {}).name || "").trim();
+    jt.admin.forEach(t => {
+      if (t.s !== "En Curso") A.mios.items.push(Object.assign({ cli: cli, coId: c.id }, t));
+    });
+    jt.real.forEach(t => {
+      const it = Object.assign({ cli: cli, coId: c.id }, t);
+      const est = jtEst(t.s), pr = jtPrio(t.p);
+      if (pr.crit) A.critico.items.push(it);
+      if (pr.crit && (est.frena || est.cliente)) A.frenado.items.push(it);
+      if (t.venceEn != null && t.venceEn < 0) A.vencido.items.push(it);
+      if (t.quieto != null && t.quieto >= JT_DORMIDO) A.dormido.items.push(it);
+      if (est.cierra) A.cierra.items.push(it);
+      /* Gobernanza por técnico: lo que Sonia le pidió a German que EXIJA. No es un ranking de
+         personas, es dónde poner la conversación. */
+      const k = t.a || "(sin asignar)";
+      const g = porTec[k] || (porTec[k] = { tec: k, n: 0, dormidos: 0, vencidos: 0, criticos: 0 });
+      g.n++;
+      if (t.quieto != null && t.quieto >= JT_DORMIDO) g.dormidos++;
+      if (t.venceEn != null && t.venceEn < 0) g.vencidos++;
+      if (pr.crit) g.criticos++;
+    });
+  });
+  // dentro de cada grupo, lo más grave primero
+  A.frenado.items.sort((a, b) => (b.edad || 0) - (a.edad || 0));
+  A.vencido.items.sort((a, b) => (a.venceEn || 0) - (b.venceEn || 0));
+  A.dormido.items.sort((a, b) => (b.quieto || 0) - (a.quieto || 0));
+  A.cierra.items.sort((a, b) => (b.quieto || 0) - (a.quieto || 0));
+  A.critico.items.sort((a, b) => (b.edad || 0) - (a.edad || 0));
+  A.mios.items.sort((a, b) => String(a.cli).localeCompare(String(b.cli)));
+  const tecs = Object.keys(porTec).map(k => porTec[k])
+    .sort((a, b) => (b.vencidos + b.dormidos) - (a.vencidos + a.dormidos) || b.n - a.n);
+  return { grupos: A, tecs: tecs };
+}
+/* Salud de la cola de UNA cuenta, para la columna de Seguimiento CSM. Devuelve null cuando no
+   hay dato, que no es lo mismo que "sana": una cuenta sin medir no se pinta de verde. */
+function jtSalud(c) {
+  const jt = jtDeCuenta(c);
+  if (jt.estado === "sin") return { nivel: "sin", txt: "sin medir", jt: jt };
+  if (jt.estado === "roto") return { nivel: "roto", txt: "dato ilegible", jt: jt };
+  const crit = jt.real.filter(t => jtPrio(t.p).crit).length;
+  const venc = jt.real.filter(t => t.venceEn != null && t.venceEn < 0).length;
+  const dorm = jt.real.filter(t => t.quieto != null && t.quieto >= JT_DORMIDO).length;
+  if (!jt.real.length) return { nivel: "vacia", txt: "sin cola", crit: 0, venc: 0, dorm: 0, jt: jt };
+  if (crit || venc) return { nivel: "critica", txt: "crítica", crit: crit, venc: venc, dorm: dorm, jt: jt };
+  if (dorm) return { nivel: "atencion", txt: "atención", crit: crit, venc: venc, dorm: dorm, jt: jt };
+  return { nivel: "sana", txt: "sana", crit: 0, venc: 0, dorm: 0, jt: jt };
+}
+const JT_SALUD_COL = {
+  critica:  { bg: "#FEF2F2", fg: "#b91c1c" },
+  atencion: { bg: "#FFFBEB", fg: "#92400e" },
+  sana:     { bg: "#ECFDF5", fg: "#047857" },
+  vacia:    { bg: "#f3f4f6", fg: "#6b7280" },
+  sin:      { bg: "#f3f4f6", fg: "#9ca3af" },
+  roto:     { bg: "#FEF2F2", fg: "#b91c1c" }
+};
+// "hace 40 min" / "hace 3 h" — sin esto los números se leen como si fueran de ahora.
+function jtFresco(ts) {
+  if (!ts) return "";
+  const d = new Date(ts); if (isNaN(d)) return "";
+  const min = Math.round((Date.now() - d) / 60000);
+  if (min < 2) return "recién";
+  if (min < 60) return "hace " + min + " min";
+  const h = Math.round(min / 60);
+  if (h < 24) return "hace " + h + " h";
+  return "hace " + Math.round(h / 24) + " d";
+}
+function jtLink(k) { return JIRA_BASE + "/browse/" + encodeURIComponent(k); }
 
 function csmPct(cons, cont) {
   if (cont == null || !(cont > 0)) return null;   // sin bolsa → no aplica, NO 0%
@@ -10360,9 +10584,15 @@ function renderCsm() {
     const cons = (p.horas_consumidas_mes != null && p.horas_consumidas_mes !== "") ? parseFloat(p.horas_consumidas_mes) : null;
     const ab = (p.tickets_abiertos != null && p.tickets_abiertos !== "") ? parseInt(p.tickets_abiertos, 10) : null;
     const pr = (p.tickets_prioritarios != null && p.tickets_prioritarios !== "") ? parseInt(p.tickets_prioritarios, 10) : null;
+    /* 🪤 `tickets_abiertos` (el número del task de los lunes) CUENTA los contenedores de
+       worklog mensuales, así que infla cada cuenta en +1/+2 de forma constante: La Herramienta
+       figuraba con 2 abiertos y no tiene cola. Cuando hay detalle fresco, manda el detalle. */
+    const sal = jtSalud(c);
+    const abReal = sal.jt.estado === "ok" || sal.jt.estado === "vacio" ? sal.jt.real.length : null;
     return {
       id: c.id, cli: p.name || "(sin nombre)", csm: p.csm_asignado || "",
       cont: cont, cons: cons, pct: csmPct(cons, cont), ab: ab, pr: pr,
+      abReal: abReal, sal: sal,                     // salud de la cola, del detalle por ticket
       keys: csmKeys(c.id),                          // null = no tiene portal en Jira
       medida: cons != null || ab != null            // ¿el task la tocó alguna vez?
     };
@@ -10384,7 +10614,18 @@ function renderCsm() {
   const chip = (v, lbl, n) => `<button onclick="csmFiltro('${String(v).replace(/'/g, "\\'")}')" style="font-family:inherit; cursor:pointer; font-size:12px; font-weight:${sel === v ? 700 : 500};
       padding:5px 11px; border-radius:999px; border:1px solid ${sel === v ? "#430C89" : "#e5e7eb"}; background:${sel === v ? "#F1EFFF" : "#fff"}; color:${sel === v ? "#4030C8" : "#4b5563"};">
       ${escAttr(lbl)} <span style="color:#9ca3af; font-weight:500;">${n}</span></button>`;
-  const barra = `<div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; align-items:center;">
+  /* Acceso directo al tablero de Jira de German (2026-09-23, pedido suyo). Va ARRIBA de todo
+     y en sólido: es el único link de la vista que no depende de elegir una cuenta primero,
+     y es adonde va cuando quiere ver el panorama en vivo en vez del snapshot del lunes.
+     🔗 Apunta a la vista, NO a `/edit` —el link que pasó German era el de edición— porque
+     abrir un tablero en modo configuración para mirarlo es pedir tocar algo sin querer. */
+  const tablero = `<a href="${JIRA_BASE}/jira/dashboards/${JIRA_DASH_GERMAN}" target="_blank" rel="noopener"
+      title="Tablero de Jira en vivo. Los números de esta tabla son el snapshot que escribe el task los lunes 7:00; el tablero es el estado de ahora."
+      style="display:inline-flex; align-items:center; gap:7px; background:#430C89; color:#fff; border-radius:9px;
+      padding:8px 14px; font-size:12.5px; font-weight:700; text-decoration:none; margin-bottom:10px;">
+      📊 Abrir mi tablero de Jira <span style="opacity:.75; font-weight:500;">en vivo ↗</span></a>`;
+
+  const barra = tablero + `<div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; align-items:center;">
       ${chip("all", "Todas", filas.length)}
       ${csms.map(x => chip(x, x, filas.filter(f => f.csm === x).length)).join("")}
       ${chip("__sin", "Sin medir", filas.filter(f => !f.medida).length)}
@@ -10429,6 +10670,22 @@ function renderCsm() {
        style="text-decoration:none; border-bottom:1px dotted ${col || "#9ca3af"};">${b}</a>`;
   };
 
+  /* Salud de la cola de soporte (2026-09-24). Es la columna que contesta "¿esta cuenta está
+     bien atendida?", que NO es lo mismo que "¿consumió su bolsa?" — una cuenta puede estar al
+     40% de las horas y tener un ticket que impide comprar parado hace una semana.
+     🚨 "Sin medir" NO se pinta de verde: no saber nunca es una buena noticia. */
+  const saludCell = f => {
+    const s = f.sal, col = JT_SALUD_COL[s.nivel] || JT_SALUD_COL.sin;
+    if (s.nivel === "sin") return `<span title="${escAttr(f.keys ? "El task jira-radar-soporte todavía no escribió el detalle de esta cuenta." : "Esta cuenta no tiene portal de soporte en Jira — está en IDP o no tiene S&G. No es deuda.")}" style="font-size:11px; color:#cbd5e1; cursor:help;">—</span>`;
+    if (s.nivel === "roto") return `<span title="El JSON de jira_tickets no se pudo leer. Se arregla solo en la próxima corrida del task." style="font-size:11px; color:#b91c1c; cursor:help;">dato ilegible</span>`;
+    const detalle = [];
+    if (s.crit) detalle.push(`<b style="color:#b91c1c;">${s.crit} impide comprar</b>`);
+    if (s.venc) detalle.push(`<b style="color:#b91c1c;">${s.venc} vencido${s.venc > 1 ? "s" : ""}</b>`);
+    if (s.dorm) detalle.push(`<span style="color:#b45309;">${s.dorm} dormido${s.dorm > 1 ? "s" : ""}</span>`);
+    return `<span style="display:inline-block; font-size:10px; font-weight:700; border-radius:9px; padding:1px 8px; background:${col.bg}; color:${col.fg}; white-space:nowrap;">${escAttr(s.txt)}</span>`
+      + (detalle.length ? `<div style="font-size:10px; color:#6b7280; margin-top:2px;">${detalle.join(" · ")}</div>` : "");
+  };
+
   const cuerpo = vis.map(f => {
     const t = csmTono(f.pct, mesPct);
     const nombre = f.keys
@@ -10442,8 +10699,10 @@ function renderCsm() {
       <td style="text-align:right;">${f.cont != null ? f.cont : `<span style="color:#d1d5db;">—</span>`}</td>
       <td style="text-align:right;">${f.cons != null ? f.cons.toFixed(1) : `<span style="color:#d1d5db;">—</span>`}</td>
       <td style="min-width:120px;">${barraPct(f)}</td>
-      <td style="text-align:right;">${num(f.ab, null, f, false)}</td>
+      <td style="text-align:right;">${num(f.abReal != null ? f.abReal : f.ab, null, f, false)}${f.abReal != null && f.sal.jt.admin.length
+        ? `<div style="font-size:9px; color:#9ca3af;" title="Además tenés ${f.sal.jt.admin.length} contenedor(es) de worklog mensual (Reuniones &amp; minutas, Gestión y reportería). No son cola: por eso no se suman.">+${f.sal.jt.admin.length} adm.</div>` : ""}</td>
       <td style="text-align:right;">${num(f.pr, f.pr ? "#b91c1c" : null, f, true)}</td>
+      <td>${saludCell(f)}</td>
       <td style="font-size:11px; color:#9ca3af;">${f.medida ? "" : "sin medir"}</td>
     </tr>`;
   }).join("");
@@ -10452,10 +10711,14 @@ function renderCsm() {
       <thead><tr>
         <th style="position:sticky; left:0; background:#fafafa; min-width:180px;">Cuenta</th>
         <th>CSM</th><th style="text-align:right;">Bolsa h</th><th style="text-align:right;">Consumidas</th>
-        <th>% de la bolsa</th><th style="text-align:right;">Tickets</th><th style="text-align:right;">Prioritarios</th><th></th>
-      </tr></thead><tbody>${cuerpo || `<tr><td colspan="8" style="padding:18px; color:#9ca3af;">Sin cuentas para este filtro.</td></tr>`}</tbody></table></div>
+        <th>% de la bolsa</th><th style="text-align:right;" title="Tickets de CLIENTE. No incluye los contenedores de worklog mensuales.">Tickets</th><th style="text-align:right;">Prioritarios</th>
+        <th title="Cómo está la cola de soporte: críticos, vencidos y dormidos. No es lo mismo que el consumo de la bolsa.">Salud de la cola</th><th></th>
+      </tr></thead><tbody>${cuerpo || `<tr><td colspan="9" style="padding:18px; color:#9ca3af;">Sin cuentas para este filtro.</td></tr>`}</tbody></table></div>
     <div class="small" style="margin-top:10px; font-style:italic; color:#888;">
       <b>Clic en el nombre</b> abre el portal de esa cuenta en Jira; <b>clic en un número</b> abre la lista de esos tickets.
+      La columna <b>Tickets</b> cuenta sólo trabajo de cliente: tus contenedores de worklog mensuales van aparte como <b>+N adm.</b>,
+      porque sumarlos infla cada cuenta en +1 o +2 de forma constante.
+      <b>Salud de la cola</b> sale del detalle que trae el task <code>jira-radar-soporte</code> cada 2 h; el desglose ticket por ticket está en <b>🚨 Radar de soporte</b>.
       Los números son la foto del lunes —los escribe el task <code>horas-jira-a-hubspot</code>—, pero los links abren la <b>lista viva</b>: si no coinciden, manda Jira.
       <b>Prioritarios</b> = tickets abiertos con prioridad <b>🚨 Impide la compra</b> o <b>⚡ Urgente</b>.
       Los portales de Innew no usan las prioridades estándar de Jira: filtrar por “Highest” da cero en las 24 cuentas.
@@ -10464,6 +10727,145 @@ function renderCsm() {
     </div>`;
 }
 function csmFiltro(v) { window.__csmFiltro = v; renderCsm(); }
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════
+   VISTA · RADAR DE SOPORTE (2026-09-24)
+   ---------------------------------------------------------------------------------------
+   No lista tickets: **lista problemas**. Jira ya te muestra tickets y lo hace mejor; lo que
+   Jira NO hace es cruzar estado + días quieto + vencimiento + prioridad y decirte *"Las
+   Margaritas se está cayendo y hay uno que impide comprar, pausado hace 6 días"*.
+   Por eso cada grupo trae su **por qué**: un ticket que aparece sin explicación te obliga a
+   abrir Jira para entender la razón, que es exactamente lo que esta vista viene a evitar. */
+function jtFilaTicket(t, mostrar) {
+  const est = jtEst(t.s), pr = jtPrio(t.p);
+  const bits = [];
+  if (mostrar !== "quieto" && t.quieto != null) bits.push(t.quieto === 0 ? "movido hoy" : t.quieto + " d quieto");
+  if (t.edad != null) bits.push(t.edad + " d abierto");
+  if (t.venceEn != null) bits.push(t.venceEn < 0
+    ? `<b style="color:#b91c1c;">venció hace ${-t.venceEn} d</b>`
+    : (t.venceEn === 0 ? `<b style="color:#b45309;">vence hoy</b>` : "vence en " + t.venceEn + " d"));
+  else bits.push(`<span style="color:#cbd5e1;">sin vencimiento</span>`);
+  return `<tr>
+    <td style="white-space:nowrap;"><a href="${jtLink(t.k)}" target="_blank" rel="noopener"
+        style="font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#4030C8; font-weight:700; text-decoration:none;">${escAttr(t.k)} ↗</a>
+      <div style="font-size:10px; color:#9ca3af;">${escAttr(t.cli)}</div></td>
+    <td style="font-size:12px;">${escAttr(t.r)}
+      <div style="font-size:10.5px; color:#6b7280; margin-top:2px;">
+        <span style="display:inline-block; font-size:10px; font-weight:700; border-radius:9px; padding:1px 7px; background:${est.bg}; color:${est.c};">${escAttr(t.s)}</span>
+        ${pr.crit ? `<span style="display:inline-block; font-size:10px; font-weight:700; border-radius:9px; padding:1px 7px; background:#FEF2F2; color:#b91c1c; margin-left:4px;">${pr.ic} ${escAttr(pr.t)}</span>` : ""}
+        <span style="margin-left:5px;">${bits.join(" · ")}</span>
+      </div></td>
+    <td style="font-size:11.5px; color:#4b5563; white-space:nowrap;">${escAttr(t.a || "—")}</td>
+    ${mostrar === "quieto" ? `<td style="text-align:right; font-variant-numeric:tabular-nums; font-weight:700; color:${t.quieto >= 14 ? "#b91c1c" : "#b45309"};">${t.quieto} d</td>` : ""}
+  </tr>`;
+}
+
+async function renderRadarSoporte() {
+  const host = document.getElementById("rsop-body"); if (!host) return;
+  const data = window.__cuentasData;
+  if (!data) {
+    host.innerHTML = `<div style="padding:18px; color:#9ca3af; font-size:13px;">Cargando cuentas…</div>`;
+    if (typeof vjCuentasReady === "function") vjCuentasReady().then(() => { if (window.__cuentasData) renderRadarSoporte(); }).catch(() => {});
+    else renderCuentas();
+    return;
+  }
+
+  const conDato = data.filter(c => jtDeCuenta(c).estado !== "sin");
+  const rotas = data.filter(c => jtDeCuenta(c).estado === "roto");
+
+  /* Sin cañería no hay vista, y hay que decir POR QUÉ. Un panel vacío y mudo se lee como
+     "no hay problemas", que es la conclusión más peligrosa posible acá. */
+  if (!conDato.length) {
+    host.innerHTML = `<div style="padding:16px 18px; background:#FFFBEB; border:1px solid #FDE68A; border-radius:10px; font-size:13px; line-height:1.65; color:#92400e;">
+      <b>Todavía no hay datos de la cola de soporte.</b><br>
+      Los escribe el task <code>jira-radar-soporte</code> cada 2 h en la property <code>jira_tickets</code> de cada cuenta —
+      <b>el dashboard no habla con Jira</b>, su proxy sólo llega a HubSpot.<br>
+      Si el task ya corrió y esto sigue vacío, lo más probable es que <b>falte crear la property</b>:
+      en HubSpot, <b>Empresa → <code>jira_tickets</code> → tipo “Texto de varias líneas”</b>.
+      <div style="margin-top:9px;"><a href="${JIRA_BASE}/jira/dashboards/${JIRA_DASH_GERMAN}" target="_blank" rel="noopener"
+        style="font-size:12px; font-weight:700; color:#92400e;">Mientras tanto, abrir el tablero de Jira ↗</a></div>
+    </div>`;
+    return;
+  }
+
+  const { grupos, tecs } = jtAnomalias(conDato);
+  const totReal = conDato.reduce((s, c) => s + jtDeCuenta(c).real.length, 0);
+  const totAdmin = conDato.reduce((s, c) => s + jtDeCuenta(c).admin.length, 0);
+  const ts = conDato.map(c => jtDeCuenta(c).ts).filter(Boolean).sort().pop();
+
+  const kpi = (l, v, sub, col) => `<div class="cue-kpi"><div class="kl">${l}</div><div class="kv" style="font-size:21px;${col ? "color:" + col + ";" : ""}">${v}</div><div class="ks">${sub}</div></div>`;
+  const kpis = `<div class="cue-kpis" style="margin-bottom:12px;">
+      ${kpi("Tickets de cliente", totReal, conDato.length + " cuentas con portal")}
+      ${kpi("Impide la compra", grupos.critico.items.length, "o urgentes", grupos.critico.items.length ? "#b91c1c" : "")}
+      ${kpi("Vencidos", grupos.vencido.items.length, "fecha comprometida pasada", grupos.vencido.items.length ? "#b91c1c" : "")}
+      ${kpi("Dormidos", grupos.dormido.items.length, JT_DORMIDO + "+ días sin moverse", grupos.dormido.items.length ? "#b45309" : "")}
+      ${kpi("Tus mensuales", grupos.mios.items.length, "sin poner En Curso", grupos.mios.items.length ? "#4030C8" : "")}
+    </div>`;
+
+  const TONO = { bad: { bg: "#FEF2F2", bd: "#FECACA", fg: "#b91c1c" }, warn: { bg: "#FFFBEB", bd: "#FDE68A", fg: "#92400e" }, info: { bg: "#F7F5FF", bd: "#C7BDFF", fg: "#4030C8" } };
+  const bloque = (g, mostrar) => {
+    const t = TONO[g.tono] || TONO.info;
+    if (!g.items.length) return `<div style="border:1px solid #e8e8ec; border-radius:11px; margin-bottom:10px; background:#fff;">
+        <div style="padding:9px 14px; font-size:12.5px; color:#6b7280;">${g.ic} <b style="color:#374151;">${escAttr(g.t)}</b>
+          <span style="color:#047857; font-weight:700; margin-left:7px;">ninguno ✓</span></div></div>`;
+    return `<div style="border:1px solid ${t.bd}; border-radius:11px; margin-bottom:11px; background:#fff; overflow:hidden;">
+      <div style="padding:10px 14px; background:${t.bg}; color:${t.fg}; border-bottom:1px solid ${t.bd};">
+        <div style="font-size:13px; font-weight:800; display:flex; align-items:center; gap:9px;">${g.ic} ${escAttr(g.t)}
+          <span style="margin-left:auto; font-size:11px; background:#fff; border-radius:999px; padding:2px 9px;">${g.items.length}</span></div>
+        <div style="font-size:11px; opacity:.85; margin-top:3px; line-height:1.5;">${escAttr(g.d)}</div>
+      </div>
+      <table class="cue-table" style="font-size:12px;"><tbody>${g.items.map(x => jtFilaTicket(x, mostrar)).join("")}</tbody></table>
+    </div>`;
+  };
+
+  /* Gobernanza: no es un ranking de personas, es dónde poner la conversación. Se ordena por
+     lo que pide acción, y se muestra la proporción — 2 de 2 vencidos pesa más que 2 de 20. */
+  const gob = tecs.length ? `<div style="border:1px solid #C7BDFF; border-radius:11px; background:#fff; overflow:hidden; margin-bottom:11px;">
+      <div style="padding:10px 14px; background:#F7F5FF; color:#4030C8; border-bottom:1px solid #C7BDFF;">
+        <div style="font-size:13px; font-weight:800;">👷 Quién tiene qué</div>
+        <div style="font-size:11px; opacity:.85; margin-top:3px; line-height:1.5;">Sonia te pidió exigir que muevan los estados. Esto es dónde poner esa conversación, no un ranking de personas.</div>
+      </div>
+      <table class="cue-table" style="font-size:12px;"><thead><tr>
+        <th>Técnico</th><th style="text-align:right;">Abiertos</th><th style="text-align:right;">Dormidos</th><th style="text-align:right;">Vencidos</th><th style="text-align:right;">Críticos</th></tr></thead>
+      <tbody>${tecs.map(g => `<tr>
+        <td style="font-weight:600;">${escAttr(g.tec)}</td>
+        <td style="text-align:right;">${g.n}</td>
+        <td style="text-align:right; ${g.dormidos ? "color:#b45309; font-weight:700;" : "color:#d1d5db;"}">${g.dormidos || "—"}</td>
+        <td style="text-align:right; ${g.vencidos ? "color:#b91c1c; font-weight:700;" : "color:#d1d5db;"}">${g.vencidos || "—"}</td>
+        <td style="text-align:right; ${g.criticos ? "color:#b91c1c; font-weight:700;" : "color:#d1d5db;"}">${g.criticos || "—"}</td>
+      </tr>`).join("")}</tbody></table>
+    </div>` : "";
+
+  const avisoRotas = rotas.length ? `<div style="margin-bottom:10px; padding:8px 12px; background:#FEF2F2; border:1px solid #FECACA; border-radius:8px; font-size:11.5px; color:#b91c1c;">
+      ⚠ ${rotas.length} cuenta(s) con el dato ilegible en <code>jira_tickets</code>: ${escAttr(rotas.map(c => (c.properties || {}).name).join(", "))}. Quedan fuera de este radar hasta la próxima corrida del task.</div>` : "";
+
+  host.innerHTML = `
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:11px;">
+      <a href="${JIRA_BASE}/jira/dashboards/${JIRA_DASH_GERMAN}" target="_blank" rel="noopener"
+        style="display:inline-flex; align-items:center; gap:7px; background:#430C89; color:#fff; border-radius:9px; padding:8px 14px; font-size:12.5px; font-weight:700; text-decoration:none;">
+        📊 Abrir mi tablero de Jira <span style="opacity:.75; font-weight:500;">en vivo ↗</span></a>
+      <span style="font-size:11.5px; color:#6b7280;">
+        ${ts ? `Datos de <b>${escAttr(jtFresco(ts))}</b>` : "Sin marca de tiempo"} ·
+        <b>${totReal}</b> tickets de cliente${totAdmin ? ` · <span title="Los contenedores de worklog mensuales (Reuniones &amp; minutas, Gestión y reportería). No son cola: se cuentan aparte para que no inflen las cuentas." style="cursor:help; border-bottom:1px dotted #9ca3af;">${totAdmin} administrativos aparte</span>` : ""}
+      </span>
+    </div>
+    ${avisoRotas}${kpis}
+    ${bloque(grupos.frenado)}
+    ${bloque(grupos.vencido)}
+    ${bloque(grupos.dormido, "quieto")}
+    ${bloque(grupos.critico)}
+    ${bloque(grupos.mios)}
+    ${bloque(grupos.cierra)}
+    ${gob}
+    <div class="small" style="margin-top:6px; font-style:italic; color:#888; line-height:1.6;">
+      Los <b>administrativos</b> (tus tickets mensuales de reuniones y reportería) están excluidos de todos los grupos:
+      son contenedores de worklog, y contarlos infla cada cuenta en +1 o +2 de forma constante.
+      <b>Dormido</b> = ${JT_DORMIDO}+ días sin que nadie lo toque; se mide así y no por fecha de vencimiento porque
+      dos tercios de los tickets no tienen vencimiento cargado.
+      Esta vista es <b>sólo lectura</b>: comentar y mover estados se hace en Jira — un comentario que no sea interno
+      le llega al cliente por mail y borrarlo no lo deshace.
+    </div>`;
+}
 
 // Cajón de ingesta de exports: plegado por defecto, porque cargar archivos es una tarea puntual.
 function cliToggleIngesta() {
@@ -11541,7 +11943,10 @@ async function fetchCuentas() {
       /* `tickets_abiertos` y `tickets_prioritarios` las escribe el task `horas-jira-a-hubspot`
          (lunes 7:00). El dashboard NO habla con Jira —su proxy sólo llega a HubSpot—, así que
          éste es el único camino por el que el dato de soporte entra al dashboard. */
-      properties: ["name", "csm_asignado", "horas_de_sg_contratadas", "country", "num_associated_deals", "calificacion_matriz_bcg", "valor_hora", "valor_hora_us", "monto_mensual_us", "tipo_de_plan", "fin_acuerdo", "semaforo", "gmv_mensual", "horas_consumidas_mes", "horas_hist", "es_scale", "estado_facturacion", "tickets_abiertos", "tickets_prioritarios"],
+      /* `jira_tickets` lo escribe el task `jira-radar-soporte` cada 2 h con el detalle por
+         ticket (estado, días quieto, prioridad, asignado, vencimiento y el flag de contenedor
+         de worklog). Es la única fuente del Radar de soporte y de la salud de cola. */
+      properties: ["name", "csm_asignado", "horas_de_sg_contratadas", "country", "num_associated_deals", "calificacion_matriz_bcg", "valor_hora", "valor_hora_us", "monto_mensual_us", "tipo_de_plan", "fin_acuerdo", "semaforo", "gmv_mensual", "horas_consumidas_mes", "horas_hist", "es_scale", "estado_facturacion", "tickets_abiertos", "tickets_prioritarios", "jira_tickets"],
       sorts: [{ propertyName: "name", direction: "ASCENDING" }],
       limit: 100, offset,
       chatInsights: { userIntent: "Dashboard: cuentas activas (customer) con CSM y horas S&G", satisfaction: "NEUTRAL" }
@@ -13903,6 +14308,17 @@ const VJ_UBI_ROT = { ppal: "Ubicación primaria", sec: "Ubicación secundaria", 
 function vjUbiTitAll() { try { return JSON.parse(localStorage.getItem(VJ_UBI_TIT_KEY) || "{}"); } catch (e) { return {}; } }
 function vjUbiTit(companyId, cual) { return vjLimpio(((vjUbiTitAll()[String(companyId)] || {})[cual]) || ""); }
 function vjUbiRot(companyId, cual) { return vjUbiTit(companyId, cual) || VJ_UBI_ROT[cual] || "Ubicación"; }
+/* Nombre del lugar puntual. Escribe en la REUNIÓN, no en la cuenta — ver el comentario largo
+   en vjUbiBloqueHtml. Vaciarlo devuelve el rótulo genérico "Lugar puntual". */
+function vjPuntualTitSet(kj) {
+  const k = kj.replace(/\\'/g, "'");
+  const r = vjResGet(k);
+  const v = prompt("¿Cómo se llama este lugar?\nEj: Gran Teatro del BCP · Café Havanna del Shopping · Lobby del Sheraton.\nVacío = vuelve a decir sólo “Lugar puntual”.",
+    vjLimpio(r.lugarTit || ""));
+  if (v === null) return;                                  // canceló: no tocar nada
+  vjPrepSet(k, { lugarTit: vjLimpio(v) });
+  vjFichaRender(); renderResultados(tripGet());
+}
 function vjUbiTitSet(kj, companyId, cual) {
   const v = prompt("Título de la " + (cual === "sec" ? "ubicación secundaria" : "ubicación primaria")
     + " de esta cuenta (ej: Oficina central, Depósito, Showroom).\nVacío = volver al nombre por defecto.",
@@ -13992,7 +14408,14 @@ function vjUbiElegir(kj, companyId, cual) {
      el título hay que dibujarlo sin resolver la company, porque en un prospecto eso cuesta una
      request y arranca en frío — justo en la calle es cuando peor funciona. Acá viaja con la
      ficha por /api/state y llega gratis. */
-  const patch = { lugarTipo: cual, lugarTit: cual === "puntual" ? "" : vjUbiTit(companyId, cual) };
+  /* 🪤 Volver a tocar la ranura que YA estaba activa no puede borrar el nombre que le pusiste
+     al café: sólo se limpia cuando venías de otro tipo. Sin esta guarda, un clic de más en
+     "Lugar puntual" te tira abajo el "Gran Teatro del BCP" sin avisar. */
+  const yaEra = vjUbiTipo(companyId, vjResGet(k)) === cual;
+  const patch = { lugarTipo: cual };
+  patch.lugarTit = cual === "puntual"
+    ? (yaEra ? vjLimpio(vjResGet(k).lugarTit || "") : "")
+    : vjUbiTit(companyId, cual);
   if (cual === "ppal" && vjLimpio(u.ppal || "")) patch.lugar = vjLimpio(u.ppal);
   if (cual === "sec" && vjLimpio(u.sec || "")) patch.lugar = vjLimpio(u.sec);
   vjPrepSet(k, patch);
@@ -14486,6 +14909,27 @@ function vjUbiPillsHtml(kj, co, r, coEstado) {
 function vjUbiBloqueHtml(kj, co, r, coEstado) {
   const nota = (t, c) => `<div style="font-size:11px; color:${c || "#6b7280"}; margin-top:4px;">${t}</div>`;
   const est = `<div id="vj-ubi-est" style="font-size:11px; margin-top:4px; color:#6b7280;"></div>`;
+
+  /* ☕ LUGAR PUNTUAL, PRIMERO DE TODO (2026-09-23) ──────────────────────────────────────
+     Va ANTES del chequeo de company a propósito: un café **no pertenece a la cuenta**, así que
+     no necesita company resuelta para poder nombrarse. Antes caía en el "esta cuenta no está
+     vinculada" y quedaba sin editor por un requisito que no le aplica.
+     🧷 Y por eso mismo su nombre vive en la REUNIÓN (`lugarTit`, dentro de `vj_resultados`) y no
+     en `vj_ubi_titulos`, que está indexado por companyId: guardarlo ahí lo volvería el título de
+     una ranura de la empresa, que es exactamente lo que "lugar puntual" existe para evitar.
+     Como `vj_resultados` ya se espeja por /api/state, el nombre llega al celular solo. */
+  if (vjUbiTipo(co && co.id, r) === "puntual") {
+    const tPun = vjLimpio(r.lugarTit || "");
+    const btn = `<span onclick="vjPuntualTitSet('${kj}')" title="El nombre queda en ESTA reunión, no en la cuenta"
+      style="cursor:pointer; color:#4030C8; font-weight:700; font-size:10.5px;">✏️ ${tPun ? "cambiar el nombre" : "ponerle un nombre"}</span>`;
+    return `<div style="font-size:11px; color:#6b7280; margin-top:4px; display:flex; gap:7px; flex-wrap:wrap; align-items:center;">
+        <span>☕ ${tPun ? `<b style="color:#374151;">${escAttr(tPun)}</b>` : "Lugar puntual"} — <b>no se guarda en la cuenta</b>.</span>${btn}
+      </div>
+      <div style="font-size:10.5px; color:#9ca3af; margin-top:3px;">${tPun
+        ? "Así se ve en el celular, en vez de “Lugar puntual”."
+        : "Sin nombre, en el celular dice sólo “Lugar puntual”: ponele cómo se llama y lo vas a reconocer en la calle."} Si en realidad es una oficina fija, elegí arriba primaria o secundaria.</div>`;
+  }
+
   /* Sin company tampoco se queda mudo: German tiene que poder distinguir "todavía la estoy
      buscando" de "esta cuenta no existe como company y por eso no hay dónde guardar". */
   if (!co || !co.id) return coEstado === "buscando"
@@ -14502,7 +14946,7 @@ function vjUbiBloqueHtml(kj, co, r, coEstado) {
   if (tipo === "call") return nota("Es el link de la call de hoy: <b>no</b> se guarda como ubicación de la cuenta."
     + ((u.ppal || u.sec) ? " Arriba están las guardadas." : ""), "#9ca3af");
 
-  if (tipo === "puntual") return nota("☕ Lugar puntual: <b>no se guarda en la cuenta</b>. Si en realidad es una oficina fija, elegí arriba primaria o secundaria.", "#6b7280");
+  // (el caso `puntual` se resuelve arriba de todo, antes del chequeo de company)
 
   /* Sin elegir. No se supone nada: un café supuesto como primaria ensucia el CRM. */
   if (!tipo) return nota(actual
