@@ -10513,7 +10513,13 @@ function jtArmar(lista, ts, fuente) {
     const x = {
       k: t.k || "", s: t.s || "", p: t.p, a: t.a || "", r: t.r || "",
       creado: t.c || null, tocado: t.u || null, vence: t.d || null,
-      quieto: jtDias(t.u), edad: jtDias(t.c), venceEn: t.d ? -jtDias(t.d) : null
+      quieto: jtDias(t.u), edad: jtDias(t.c), venceEn: t.d ? -jtDias(t.d) : null,
+      /* Última RESPUESTA ≠ última actualización. `tocado` se mueve con una carga de horas o un
+         cambio de campo; `resp` sólo con un comentario. Confundirlas hace parecer atendido un
+         ticket al que nadie le contestó. Viene del proxy; el snapshot viejo no la trae y ahí
+         queda en null, que la tabla muestra como "—" en vez de inventar la fecha de `updated`. */
+      resp: t.lc || null, respQuien: t.la || "", nCom: Number(t.nc) || 0,
+      respDias: jtDias(t.lc)
     };
     (t.m ? admin : real).push(x);
   });
@@ -10872,6 +10878,157 @@ function jtRefrescar() {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════
+   TABLA DE TODOS LOS TICKETS (2026-09-28, pedido de German)
+   ---------------------------------------------------------------------------------------
+   Los bloques de arriba responden "¿qué está mal?". Esta tabla responde la otra mitad:
+   **"¿qué hay?"** — todo, ordenable y filtrable, sin que Jira decida el orden. Va ABAJO a
+   propósito: si estuviera arriba, la vista volvería a ser una lista de tickets, que es
+   justo lo que Jira ya hace mejor.
+   Un mismo ticket puede aparecer en tres bloques distintos (crítico + vencido + dormido);
+   acá aparece **una sola vez**, así que este total es el único que cierra con Jira.
+
+   🪤 **`Últ. respuesta` NO es `Actualizado`.** Fue el motivo de sumar `comment` al proxy:
+   cargar horas o editar un campo mueven `updated` sin que nadie haya contestado. Un ticket
+   "actualizado hoy" con la última respuesta hace 20 días es exactamente el caso que se
+   escapaba. Cuando el dato viene del snapshot viejo no existe y se muestra "—": preferible
+   un hueco visible a rellenarlo con `updated`, que se leería como una respuesta que no hubo.
+
+   🎯 **La quinta columna es `Pelota`** (la "otra variable adecuada"). Sale del estado, que es
+   un dato duro: `En espera del cliente` y `Preparando Presupuesto` → 🙋 Cliente · `Pausado`
+   → ⏸ Frenado · el resto → 🏢 Innew. Es lo que convierte la lista en cola de trabajo:
+   ordenando por acá quedan arriba los que dependen de nosotros, que son sobre los que el
+   CSM puede hacer algo hoy. No se deriva del autor del último comentario — un nombre
+   desconocido puede ser del cliente o alguien nuevo de Innew, y clasificar mal en silencio
+   es peor que no clasificar. */
+let RSOP_LISTA = [];
+function rsopPelota(t) {
+  const e = jtEst(t.s);
+  if (e.frena)   return { t: "Frenado", ic: "⏸", c: "#b91c1c", k: 3 };
+  if (e.cliente) return { t: "Cliente", ic: "🙋", c: "#9a3412", k: 2 };
+  return { t: "Innew", ic: "🏢", c: "#3730A3", k: 1 };
+}
+function rsopPrioRank(p) { const m = { 10000: 1, 10002: 2, 10001: 3, 10003: 4 }; return m[p] || 9; }
+function rsopFechaC(iso) {
+  if (!iso) return "";
+  const p = String(iso).slice(0, 10).split("-");
+  return p.length === 3 ? p[2] + "/" + p[1] + "/" + p[0].slice(2) : String(iso);
+}
+/* Columnas: `v` devuelve el valor de ORDEN (número o texto) y `d` la dirección por defecto
+   al tocarla por primera vez. Separar orden de presentación es lo que permite mostrar
+   "18/09 · 9 d" y ordenar bien igual. */
+const RSOP_COLS = [
+  { id: "k",      t: "Ticket",        v: t => t.k,               d: 1,  al: "left" },
+  { id: "cli",    t: "Cuenta",        v: t => t.cli,             d: 1,  al: "left" },
+  { id: "r",      t: "Asunto",        v: t => t.r,               d: 1,  al: "left" },
+  { id: "s",      t: "Estado",        v: t => t.s,               d: 1,  al: "left" },
+  { id: "p",      t: "Prioridad",     v: t => rsopPrioRank(t.p), d: 1,  al: "left" },
+  { id: "pel",    t: "Pelota",        v: t => rsopPelota(t).k,   d: 1,  al: "left" },
+  { id: "a",      t: "Asignado",      v: t => t.a,               d: 1,  al: "left" },
+  { id: "creado", t: "Carga",         v: t => t.edad,            d: -1, al: "right" },
+  { id: "resp",   t: "Últ. respuesta",v: t => t.respDias,        d: -1, al: "right" },
+  { id: "vence",  t: "Vence",         v: t => t.venceEn,         d: 1,  al: "right" },
+  { id: "quieto", t: "Quieto",        v: t => t.quieto,          d: -1, al: "right" }
+];
+function rsopCol(id) { return RSOP_COLS.filter(c => c.id === id)[0] || RSOP_COLS[10]; }
+function rsopOrden(id) {
+  const o = window.__rsopOrd || { c: "quieto", d: -1 };
+  window.__rsopOrd = (o.c === id) ? { c: id, d: -o.d } : { c: id, d: rsopCol(id).d };
+  rsopTablaPintar();
+}
+function rsopBuscar(v) { window.__rsopQ = v; rsopTablaPintar(); }
+function rsopVerAdm(v) { window.__rsopAdm = !!v; rsopTablaPintar(); }
+/* Comparador. 🚨 Los vacíos van SIEMPRE al fondo, en las dos direcciones: un ticket sin
+   vencimiento cargado no puede ganarle el podio de "más vencido" a uno que sí venció, y dos
+   tercios de la cartera no tienen fecha. Invertir los nulos con la flecha es la forma
+   silenciosa de que lo urgente desaparezca de la primera pantalla. */
+function rsopCmp(a, b, col, dir) {
+  const f = rsopCol(col).v;
+  const va = f(a), vb = f(b);
+  const na = (va == null || va === ""), nb = (vb == null || vb === "");
+  if (na && nb) return 0;
+  if (na) return 1;
+  if (nb) return -1;
+  if (typeof va === "number" && typeof vb === "number") return (va - vb) * dir || String(a.k).localeCompare(String(b.k));
+  return String(va).localeCompare(String(vb), "es") * dir || String(a.k).localeCompare(String(b.k));
+}
+function rsopTablaFilas() {
+  const q = String(window.__rsopQ || "").trim().toLowerCase();
+  const verAdm = !!window.__rsopAdm;
+  const o = window.__rsopOrd || { c: "quieto", d: -1 };
+  let l = RSOP_LISTA.filter(t => verAdm || !t.adm);
+  if (q) l = l.filter(t => (t.k + " " + t.cli + " " + t.r + " " + t.s + " " + t.a).toLowerCase().indexOf(q) >= 0);
+  return l.slice().sort((a, b) => rsopCmp(a, b, o.c, o.d));
+}
+/* Repinta SÓLO la tabla, no la vista entera: el buscador vive afuera de este nodo para que
+   escribir no le robe el foco al input en cada tecla (mismo error que costó el clic del
+   cronograma el 18/09 — un render en el medio destruye el nodo con el que estabas). */
+function rsopTablaPintar() {
+  const host = document.getElementById("rsop-tabla");
+  if (!host) return;
+  const o = window.__rsopOrd || { c: "quieto", d: -1 };
+  const filas = rsopTablaFilas();
+  const th = RSOP_COLS.map(c => {
+    const on = o.c === c.id;
+    return `<th onclick="rsopOrden('${c.id}')" title="Ordenar por ${escAttr(c.t)}"
+      style="cursor:pointer; user-select:none; text-align:${c.al}; white-space:nowrap; ${on ? "color:#4030C8;" : ""}">${escAttr(c.t)}<span style="opacity:${on ? 1 : .25}; margin-left:3px;">${on ? (o.d > 0 ? "▲" : "▼") : "↕"}</span></th>`;
+  }).join("");
+  const cnt = document.getElementById("rsop-tabla-cnt");
+  if (cnt) cnt.textContent = filas.length + (filas.length === 1 ? " ticket" : " tickets");
+  if (!filas.length) {
+    host.innerHTML = `<div style="padding:16px 14px; font-size:12.5px; color:#9ca3af;">Ningún ticket coincide con el filtro.</div>`;
+    return;
+  }
+  host.innerHTML = `<table class="cue-table" style="font-size:12px;"><thead><tr>${th}</tr></thead><tbody>${filas.map(t => {
+    const est = jtEst(t.s), pr = jtPrio(t.p), pe = rsopPelota(t);
+    const venc = t.venceEn == null
+      ? `<span style="color:#d1d5db;">—</span>`
+      : `<span style="${t.venceEn < 0 ? "color:#b91c1c; font-weight:700;" : (t.venceEn <= 2 ? "color:#b45309; font-weight:700;" : "")}">${escAttr(rsopFechaC(t.vence))}</span>`;
+    const resp = t.resp
+      ? `${escAttr(rsopFechaC(t.resp))}<div style="font-size:9.5px; color:#9ca3af;">${escAttr(t.respDias === 0 ? "hoy" : t.respDias + " d")}${t.respQuien ? " · " + escAttr(rsopNombre(t.respQuien)) : ""}</div>`
+      : `<span style="color:#d1d5db;" title="${t.nCom ? "El proxy no trajo la fecha" : "Nadie escribió todavía en este ticket"}">${t.nCom ? "—" : "sin respuestas"}</span>`;
+    return `<tr${t.adm ? ' style="background:#FAFAFE;"' : ""}>
+      <td style="white-space:nowrap;"><a href="${jtLink(t.k)}" target="_blank" rel="noopener"
+        style="font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#4030C8; font-weight:700; text-decoration:none;">${escAttr(t.k)} ↗</a>${t.adm ? `<span title="Contenedor de worklog mensual, no es cola de cliente" style="margin-left:4px; font-size:9px; font-weight:700; color:#6b7280; background:#F3F4F6; border-radius:6px; padding:1px 5px;">mensual</span>` : ""}</td>
+      <td style="font-size:11.5px; white-space:nowrap;">${escAttr(t.cli)}</td>
+      <td style="font-size:12px;">${escAttr(t.r)}</td>
+      <td><span style="display:inline-block; font-size:10px; font-weight:700; border-radius:9px; padding:1px 7px; background:${est.bg}; color:${est.c}; white-space:nowrap;">${escAttr(t.s)}</span></td>
+      <td style="font-size:11px; white-space:nowrap; ${pr.crit ? "color:#b91c1c; font-weight:700;" : "color:#6b7280;"}">${pr.ic} ${escAttr(pr.t)}</td>
+      <td style="font-size:11px; white-space:nowrap; color:${pe.c}; font-weight:600;">${pe.ic} ${escAttr(pe.t)}</td>
+      <td style="font-size:11.5px; color:#4b5563; white-space:nowrap;">${escAttr(t.a || "—")}${jtSlackBtn(t.a, 1)}</td>
+      <td style="text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums;">${escAttr(rsopFechaC(t.creado)) || "—"}<div style="font-size:9.5px; color:#9ca3af;">${t.edad != null ? t.edad + " d" : ""}</div></td>
+      <td style="text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums;">${resp}</td>
+      <td style="text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums;">${venc}</td>
+      <td style="text-align:right; font-variant-numeric:tabular-nums; font-weight:${t.quieto >= JT_DORMIDO ? 700 : 400}; color:${t.quieto >= 14 ? "#b91c1c" : (t.quieto >= JT_DORMIDO ? "#b45309" : "#6b7280")};">${t.quieto != null ? t.quieto + " d" : "—"}</td>
+    </tr>`;
+  }).join("")}</tbody></table>`;
+}
+/* Arma el cajón y deja la lista lista para que los handlers repinten sin recalcular la vista. */
+function rsopTablaHtml(conDato) {
+  RSOP_LISTA = [];
+  (conDato || []).forEach(c => {
+    const jt = jtDeCuenta(c);
+    if (jt.estado !== "ok") return;
+    const cli = ((c.properties || {}).name || "").trim();
+    jt.real.forEach(t => RSOP_LISTA.push(Object.assign({ cli: cli, coId: c.id, adm: 0 }, t)));
+    jt.admin.forEach(t => RSOP_LISTA.push(Object.assign({ cli: cli, coId: c.id, adm: 1 }, t)));
+  });
+  const nAdm = RSOP_LISTA.filter(t => t.adm).length;
+  return `<div style="border:1px solid #e8e8ec; border-radius:11px; background:#fff; overflow:hidden; margin-top:14px;">
+    <div style="padding:10px 14px; border-bottom:1px solid #e8e8ec; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <div style="font-size:13px; font-weight:800; color:#374151;">📋 Todos los tickets</div>
+      <span id="rsop-tabla-cnt" style="font-size:11px; color:#6b7280; background:#F3F4F6; border-radius:999px; padding:2px 9px;"></span>
+      <input id="rsop-q" type="text" placeholder="Filtrar por cuenta, ticket, asunto, estado o persona…"
+        oninput="rsopBuscar(this.value)" value="${escAttr(window.__rsopQ || "")}"
+        style="font-family:inherit; font-size:12px; padding:6px 10px; border:1px solid #e5e7eb; border-radius:8px; min-width:280px; flex:1;">
+      <label style="font-size:11.5px; color:#6b7280; display:flex; align-items:center; gap:5px; cursor:pointer; white-space:nowrap;">
+        <input type="checkbox" onchange="rsopVerAdm(this.checked)" ${window.__rsopAdm ? "checked" : ""}> incluir mis mensuales${nAdm ? " (" + nAdm + ")" : ""}</label>
+      <span style="font-size:10.5px; color:#9ca3af; white-space:nowrap;">tocá un encabezado para ordenar</span>
+    </div>
+    <div id="rsop-tabla" style="overflow:auto;"></div>
+  </div>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════
    VISTA · RADAR DE SOPORTE (2026-09-24)
    ---------------------------------------------------------------------------------------
    No lista tickets: **lista problemas**. Jira ya te muestra tickets y lo hace mejor; lo que
@@ -11197,6 +11354,7 @@ async function renderRadarSoporte() {
     ${bloque(grupos.mios)}
     ${bloque(grupos.cierra)}
     ${gob}
+    ${rsopTablaHtml(conDato)}
     <div class="small" style="margin-top:6px; font-style:italic; color:#888; line-height:1.6;">
       Los <b>administrativos</b> (tus tickets mensuales de reuniones y reportería) están excluidos de todos los grupos:
       son contenedores de worklog, y contarlos infla cada cuenta en +1 o +2 de forma constante.
@@ -11204,7 +11362,15 @@ async function renderRadarSoporte() {
       dos tercios de los tickets no tienen vencimiento cargado.
       <b>✎ Nota interna</b> arma la nota interna del ticket (la misma opción "Añadir nota interna" de Jira) y la publica
       con tu OK. <b>El cliente nunca la ve</b>; desde acá no se le manda nada al cliente. Mover estados sigue siendo en Jira.
+      En la tabla de abajo, <b>Últ. respuesta</b> es la fecha del último comentario del ticket — no es lo mismo que
+      "actualizado": cargar horas o editar un campo mueven la actualización sin que nadie haya contestado.
+      <b>Pelota</b> sale del estado: 🙋 Cliente (en espera / presupuesto) · ⏸ Frenado (pausado) · 🏢 Innew (el resto).
     </div>`;
+  /* El cajón viene vacío del template a propósito: el `<tbody>` lo pinta su propia función,
+     que es la misma que usan el buscador y el orden. Si el HTML de arriba trajera las filas
+     ya armadas, habría dos caminos para dibujar lo mismo y se desincronizarían al primer
+     cambio (la trampa de escribir dos veces la misma vista, 19/09). */
+  rsopTablaPintar();
 }
 
 // Cajón de ingesta de exports: plegado por defecto, porque cargar archivos es una tarea puntual.
