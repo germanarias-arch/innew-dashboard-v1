@@ -1440,10 +1440,28 @@ function stateBadge(txt, color, onClick) {
     }
   } catch (e) {}
 }
-function stateReloadOnce() {
+/* 🚨 RECARGA AUTOMÁTICA — ACOTADA AL ARRANQUE (2026-09-25, "se recarga demasiado").
+   El estado es UN documento compartido por todo Innew. Cada vez que el server trae un
+   `updatedAt` distinto al que tenía este navegador, el dashboard aplicaba el estado nuevo y
+   **se recargaba solo**. Con varias pestañas del dashboard abiertas eso es ping-pong: cada
+   pestaña pushea, las otras ven el cambio y recargan, esa recarga vuelve a pushear.
+   El guard vive en `sessionStorage`, que es **por pestaña**, así que no las frena entre sí.
+
+   La distinción que faltaba: **recargar en el arranque es gratis** (todavía no hiciste nada),
+   **recargar mientras trabajás te cuesta lo que estabas haciendo**. Ahora sólo se recarga sola
+   en el arranque y UNA vez; en cualquier otro momento avisa con el badge y recargás vos.
+   El dato no se pierde: `stateApply` ya corrió, lo único que espera es el repintado. */
+function stateReloadOnce(motivo) {
+  if (motivo !== "arranque") {
+    stateBadge("☁︎ el equipo actualizó · tocá para recargar", "#b45309", function () {
+      try { sessionStorage.removeItem(STATE_RELOAD_SS); } catch (e) {}
+      location.reload();
+    });
+    return;
+  }
   let n = 0;
   try { n = Number(sessionStorage.getItem(STATE_RELOAD_SS) || 0) || 0; } catch (e) {}
-  if (n >= 2) { stateBadge("☁︎ recargá la página", "#b45309"); return; }
+  if (n >= 1) { stateBadge("☁︎ recargá la página", "#b45309"); return; }
   try { sessionStorage.setItem(STATE_RELOAD_SS, String(n + 1)); } catch (e) {}
   location.reload();
 }
@@ -1473,7 +1491,9 @@ async function stateFlush() {
         stateApply(j.state);
         S.updatedAt = Number(j.updatedAt || 0);
         _lsSet(STATE_BASE_LS, String(S.updatedAt));
-        stateReloadOnce();
+        /* 409 = alguien (u otra pestaña tuya) guardó primero. Es EN VIVO, en medio de tu
+           trabajo: se avisa, no se recarga. Era el camino que más recargas disparaba. */
+        stateReloadOnce("conflicto");
       }
       return;
     }
@@ -1519,7 +1539,7 @@ async function stateHydrate() {
   stateApply(j.state);                                             // el server manda
   S.updatedAt = srvAt;
   _lsSet(STATE_BASE_LS, String(srvAt));
-  stateReloadOnce();
+  stateReloadOnce("arranque");                                     // acá sí: todavía no hiciste nada
 }
 // Modales que se crean por JS y se remueven del DOM al cerrar: si alguno existe, el usuario está en el medio de algo.
 const STATE_BUSY_MODALS = ["stage-gate-modal", "ppg-modal", "target-deal-modal", "horas-modal", "gmv-modal", "msf-pop"];
@@ -1570,7 +1590,12 @@ function stateStartPoll() {
         if (j && j.state) { stateApply(j.state); _lsSet(STATE_BASE_LS, String(srvAt)); S.updatedAt = srvAt; }
         location.reload();
       };
-      if (!stateUserBusy()) {                               // idle → se actualiza solo
+      /* Idle **y a la vista**. Una pestaña de fondo siempre parece idle, así que antes se
+         recargaba sola sin que nadie la estuviera mirando — y con varias pestañas abiertas
+         eso multiplica recargas que no le sirven a nadie. Si está oculta, se deja el badge
+         y se resuelve cuando German vuelva a ella. */
+      const aLaVista = (typeof document === "undefined") || document.visibilityState !== "hidden";
+      if (!stateUserBusy() && aLaVista) {
         stateBadge("☁︎ " + who + " actualizó · actualizando…", "#047857");
         applyNow();
         return;
@@ -10603,6 +10628,48 @@ function jtFresco(ts) {
 }
 function jtLink(k) { return JIRA_BASE + "/browse/" + encodeURIComponent(k); }
 
+/* ═══ ESCRIBIRLE AL TÉCNICO POR SLACK (2026-09-28) ══════════════════════════════════════
+   German: *"el equipo prefiere que le escriban a slack y no al ticket"*. Encaja con la
+   decisión del 23/09 de dejar el dashboard en sólo lectura sobre Jira: el empujón al técnico
+   —que es el trabajo central del CSM según Sonia— ahora tiene su canal propio y no pasa por
+   un comentario que el cliente podría ver.
+
+   🪤 EL NOMBRE DE JIRA NO COINCIDE CON EL DE SLACK. Matchear por texto exacto falla en 3 de 7:
+     Jira `ramon.urchipia`           → Slack "Ramón Urchipia"        (handle en minúscula vs nombre)
+     Jira `Josefina Martinet`        → Slack "Jose Martinet"         (nombre corto)
+     Jira `Ulises Mariano Melgarejo` → Slack "Ulises M. Melgarejo"   (inicial)
+   Por eso la clave es el **displayName de JIRA normalizado** (minúsculas, sin tildes, sin
+   puntos ni espacios) y el mapa se escribe a mano. **Los IDs salieron del conector de Slack,
+   ninguno inferido** — el de Lautaro coincide con el que ya estaba en CLAUDE.md. */
+const SLACK_TECNICO = {
+  "ramonurchipia":         "U09GDLD693P",   // Ramón Urchipia · Front-end Developer
+  "daianakovacs":          "U03EMMN18SW",   // Daiana Kovacs · Head of IDE
+  "nicolastorre":          "U01CVA0L4E6",   // Nicolas Torre · Head S&G
+  "josefinamartinet":      "U02UDDY0K44",   // Jose Martinet · UX/UI Designer | IDE
+  "ulisesmarianomelgarejo":"U07EJCMNGQ7",   // Ulises M. Melgarejo · Middleware/Backend
+  "germanchazarreta":      "U02EHUA4ND9",   // Germán Chazarreta · Analista de eCommerce
+  "lautaroramos":          "UA3FDV6NB"      // Lautaro Ramos · socio, líder técnico
+};
+const SLACK_YO = "U020JPXRVUY";             // German: no tiene sentido un botón para escribirse solo
+function jtSlackKey(n) {
+  return String(n || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z]/g, "");
+}
+function jtSlackId(n) { const id = SLACK_TECNICO[jtSlackKey(n)]; return id === SLACK_YO ? "" : (id || ""); }
+/* `app_redirect` abre el DM en la app de Slack (o en el navegador si no está instalada) sin
+   necesidad de saber el team id. Un `slack://` directo falla en quien no tenga la app. */
+function jtSlackUrl(id) { return "https://slack.com/app_redirect?channel=" + encodeURIComponent(id); }
+/* Botón de Slack junto al asignado. **Si no está en el mapa NO se inventa nada**: se muestra
+   el nombre a secas y el title dice por qué, que es más honesto que un link roto. */
+function jtSlackBtn(nombre, chico) {
+  const id = jtSlackId(nombre);
+  if (!id) return "";
+  return `<a href="${jtSlackUrl(id)}" target="_blank" rel="noopener" onclick="event.stopPropagation()"
+     title="Escribirle a ${escAttr(nombre)} por Slack — el equipo prefiere Slack antes que comentar el ticket"
+     style="display:inline-flex; align-items:center; gap:4px; font-size:${chico ? "9.5" : "10.5"}px; font-weight:700;
+     color:#4030C8; background:#F5F3FF; border:1px solid #ddd6fe; border-radius:999px;
+     padding:${chico ? "1px 6px" : "2px 8px"}; text-decoration:none; white-space:nowrap; margin-left:5px;">💬 Slack</a>`;
+}
+
 function csmPct(cons, cont) {
   if (cont == null || !(cont > 0)) return null;   // sin bolsa → no aplica, NO 0%
   if (cons == null) return null;
@@ -10840,7 +10907,7 @@ function jtFilaTicket(t, mostrar, gid) {
         ${pr.crit ? `<span style="display:inline-block; font-size:10px; font-weight:700; border-radius:9px; padding:1px 7px; background:#FEF2F2; color:#b91c1c; margin-left:4px;">${pr.ic} ${escAttr(pr.t)}</span>` : ""}
         <span style="margin-left:5px;">${bits.join(" · ")}</span>
       </div></td>
-    <td style="font-size:11.5px; color:#4b5563; white-space:nowrap;">${escAttr(t.a || "—")}</td>
+    <td style="font-size:11.5px; color:#4b5563; white-space:nowrap;">${escAttr(t.a || "—")}${jtSlackBtn(t.a, 1)}</td>
     ${mostrar === "quieto" ? `<td style="text-align:right; font-variant-numeric:tabular-nums; font-weight:700; color:${t.quieto >= 14 ? "#b91c1c" : "#b45309"};">${t.quieto} d</td>` : ""}
     <td style="text-align:right; white-space:nowrap; width:1%;">${acciones}</td>
   </tr>`;
@@ -11091,12 +11158,12 @@ async function renderRadarSoporte() {
   const gob = tecs.length ? `<div style="border:1px solid #C7BDFF; border-radius:11px; background:#fff; overflow:hidden; margin-bottom:11px;">
       <div style="padding:10px 14px; background:#F7F5FF; color:#4030C8; border-bottom:1px solid #C7BDFF;">
         <div style="font-size:13px; font-weight:800;">👷 Quién tiene qué</div>
-        <div style="font-size:11px; opacity:.85; margin-top:3px; line-height:1.5;">Sonia te pidió exigir que muevan los estados. Esto es dónde poner esa conversación, no un ranking de personas.</div>
+        <div style="font-size:11px; opacity:.85; margin-top:3px; line-height:1.5;">Sonia te pidió exigir que muevan los estados. Esto es dónde poner esa conversación, no un ranking de personas. <b>El equipo prefiere Slack antes que un comentario en el ticket</b> — 💬 abre el DM.</div>
       </div>
       <table class="cue-table" style="font-size:12px;"><thead><tr>
         <th>Técnico</th><th style="text-align:right;">Abiertos</th><th style="text-align:right;">Dormidos</th><th style="text-align:right;">Vencidos</th><th style="text-align:right;">Críticos</th></tr></thead>
       <tbody>${tecs.map(g => `<tr>
-        <td style="font-weight:600;">${escAttr(g.tec)}</td>
+        <td style="font-weight:600; white-space:nowrap;">${escAttr(g.tec)}${jtSlackBtn(g.tec)}</td>
         <td style="text-align:right;">${g.n}</td>
         <td style="text-align:right; ${g.dormidos ? "color:#b45309; font-weight:700;" : "color:#d1d5db;"}">${g.dormidos || "—"}</td>
         <td style="text-align:right; ${g.vencidos ? "color:#b91c1c; font-weight:700;" : "color:#d1d5db;"}">${g.vencidos || "—"}</td>
