@@ -190,6 +190,28 @@ async function doAbiertos(env, args) {
   return { ts: new Date().toISOString(), proyectos: keys, truncado: !!token, t: out };
 }
 
+/* ── FILA ÚNICA: tickets sin asignar (2026-09-30) ───────────────────────────────────────
+   Lo que entra sin dueño es el **primer anillo de prioridad del CSM** según la capacitación
+   de Sonia: corre SLA y no es de nadie hasta que alguien lo toma.
+
+   🔓 **Esta op NO usa la lista blanca de proyectos, y es seguro.** La guarda que importa no
+   es la lista: es que **el navegador nunca elige el JQL**. Acá el JQL está clavado en el
+   código y lo único que llega de afuera es un tope de resultados. Por eso puede cubrir TODOS
+   los portales de soporte —incluidos los de Seba y Fernanda, que nunca se mapearon— sin
+   convertir el proxy en una llave maestra.
+
+   🪤 **`assignee IS EMPTY` a secas devuelve 2.548 issues** (medido el 30/09): la mayoría es
+   ruido de proyectos que nadie mira y de tipos que no son service desk. Con
+   `projectType = service_desk` **y** una ventana de 120 días quedan **4**, que sí es una fila
+   accionable. Un bloque "arriba de todo" con 2.548 filas no se mira nunca. */
+async function doSinAsignar(env, args) {
+  const dias = Math.min(365, Math.max(7, Number((args && args.dias) || 120)));
+  const jql = "assignee IS EMPTY AND statusCategory != Done AND projectType = service_desk"
+    + " AND created > -" + dias + "d ORDER BY created DESC";
+  const r = await jiraFetch(env, "/rest/api/3/search/jql", { jql: jql, fields: FIELDS, maxResults: 100 });
+  return { ts: new Date().toISOString(), dias: dias, t: (r.issues || []).map(plano) };
+}
+
 /* ── Nota INTERNA en un ticket (2026-09-24) ─────────────────────────────────────────────
    Lo que German aprueba en el dashboard se publica acá como comentario interno de JSM. Tres
    guardas que no se negocian:
@@ -249,6 +271,7 @@ export async function onRequestPost(context) {
     const parsed = await request.json().catch(() => ({}));
     const op = parsed.op || "";
     if (op === "abiertos") return json(await doAbiertos(env, parsed.args || {}), 200);
+    if (op === "sin_asignar") return json(await doSinAsignar(env, parsed.args || {}), 200);
     if (op === "nota_interna") return json(await doNotaInterna(env, parsed.args || {}), 200);
     return json({ error: "Operación de Jira no soportada: " + op }, 400);
   } catch (e) {
