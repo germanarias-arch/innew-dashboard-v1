@@ -10434,14 +10434,24 @@ const JT_PRIO = {
 /* Estados literales de Jira. 🪤 Los 8 caen en `statusCategory = indeterminate` y
    `Modelo de Solución` hasta trae el ícono de CERRADO: agrupar por categoría no sirve,
    hay que ir por el nombre. `cierra` = suena a terminado y no lo está. */
+/* 🪤 **El mapa tenía 8 estados y Jira usa al menos 10** (medido el 2026-09-30 sobre los 25
+   proyectos). Faltaban `Presupuesto Enviado` y `Pruebas` —sí, existe `Prueba` Y `Pruebas`,
+   ids distintos (10239 y 10020)— así que esos tickets caían al gris por defecto de `jtEst()`
+   y quedaban **fuera del grupo "suenan a terminado"**: el radar no los levantaba nunca.
+   Un mapa incompleto no falla ruidosamente, falla omitiendo. Si aparece un estado nuevo en
+   Jira, acá hay que sumarlo.
+   `presu` = el ticket está cotizado o cotizándose: su estimación es plata esperando un OK
+   del cliente, no trabajo que ya se pueda ejecutar. */
 const JT_EST = {
   "En Curso":               { c: "#3730A3", bg: "#EEF2FF" },
   "En Curso - Evolutivo":   { c: "#6d28d9", bg: "#F5F3FF" },
   "Prueba":                 { c: "#047857", bg: "#ECFDF5", cierra: 1 },
+  "Pruebas":                { c: "#047857", bg: "#ECFDF5", cierra: 1 },
   "Prueba Aprobada":        { c: "#047857", bg: "#ECFDF5", cierra: 1 },
   "Modelo de Solución":     { c: "#374151", bg: "#F3F4F6", cierra: 1 },
   "En espera del cliente":  { c: "#9a3412", bg: "#FFF7ED", cliente: 1 },
-  "Preparando Presupuesto": { c: "#854D0E", bg: "#FEF9C3", cliente: 1 },
+  "Preparando Presupuesto": { c: "#854D0E", bg: "#FEF9C3", cliente: 1, presu: 1 },
+  "Presupuesto Enviado":    { c: "#854D0E", bg: "#FEF9C3", cliente: 1, presu: 1 },
   "Pausado":                { c: "#b91c1c", bg: "#FEF2F2", frena: 1 }
 };
 function jtEst(s) { return JT_EST[s] || { c: "#6b7280", bg: "#f3f4f6" }; }
@@ -10519,7 +10529,12 @@ function jtArmar(lista, ts, fuente) {
          ticket al que nadie le contestó. Viene del proxy; el snapshot viejo no la trae y ahí
          queda en null, que la tabla muestra como "—" en vez de inventar la fecha de `updated`. */
       resp: t.lc || null, respQuien: t.la || "", nCom: Number(t.nc) || 0,
-      respDias: jtDias(t.lc)
+      respDias: jtDias(t.lc),
+      /* Horas. Jira las da en segundos; acá se convierten UNA vez. `null` se preserva a
+         propósito — "sin estimar" no es "cero horas", y contarlo como cero miente hacia abajo
+         justo en el número que se usa para decidir si la bolsa alcanza. */
+      hEst: t.eo == null ? null : Number(t.eo) / 3600,   // presupuesto original
+      hRest: t.er == null ? null : Number(t.er) / 3600   // restante por ejecutar
     };
     (t.m ? admin : real).push(x);
   });
@@ -10814,6 +10829,48 @@ function renderCsm() {
      bien atendida?", que NO es lo mismo que "¿consumió su bolsa?" — una cuenta puede estar al
      40% de las horas y tener un ticket que impide comprar parado hace una semana.
      🚨 "Sin medir" NO se pinta de verde: no saber nunca es una buena noticia. */
+  /* ═══ HORAS (2026-09-30, pedido de German) ════════════════════════════════════════════
+     Dos números que contestan preguntas distintas y NO se suman entre sí:
+     · **Por ejecutar** = `timeestimate` (lo que queda) de los tickets que ya están aprobados.
+       Es capacidad: cuánto de la bolsa se va a comer lo que ya está en cola.
+     · **Presupuestado** = `timeoriginalestimate` de los tickets en `Preparando Presupuesto`
+       y `Presupuesto Enviado`. Es plata esperando un OK del cliente; todavía no es trabajo
+       ejecutable, por eso va aparte y no engrosa "por ejecutar".
+     🚨 Los tickets **sin estimar se cuentan y se muestran**, no se asumen en cero. Un total
+     que ignora en silencio los que no tienen estimación se lee como completo y miente hacia
+     abajo — mismo criterio que `csmPct` con las cuentas sin bolsa. */
+  const csmHoras = (jt) => {
+    if (!jt || (jt.estado !== "ok" && jt.estado !== "vacio")) return null;
+    const r = { rest: 0, presu: 0, sinEst: 0, nPresu: 0 };
+    jt.real.forEach(t => {
+      const e = jtEst(t.s);
+      if (e.presu) {
+        r.nPresu++;
+        if (t.hEst != null) r.presu += t.hEst; else r.sinEst++;
+        return;
+      }
+      if (t.hRest != null) r.rest += t.hRest;
+      else if (t.hEst != null) r.rest += t.hEst;   // con presupuesto pero sin restante: vale el original
+      else r.sinEst++;
+    });
+    return r;
+  };
+  const csmH = n => (n == null ? "—" : (Math.round(n * 10) / 10).toLocaleString("es-AR") + " h");
+  const horasCell = f => {
+    const h = f.horas;
+    if (!h) return `<span style="color:#d1d5db;">—</span>`;
+    if (!h.rest && !h.presu && !h.sinEst) return `<span style="font-size:11px; color:#cbd5e1;">sin cola</span>`;
+    const partes = [];
+    partes.push(`<b title="Trabajo aprobado que falta ejecutar. Esto es lo que va a consumir la bolsa." style="color:${h.rest ? "#1f2937" : "#cbd5e1"};">${h.rest ? csmH(h.rest) : "—"}</b>`);
+    if (h.presu) partes.push(`<div style="font-size:10px; color:#854D0E; font-weight:700;"
+        title="${h.nPresu} ticket(s) cotizados esperando el OK del cliente. Si lo aprueban, entran a facturar; todavía no son trabajo ejecutable.">+${csmH(h.presu)} presup.</div>`);
+    if (h.sinEst) partes.push(`<div style="font-size:9.5px; color:#9ca3af;"
+        title="Tickets abiertos sin estimación cargada en Jira. No se cuentan como cero: el total de arriba está incompleto en esa medida.">${h.sinEst} sin estimar</div>`);
+    return partes.join("");
+  };
+
+  vis.forEach(f => { f.horas = csmHoras(f.sal.jt); });
+
   const saludCell = f => {
     const s = f.sal, col = JT_SALUD_COL[s.nivel] || JT_SALUD_COL.sin;
     if (s.nivel === "sin") return `<span title="${escAttr(f.keys ? "El task jira-radar-soporte todavía no escribió el detalle de esta cuenta." : "Esta cuenta no tiene portal de soporte en Jira — está en IDP o no tiene S&G. No es deuda.")}" style="font-size:11px; color:#cbd5e1; cursor:help;">—</span>`;
@@ -10826,8 +10883,61 @@ function renderCsm() {
       + (detalle.length ? `<div style="font-size:10px; color:#6b7280; margin-top:2px;">${detalle.join(" · ")}</div>` : "");
   };
 
+  /* ═══ FILA DESPLEGABLE (2026-09-30, pedido de German) ══════════════════════════════════
+     "poder ver el número y que tenga el link que dirige a ese ticket". El contador de la
+     columna sigue abriendo la lista VIVA en Jira —es otra pregunta, y sirve—; el ▸ abre acá
+     adentro el detalle, con cada clave enlazada a SU ticket.
+     Se re-renderiza la tabla entera al abrir/cerrar: no hay inputs en esta vista, así que no
+     hay foco que perder (distinto del buscador del Radar, que sí vive fuera del nodo). */
+  const detalleFila = (f, cols) => {
+    const jt = f.sal.jt;
+    const ord = jt.real.slice().sort((a, b) => {
+      const ca = jtPrio(a.p).crit ? 0 : 1, cb = jtPrio(b.p).crit ? 0 : 1;
+      return ca - cb || (b.quieto || 0) - (a.quieto || 0);
+    });
+    const linea = (t, adm) => {
+      const est = jtEst(t.s), pr = jtPrio(t.p);
+      const bits = [];
+      if (t.quieto != null) bits.push(t.quieto === 0 ? "movido hoy" : t.quieto + " d quieto");
+      if (t.venceEn != null && t.venceEn < 0) bits.push(`<b style="color:#b91c1c;">venció hace ${-t.venceEn} d</b>`);
+      const hs = est.presu
+        ? (t.hEst != null ? `<span style="color:#854D0E; font-weight:700;" title="Presupuestado, esperando el OK del cliente">${csmH(t.hEst)} presup.</span>` : `<span style="color:#9ca3af;">sin cotizar</span>`)
+        : (t.hRest != null ? `<span title="Horas que faltan para terminarlo">${csmH(t.hRest)}</span>` : `<span style="color:#cbd5e1;" title="Sin estimación cargada en Jira">sin estimar</span>`);
+      return `<tr${adm ? ' style="opacity:.6;"' : ""}>
+        <td style="white-space:nowrap; padding:4px 8px;"><a href="${jtLink(t.k)}" target="_blank" rel="noopener"
+           title="Abrir ${escAttr(t.k)} en Jira"
+           style="font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#4030C8; font-weight:700; text-decoration:none;">${escAttr(t.k)} ↗</a></td>
+        <td style="font-size:11.5px; padding:4px 8px;">${escAttr(t.r)}${adm ? ` <span style="font-size:9px; font-weight:700; color:#6b7280; background:#F3F4F6; border-radius:6px; padding:1px 5px;">mensual</span>` : ""}</td>
+        <td style="padding:4px 8px;"><span style="display:inline-block; font-size:9.5px; font-weight:700; border-radius:9px; padding:1px 7px; background:${est.bg}; color:${est.c}; white-space:nowrap;">${escAttr(t.s)}</span></td>
+        <td style="font-size:10.5px; padding:4px 8px; white-space:nowrap; ${pr.crit ? "color:#b91c1c; font-weight:700;" : "color:#6b7280;"}">${pr.ic} ${escAttr(pr.t)}</td>
+        <td style="font-size:10.5px; color:#6b7280; padding:4px 8px; white-space:nowrap;">${escAttr(t.a || "—")}${jtSlackBtn(t.a, 1)}</td>
+        <td style="font-size:10.5px; color:#6b7280; padding:4px 8px; white-space:nowrap;">${bits.join(" · ")}</td>
+        <td style="text-align:right; font-size:11px; padding:4px 8px; white-space:nowrap; font-variant-numeric:tabular-nums;">${hs}</td>
+      </tr>`;
+    };
+    const h = f.horas || { rest: 0, presu: 0, sinEst: 0, nPresu: 0 };
+    const vacio = !ord.length && !jt.admin.length;
+    return `<tr><td colspan="${cols}" style="padding:0; background:#FAFAFD; border-top:0;">
+      <div style="padding:10px 14px 12px;">
+        ${vacio
+          ? `<div style="font-size:12px; color:#9ca3af;">Esta cuenta no tiene tickets abiertos.</div>`
+          : `<table style="width:100%; border-collapse:collapse;"><tbody>
+               ${ord.map(t => linea(t, 0)).join("")}
+               ${jt.admin.map(t => linea(t, 1)).join("")}
+             </tbody></table>
+             <div style="margin-top:9px; padding-top:8px; border-top:1px solid #e8e8ec; font-size:11.5px; color:#4b5563; display:flex; gap:16px; flex-wrap:wrap;">
+               <span><b>${csmH(h.rest)}</b> por ejecutar</span>
+               ${h.presu ? `<span style="color:#854D0E;"><b>${csmH(h.presu)}</b> presupuestado · ${h.nPresu} ticket(s) esperando OK</span>` : ""}
+               ${h.sinEst ? `<span style="color:#9ca3af;">${h.sinEst} sin estimar — el total de arriba no los incluye</span>` : ""}
+               ${f.cont != null && h.rest ? `<span title="Horas ya consumidas del mes + lo que falta ejecutar, contra la bolsa contratada.">Proyectado sobre la bolsa: <b style="color:${(f.cons || 0) + h.rest > f.cont ? "#b91c1c" : "#1f2937"};">${csmH((f.cons || 0) + h.rest)}</b> de ${f.cont} h</span>` : ""}
+             </div>`}
+      </div></td></tr>`;
+  };
+
   const cuerpo = vis.map(f => {
     const t = csmTono(f.pct, mesPct);
+    const abierto = !!(window.__csmOpen || {})[f.id];
+    const puedeAbrir = f.sal.jt.estado === "ok" || f.sal.jt.estado === "vacio";
     const nombre = f.keys
       ? `<a href="${csmPortalUrl(f.keys)}" target="_blank" rel="noopener"
            title="Abrir el portal ${f.keys.join(" + ")} en Jira"
@@ -10839,21 +10949,25 @@ function renderCsm() {
       <td style="text-align:right;">${f.cont != null ? f.cont : `<span style="color:#d1d5db;">—</span>`}</td>
       <td style="text-align:right;">${f.cons != null ? f.cons.toFixed(1) : `<span style="color:#d1d5db;">—</span>`}</td>
       <td style="min-width:120px;">${barraPct(f)}</td>
-      <td style="text-align:right;">${num(f.abReal != null ? f.abReal : f.ab, null, f, false)}${f.abReal != null && f.sal.jt.admin.length
+      <td style="text-align:right; white-space:nowrap;">${puedeAbrir
+        ? `<button onclick="csmToggle('${escAttr(String(f.id))}')" title="${abierto ? "Cerrar" : "Ver"} el detalle de los tickets de ${escAttr(f.cli)}"
+             style="font-family:inherit; cursor:pointer; border:0; background:transparent; color:#4030C8; font-size:11px; padding:0 4px 0 0;">${abierto ? "▾" : "▸"}</button>` : ""}${num(f.abReal != null ? f.abReal : f.ab, null, f, false)}${f.abReal != null && f.sal.jt.admin.length
         ? `<div style="font-size:9px; color:#9ca3af;" title="Además tenés ${f.sal.jt.admin.length} contenedor(es) de worklog mensual (Reuniones &amp; minutas, Gestión y reportería). No son cola: por eso no se suman.">+${f.sal.jt.admin.length} adm.</div>` : ""}</td>
       <td style="text-align:right;">${num(f.pr, f.pr ? "#b91c1c" : null, f, true)}</td>
+      <td style="text-align:right; line-height:1.3;">${horasCell(f)}</td>
       <td>${saludCell(f)}</td>
       <td style="font-size:11px; color:#9ca3af;">${f.medida ? "" : "sin medir"}</td>
-    </tr>`;
+    </tr>` + (abierto ? detalleFila(f, 10) : "");
   }).join("");
 
   host.innerHTML = barra + kpis + `<div style="overflow-x:auto;"><table class="cue-table">
       <thead><tr>
         <th style="position:sticky; left:0; background:#fafafa; min-width:180px;">Cuenta</th>
         <th>CSM</th><th style="text-align:right;">Bolsa h</th><th style="text-align:right;">Consumidas</th>
-        <th>% de la bolsa</th><th style="text-align:right;" title="Tickets de CLIENTE. No incluye los contenedores de worklog mensuales.">Tickets</th><th style="text-align:right;">Prioritarios</th>
+        <th>% de la bolsa</th><th style="text-align:right;" title="Tickets de CLIENTE. No incluye los contenedores de worklog mensuales. El ▸ abre el detalle con el link a cada ticket.">Tickets</th><th style="text-align:right;">Prioritarios</th>
+        <th style="text-align:right;" title="Por ejecutar: horas que faltan de los tickets aprobados — es lo que va a consumir la bolsa. Presup.: horas cotizadas esperando el OK del cliente, todavía no ejecutables.">Horas</th>
         <th title="Cómo está la cola de soporte: críticos, vencidos y dormidos. No es lo mismo que el consumo de la bolsa.">Salud de la cola</th><th></th>
-      </tr></thead><tbody>${cuerpo || `<tr><td colspan="9" style="padding:18px; color:#9ca3af;">Sin cuentas para este filtro.</td></tr>`}</tbody></table></div>
+      </tr></thead><tbody>${cuerpo || `<tr><td colspan="10" style="padding:18px; color:#9ca3af;">Sin cuentas para este filtro.</td></tr>`}</tbody></table></div>
     <div class="small" style="margin-top:10px; font-style:italic; color:#888;">
       <b>Clic en el nombre</b> abre el portal de esa cuenta en Jira; <b>clic en un número</b> abre la lista de esos tickets.
       La columna <b>Tickets</b> cuenta sólo trabajo de cliente: tus contenedores de worklog mensuales van aparte como <b>+N adm.</b>,
@@ -10864,7 +10978,18 @@ function renderCsm() {
       Los portales de Innew no usan las prioridades estándar de Jira: filtrar por “Highest” da cero en las 24 cuentas.
       <b>s/bolsa</b> = la cuenta tiene portal pero no tiene horas contratadas, así que el % no aplica.
       <b>Sin medir</b> = no tiene portal en Jira (está en IDP o no tiene S&amp;G) — no es deuda.
+      <b>▸ en Tickets</b> despliega el detalle: cada ticket con su link directo a Jira, estado, prioridad, asignado y horas.
+      <b>Horas · por ejecutar</b> es el tiempo restante de los tickets ya aprobados —lo que va a consumir la bolsa—;
+      <b>presup.</b> son horas cotizadas esperando el OK del cliente, que todavía <i>no</i> son trabajo ejecutable y por eso van aparte.
+      Los tickets <b>sin estimación en Jira no se cuentan como cero</b>: se informan al lado para que sepas cuánto le falta al total.
     </div>`;
+}
+/* Abrir/cerrar el detalle de una cuenta. Vive en `window.__csmOpen` (memoria de la sesión, no
+   se persiste: es estado de lectura, no trabajo del usuario). */
+function csmToggle(id) {
+  const o = window.__csmOpen || (window.__csmOpen = {});
+  if (o[id]) delete o[id]; else o[id] = 1;
+  renderCsm();
 }
 function csmFiltro(v) { window.__csmFiltro = v; renderCsm(); }
 function rsopCsm(v) { window.__rsopCsm = v; renderRadarSoporte(); }
