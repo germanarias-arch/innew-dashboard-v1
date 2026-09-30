@@ -10378,7 +10378,24 @@ const JIRA_PROYECTO = {
   "9578550448": ["VALENET"], "7220299595": ["PFDP"], "47195963147": ["GUATA", "GUATAFS"],
   "43650305408": ["PRTL"], "43488762992": ["TRAMONTINA"], "57061234101": ["ANTUAN"],
   "7304107336": ["CORMORAN"], "43496453264": ["PEC"], "43833762916": ["PST"],
-  "18314104338": ["PSA"]
+  "18314104338": ["PSA"],
+  /* --- carteras de Seba y Fernanda (2026-09-30) -------------------------------------
+     Se sumaron cuando la Fila Única empezó a traer tickets de portales que nunca se
+     habían mapeado y salían como "portal sin mapear". La clave de cada una NO se dedujo:
+     se leyó el **nombre real del proyecto en Jira** (`PORTAL - THOMSON REUTERS ARG`,
+     `PORTAL - MUECAS`, `PORTAL - FARMALIFE`, `PORTAL - INELRO`,
+     `PORTAL - Muñoz Marchesi DALA`) y recién ahí se cruzó con la cartera.
+     🪤 **Y por eso mismo `PDIS` NO está acá.** Por la clave parecía Grupo **Dis**al —cuenta
+     de German— y su nombre real es **`PORTAL - DISBYTE`**, una cuenta que no está en
+     ninguna cartera. Mapearla por la sigla habría metido tickets ajenos adentro de una
+     cuenta propia. Mismo caso que `PRTL` = SBS y `TRAMONTINA` = Atlantic.
+     Quedan sin mapear a propósito: `CROM` (Cromosol) y `PDIS` (Disbyte) —no están en
+     ninguna cartera—, `SELU` (Ex Cliente) y los internos `INNEW`, `PORTALINN`, `DEMO`. */
+  "40345001854": ["PTRA"],        // Thomson Reuters — Seba
+  "46717824045": ["MUECAS"],      // Müecas — Seba
+  "43833755819": ["FARMALIFE"],   // Farmalife — Fernanda
+  "43234452025": ["INELRO"],      // Inelro — Fernanda
+  "43643727248": ["MMDALA"]       // Muñoz Marchesi — Fernanda
 };
 function csmKeys(id) { return JIRA_PROYECTO[String(id)] || null; }
 
