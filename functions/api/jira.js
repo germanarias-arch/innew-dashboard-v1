@@ -56,7 +56,28 @@ PROY_GERMAN.concat(PROY_JENNY).forEach(k => { PROY_OK[k] = 1; });
 /* Campos mínimos. 🪤 El payload de Jira pesa ~2 KB por issue aunque pidas poco: el objeto
    `project` viene entero y repetido en cada uno. Pedir de más acá se paga en cada apertura
    de la vista, así que se piden 8 campos y se devuelve un objeto plano y chico. */
-const FIELDS = ["key", "summary", "status", "priority", "assignee", "created", "updated", "duedate"];
+/* ── `comment` (2026-09-28) ─────────────────────────────────────────────────────────────
+   Se suma para poder mostrar la **fecha de última respuesta**, que NO es `updated`: cargar
+   horas, editar un campo o moverlo de estado tocan `updated` sin que nadie le haya contestado
+   nada al cliente. Eran dos cosas distintas presentadas como una.
+   ✅ **Por qué se puede confiar en el último elemento del array.** Medido contra el Jira de
+   Innew el 28/09: un ticket con 24 comentarios volvió `{startAt: 4, total: 24, maxResults: 20}`
+   — o sea que Jira **pagina hasta el final**, no desde el principio. El último del array es
+   siempre el más nuevo. (Si algún día devolviera `startAt: 0` con `total > maxResults`, el
+   último dejaría de ser el más nuevo y esta columna mentiría en los tickets más conversados,
+   justo los que más importan: por eso queda escrito de dónde sale el dato.)
+   💰 El costo está acá: el body de cada comentario viaja entero desde Jira aunque se descarte
+   al instante (~93 KB medidos en 6 proyectos). Se paga en el hop Jira→Worker, una sola vez por
+   apertura; al navegador sigue bajando el mismo objeto plano y chico. */
+/* ── Estimaciones (2026-09-30) ──────────────────────────────────────────────────────────
+   `timeoriginalestimate` = el presupuesto en horas que se le cotizó al cliente.
+   `timeestimate` = lo que queda por ejecutar (baja con cada worklog).
+   ✅ Medido contra el Jira de Innew el 30/09: están cargados en buena parte de los tickets
+   de las dos carteras, así que el número es real y no una estimación nuestra. Los que vienen
+   en `null` NO se cuentan como 0 — se informan aparte como "sin estimar", misma lógica que
+   `csmPct` con las cuentas sin bolsa: un vacío contado como cero miente hacia abajo. */
+const FIELDS = ["key", "summary", "status", "priority", "assignee", "created", "updated", "duedate", "comment",
+                "timeoriginalestimate", "timeestimate"];
 
 function json(obj, status) {
   return new Response(JSON.stringify(obj), {
@@ -112,8 +133,20 @@ function esAdmin(summary) {
 }
 function plano(it) {
   const f = (it && it.fields) || {};
+  /* Último comentario. Se descarta el cuerpo a propósito: lo que hace falta acá es *cuándo* y
+     *quién*, y arrastrar el texto del cliente hasta el navegador es superficie de datos que la
+     vista no usa. `nc` (cantidad) permite distinguir "nadie escribió nunca" de "hace mucho". */
+  const cs = (f.comment && Array.isArray(f.comment.comments)) ? f.comment.comments : [];
+  const ult = cs.length ? cs[cs.length - 1] : null;
   return {
     k: it.key,
+    lc: (ult && ult.created) ? String(ult.created).slice(0, 10) : null,   // fecha última respuesta
+    la: (ult && ult.author && ult.author.displayName) || "",              // quién respondió
+    nc: (f.comment && Number(f.comment.total)) || 0,                      // cuántas respuestas hay
+    /* Segundos, tal como los da Jira. La conversión a horas se hace en el front, una sola vez.
+       `null` se preserva: "no estimado" ≠ "cero horas". */
+    eo: (f.timeoriginalestimate == null) ? null : Number(f.timeoriginalestimate),  // presupuesto original
+    er: (f.timeestimate == null) ? null : Number(f.timeestimate),                  // restante por ejecutar
     r: String(f.summary || "").slice(0, 90),
     s: (f.status && f.status.name) || "",                    // nombre LITERAL: los 8 estados abiertos
     p: f.priority ? Number(f.priority.id) : null,            // ID, no nombre: los nombres llevan emoji
