@@ -10479,6 +10479,51 @@ function jtDias(iso) {
 let JT_LIVE = null;          // { ok, ts, porCo: {companyId: [...]}, error }
 let JT_LIVE_PROM = null;
 
+/* ═══ FILA ÚNICA · tickets sin asignar (2026-09-30) ═══════════════════════════════════════
+   El primer anillo de prioridad del CSM según Sonia: lo que entra sin dueño corre SLA y no
+   es de nadie hasta que alguien lo toma.
+   🔀 **Va por una op propia, no por `abiertos`**, porque cubre TODOS los portales de soporte
+   —incluidos los de Seba y Fernanda, que nunca se mapearon a companies— mientras que
+   `abiertos` está acotado a las 25 claves conocidas. Sin esto, PTRA-176 (Thomson Reuters)
+   sería invisible: justamente el caso que German trajo. */
+let JT_SIN = null, JT_SIN_PROM = null;
+async function jtCargarSinAsignar(forzar) {
+  if (!forzar && JT_SIN_PROM) return JT_SIN_PROM;
+  JT_SIN_PROM = (async () => {
+    if (typeof WEB_MODE !== "undefined" && !WEB_MODE) { JT_SIN = { ok: false, error: "", t: [] }; return JT_SIN; }
+    try {
+      const r = await fetch("/api/jira", {
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
+        body: JSON.stringify({ op: "sin_asignar", args: {} })
+      });
+      if (r.status === 401) { location.href = "/login.html"; throw new Error("Sesión expirada"); }
+      const js = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error((js && js.error) || ("Error del backend (" + r.status + ")"));
+      JT_SIN = { ok: true, ts: js.ts || null, dias: js.dias || 120, t: js.t || [], error: "" };
+    } catch (e) {
+      JT_SIN = { ok: false, ts: null, t: [], error: e.message || String(e) };
+    }
+    return JT_SIN;
+  })();
+  return JT_SIN_PROM;
+}
+
+/* Slack de los CSM, para pedirles que tomen un ticket huérfano. La clave es el **value** del
+   enum `csm_asignado` de HubSpot, no el label: Jennifer se guarda como `Jenny`.
+   🚫 `Ale Berdaguez (FS)`, `Otro` y `Sin CSM asiganado` NO están: de los dos primeros no
+   tengo el id y del tercero no hay a quién escribirle. Sin id no se dibuja botón — mejor
+   sin botón que un DM a la persona equivocada. */
+const CSM_SLACK = {
+  "German Arias":    "U020JPXRVUY",
+  "Jenny":           "U03GBCMS54G",
+  "Seba Pavlotsky":  "U08GJV2783H",
+  "Fernanda Varela": "U014FKY15L0"
+};
+const CSM_NOMBRE = {
+  "German Arias": "German", "Jenny": "Jenny",
+  "Seba Pavlotsky": "Seba", "Fernanda Varela": "Fernanda"
+};
+
 /* Proyecto → companyId, invirtiendo JIRA_PROYECTO. 🪤 Guataporá tiene DOS claves que apuntan
    a la misma cuenta (`GUATA` + `GUATAFS`), así que el inverso es muchos-a-uno y hay que
    recorrer el array, no tomar el primero. */
@@ -10996,10 +11041,122 @@ function rsopCsm(v) { window.__rsopCsm = v; renderRadarSoporte(); }
 /* Vuelve a preguntarle a Jira y repinta las dos vistas que dependen del dato. */
 function jtRefrescar() {
   JT_LIVE = null; JT_LIVE_PROM = null;
+  JT_SIN = null; JT_SIN_PROM = null; jtCargarSinAsignar(true).catch(() => {});
   jtCargarVivo(true).then(() => {
     if (document.getElementById("rsop-body") && document.getElementById("clitab-rsop") && document.getElementById("clitab-rsop").style.display !== "none") renderRadarSoporte();
     if (document.getElementById("clitab-csm") && document.getElementById("clitab-csm").style.display !== "none") renderCsm();
   }).catch(() => {});
+}
+
+/* ═══ BLOQUE FILA ÚNICA ═══════════════════════════════════════════════════════════════════
+   Va ARRIBA DE TODO y **no lo filtran los chips de cartera**: un ticket sin dueño no es de
+   nadie, así que esconderlo porque "no es de tu cartera" es exactamente el error que este
+   bloque viene a evitar. */
+const FA_REG = {};   // clave de ticket → datos, para que el botón no tenga que serializar
+
+/* Clave de proyecto → cuenta + CSM. Devuelve `{cli, csm}` con `cli` vacío cuando el portal no
+   está mapeado (Seba y Fernanda nunca se mapearon). **No se adivina la cuenta por el nombre
+   del proyecto**: `PRTL` es SBS y `TRAMONTINA` es Atlantic — inferir por texto acá sería
+   volver a pisar la trampa del mapa de Jira. */
+function faCuentaDe(key) {
+  const proy = String(key || "").split("-")[0];
+  const coId = jtCoPorProyecto()[proy];
+  if (!coId) return { cli: "", csm: "", proy: proy };
+  const co = (window.__cuentasData || []).filter(c => String(c.id) === String(coId))[0];
+  const p = (co && co.properties) || {};
+  return { cli: p.name || "", csm: (p.csm_asignado || "").trim(), proy: proy, coId: coId };
+}
+
+/* El pedido por Slack. ⚠️ **El dashboard NO puede mandar el mensaje**: su proxy sólo habla con
+   HubSpot y Jira. Así que hace lo mismo que "Derivar" en Chat web — deja el texto listo en el
+   portapapeles y abre el DM para que German pegue y mande. Prometer un envío que no existe
+   sería peor que pedirle dos clics. */
+function faPedir(k) {
+  const d = FA_REG[k]; if (!d) return;
+  const id = CSM_SLACK[d.csm]; if (!id) return;
+  const nom = CSM_NOMBRE[d.csm] || d.csm;
+  const txt = `Hola ${nom}, el ticket ${k}${d.cli ? " de " + d.cli : ""} está sin asignar`
+    + (d.edad != null ? ` desde hace ${d.edad} día${d.edad === 1 ? "" : "s"}` : "")
+    + ` y ya corre SLA.\n\n"${d.r}"\n\n¿Lo tomás vos o me decís a quién se lo asigno?\n${jtLink(k)}`;
+  /* 🚨 El `window.open` va **sincrónico**, dentro del clic. Si se lo mete en el `.then()` del
+     portapapeles, para el navegador ya no es una ventana abierta por el usuario y la bloquea
+     como popup: el botón quedaría copiando en silencio sin abrir nada. El copiado sí puede
+     resolver después — lo único que espera es el cartelito. */
+  window.open(jtSlackUrl(id), "_blank", "noopener");
+  try {
+    const p = navigator.clipboard.writeText(txt);
+    if (p && p.then) p.then(() => faAviso(k, "✓ pedido copiado — pegalo en Slack"))
+                     .catch(() => faAviso(k, "no pude copiar: escribile a mano"));
+    else faAviso(k, "✓ pedido copiado — pegalo en Slack");
+  } catch (e) { faAviso(k, "no pude copiar: escribile a mano"); }
+}
+/* El nodo se busca en CADA aviso: si hay un render en el medio, la referencia guardada apunta
+   a un nodo muerto (trampa del 18/09 y del 22/09). */
+function faAviso(k, msg) {
+  const n = document.getElementById("fa-av-" + k);
+  if (n) { n.textContent = msg; setTimeout(() => { const m = document.getElementById("fa-av-" + k); if (m) m.textContent = ""; }, 4000); }
+}
+
+function faBloqueHtml() {
+  const S = JT_SIN;
+  if (!S) return `<div style="border:1px solid #e8e8ec; border-radius:11px; background:#fff; padding:11px 14px; margin-bottom:12px; font-size:12.5px; color:#9ca3af;">Buscando tickets sin asignar…</div>`;
+  if (!S.ok) {
+    if (!S.error) return "";   // Cowork: no hay backend, no se promete nada
+    return `<div style="border:1px solid #FECACA; background:#FEF2F2; border-radius:11px; padding:11px 14px; margin-bottom:12px; font-size:12.5px; color:#b91c1c;">
+      <b>No pude leer la fila única.</b>
+      <div style="margin-top:6px; padding:8px 10px; background:#fff; border:1px solid #FECACA; border-radius:8px;
+           font-family:ui-monospace,Menlo,monospace; font-size:11px; white-space:pre-wrap; word-break:break-word;
+           max-height:160px; overflow:auto; user-select:text;">${escAttr(S.error)}</div></div>`;
+  }
+  const t = (S.t || []).filter(x => !x.m);   // los contenedores de worklog no son cola
+  if (!t.length) return `<div style="border:1px solid #A7F3D0; background:#ECFDF5; border-radius:11px; padding:11px 14px; margin-bottom:12px; font-size:12.5px; color:#047857;">
+      ✓ <b>Fila única vacía.</b> No hay tickets sin asignar en ningún portal de soporte de los últimos ${S.dias} días.</div>`;
+
+  const filas = t.map(x => {
+    const edad = jtDias(x.c), quieto = jtDias(x.u);
+    const c = faCuentaDe(x.k);
+    const pr = jtPrio(x.p), est = jtEst(x.s);
+    FA_REG[x.k] = { cli: c.cli, csm: c.csm, edad: edad, r: x.r };
+    const slackId = CSM_SLACK[c.csm];
+    const propuesta = !c.cli
+      ? `<span style="color:#9ca3af;" title="El portal ${escAttr(c.proy)} no está mapeado a una cuenta de HubSpot. No adivino de quién es.">portal sin mapear</span>`
+      : (!c.csm || !slackId
+        ? `<span style="color:#9ca3af;" title="${c.csm ? "No tengo el Slack de " + escAttr(c.csm) : "La cuenta no tiene CSM asignado en HubSpot"}">${escAttr(c.csm || "sin CSM")}</span>`
+        : `<b>${escAttr(CSM_NOMBRE[c.csm] || c.csm)}</b>`);
+    const boton = (c.cli && slackId)
+      ? `<button onclick="faPedir('${escAttr(x.k)}')" title="Copia el pedido y abre el DM de ${escAttr(CSM_NOMBRE[c.csm] || c.csm)} en Slack. El dashboard no manda el mensaje: lo pegás y lo enviás vos."
+           style="font-family:inherit; cursor:pointer; font-size:11px; font-weight:700; padding:4px 9px; border-radius:7px;
+           border:1px solid #ddd6fe; background:#F5F3FF; color:#4030C8; white-space:nowrap;">💬 Pedir que lo tome</button>
+         <div id="fa-av-${escAttr(x.k)}" style="font-size:9.5px; color:#047857; margin-top:3px;"></div>`
+      : "";
+    return `<tr>
+      <td style="white-space:nowrap; padding:5px 9px;"><a href="${jtLink(x.k)}" target="_blank" rel="noopener"
+         style="font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#4030C8; font-weight:700; text-decoration:none;">${escAttr(x.k)} ↗</a></td>
+      <td style="font-size:11.5px; padding:5px 9px; white-space:nowrap;">${c.cli ? escAttr(c.cli) : `<span style="color:#9ca3af;">${escAttr(c.proy)}</span>`}</td>
+      <td style="font-size:12px; padding:5px 9px;">${escAttr(x.r)}</td>
+      <td style="padding:5px 9px;"><span style="display:inline-block; font-size:9.5px; font-weight:700; border-radius:9px; padding:1px 7px; background:${est.bg}; color:${est.c}; white-space:nowrap;">${escAttr(x.s)}</span></td>
+      <td style="font-size:10.5px; padding:5px 9px; white-space:nowrap; ${pr.crit ? "color:#b91c1c; font-weight:700;" : "color:#6b7280;"}">${pr.ic} ${escAttr(pr.t)}</td>
+      <td style="text-align:right; font-size:11px; padding:5px 9px; white-space:nowrap; font-variant-numeric:tabular-nums; ${edad >= 7 ? "color:#b91c1c; font-weight:700;" : "color:#6b7280;"}">${edad != null ? edad + " d" : "—"}</td>
+      <td style="font-size:11.5px; padding:5px 9px; white-space:nowrap;">${propuesta}</td>
+      <td style="text-align:right; padding:5px 9px; white-space:nowrap; width:1%;">${boton}</td>
+    </tr>`;
+  }).join("");
+
+  return `<div style="border:1.5px solid #FDE68A; border-radius:11px; background:#fff; overflow:hidden; margin-bottom:13px;">
+    <div style="padding:10px 14px; background:#FFFBEB; color:#92400e; border-bottom:1px solid #FDE68A;">
+      <div style="font-size:13px; font-weight:800; display:flex; align-items:center; gap:9px;">🧺 Fila única — sin asignar
+        <span style="margin-left:auto; font-size:11px; background:#fff; border-radius:999px; padding:2px 9px;">${t.length}</span></div>
+      <div style="font-size:11px; opacity:.85; margin-top:3px; line-height:1.5;">
+        Entró y no es de nadie, pero el SLA ya corre. Cubre <b>todos los portales de soporte</b>, no sólo tu cartera —
+        por eso <b>los chips de abajo no lo filtran</b>. La propuesta es el <b>CSM de la cuenta</b>: el botón copia el pedido y abre su Slack.</div>
+    </div>
+    <table class="cue-table" style="font-size:12px;"><thead><tr>
+      <th style="text-align:left;">Ticket</th><th style="text-align:left;">Cuenta</th><th style="text-align:left;">Asunto</th>
+      <th style="text-align:left;">Estado</th><th style="text-align:left;">Prioridad</th>
+      <th style="text-align:right;" title="Días desde que se creó. Sigue sin dueño todo ese tiempo.">Sin dueño</th>
+      <th style="text-align:left;">Proponer a</th><th></th>
+    </tr></thead><tbody>${filas}</tbody></table>
+  </div>`;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════
@@ -11344,6 +11501,9 @@ async function renderRadarSoporte() {
     jtCargarVivo().then(() => renderRadarSoporte()).catch(() => {});
     return;
   }
+  /* La fila única se pide aparte y se repinta al llegar. **No bloquea la vista**: el resto del
+     radar ya tiene su dato y es útil solo. Mismo patrón que `vjCuentasReady`. */
+  if (!JT_SIN) jtCargarSinAsignar().then(() => renderRadarSoporte()).catch(() => {});
 
   /* ── Filtro por CSM (2026-09-24, pedido de German) ──────────────────────────────────
      Arranca en **su cartera**, que es la pregunta que se hace todos los días ("¿cuál de MIS
@@ -11387,7 +11547,11 @@ async function renderRadarSoporte() {
   if (!conDato.length) {
     const err = JT_LIVE && JT_LIVE.error;
     const hayOtras = todasConDato.length > 0;
-    host.innerHTML = (hayOtras ? chipsCsm : "") + `<div style="padding:16px 18px; background:${err ? "#FEF2F2" : "#FFFBEB"}; border:1px solid ${err ? "#FECACA" : "#FDE68A"}; border-radius:10px; font-size:13px; line-height:1.65; color:${err ? "#b91c1c" : "#92400e"};">
+    /* 🚨 La fila única va TAMBIÉN acá: que tu cartera esté limpia no dice nada de los tickets
+       huérfanos, que por definición no son de nadie. Si este bloque sólo se dibujara en el
+       camino feliz, el día que no tengas cola propia dejarías de ver lo que entra sin dueño —
+       justo cuando más tiempo tenés para tomarlo. */
+    host.innerHTML = faBloqueHtml() + (hayOtras ? chipsCsm : "") + `<div style="padding:16px 18px; background:${err ? "#FEF2F2" : "#FFFBEB"}; border:1px solid ${err ? "#FECACA" : "#FDE68A"}; border-radius:10px; font-size:13px; line-height:1.65; color:${err ? "#b91c1c" : "#92400e"};">
       <b>${err ? "Jira no respondió." : (hayOtras
         ? "No hay tickets abiertos en esta cartera — pero sí en otras."
         : "No hay tickets abiertos para mostrar.")}</b>
@@ -11471,6 +11635,7 @@ async function renderRadarSoporte() {
         <b>${totReal}</b> tickets de cliente${totAdmin ? ` · <span title="Los contenedores de worklog mensuales (Reuniones &amp; minutas, Gestión y reportería). No son cola: se cuentan aparte para que no inflen las cuentas." style="cursor:help; border-bottom:1px dotted #9ca3af;">${totAdmin} administrativos aparte</span>` : ""}
       </span>
     </div>
+    ${faBloqueHtml()}
     ${chipsCsm}${avisoRotas}${kpis}
     ${bloque(grupos.frenado)}
     ${bloque(grupos.vencido)}
