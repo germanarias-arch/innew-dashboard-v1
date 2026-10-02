@@ -10475,7 +10475,7 @@ const JT_EST = {
   /* 🚪 El estado de ENTRADA: acá cae todo lo que el cliente abre y nadie acusó recibo todavía.
      Faltaba en el mapa —era el 3er estado que se omitía en silencio— y es el más importante de
      los tres, porque es donde corre el SLA de primera respuesta. `entra` lo marca como "sin
-     tomar" para el bloque de arriba del Radar. */
+     tomar" para el bloque 🚪 del Radar, el primero de los bloques debajo de los indicadores. */
   "Esperando por ayuda":    { c: "#1d4ed8", bg: "#EFF6FF", entra: 1 },
   "En espera del cliente":  { c: "#9a3412", bg: "#FFF7ED", cliente: 1 },
   "Preparando Presupuesto": { c: "#854D0E", bg: "#FEF9C3", cliente: 1, presu: 1 },
@@ -11195,7 +11195,7 @@ function faBloqueHtml() {
         <span style="margin-left:auto; font-size:11px; background:#fff; border-radius:999px; padding:2px 9px;">${t.length}</span></div>
       <div style="font-size:11px; opacity:.85; margin-top:3px; line-height:1.5;">
         Entró y no es de nadie, pero el SLA ya corre. Cubre <b>todos los portales de soporte</b>, no sólo tu cartera —
-        por eso <b>los chips de abajo no lo filtran</b>. La propuesta es el <b>CSM de la cuenta</b>: el botón copia el pedido y abre su Slack.</div>
+        por eso <b>los chips de arriba no lo filtran</b>. La propuesta es el <b>CSM de la cuenta</b>: el botón copia el pedido y abre su Slack.</div>
     </div>
     <table class="cue-table" style="font-size:12px;"><thead><tr>
       <th style="text-align:left;">Ticket</th><th style="text-align:left;">Cuenta</th><th style="text-align:left;">Asunto</th>
@@ -11611,7 +11611,7 @@ async function renderRadarSoporte() {
        huérfanos, que por definición no son de nadie. Si este bloque sólo se dibujara en el
        camino feliz, el día que no tengas cola propia dejarías de ver lo que entra sin dueño —
        justo cuando más tiempo tenés para tomarlo. */
-    host.innerHTML = faBloqueHtml() + (hayOtras ? chipsCsm : "") + `<div style="padding:16px 18px; background:${err ? "#FEF2F2" : "#FFFBEB"}; border:1px solid ${err ? "#FECACA" : "#FDE68A"}; border-radius:10px; font-size:13px; line-height:1.65; color:${err ? "#b91c1c" : "#92400e"};">
+    host.innerHTML = (hayOtras ? chipsCsm : "") + faBloqueHtml() + `<div style="padding:16px 18px; background:${err ? "#FEF2F2" : "#FFFBEB"}; border:1px solid ${err ? "#FECACA" : "#FDE68A"}; border-radius:10px; font-size:13px; line-height:1.65; color:${err ? "#b91c1c" : "#92400e"};">
       <b>${err ? "Jira no respondió." : (hayOtras
         ? "No hay tickets abiertos en esta cartera — pero sí en otras."
         : "No hay tickets abiertos para mostrar.")}</b>
@@ -11696,9 +11696,14 @@ async function renderRadarSoporte() {
         <b>${totReal}</b> tickets de cliente${totAdmin ? ` · <span title="Los contenedores de worklog mensuales (Reuniones &amp; minutas, Gestión y reportería). No son cola: se cuentan aparte para que no inflen las cuentas." style="cursor:help; border-bottom:1px dotted #9ca3af;">${totAdmin} administrativos aparte</span>` : ""}
       </span>
     </div>
-    ${faBloqueHtml()}
     ${chipsCsm}${avisoRotas}${kpis}
+    ${/* 🧺🚪 Los dos bloques de ENTRADA van juntos y debajo de los indicadores (German, 02/10:
+          *"quedó arriba de los indicadores, debería ir abajo"*). Fila única estaba arriba de
+          todo desde el 30/09 y tapaba los KPIs, que son lo primero que él mira.
+          Orden: primero el filtrado por cartera (Sin tomar), después el que NO filtra
+          (Fila única) — así la lista no alterna entre dos alcances. */""}
     ${bloque(grupos.sintomar)}
+    ${faBloqueHtml()}
     ${bloque(grupos.frenado)}
     ${bloque(grupos.vencido)}
     ${bloque(grupos.dormido, "quieto")}
