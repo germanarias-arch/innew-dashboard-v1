@@ -10465,7 +10465,18 @@ const JT_EST = {
   "Prueba":                 { c: "#047857", bg: "#ECFDF5", cierra: 1 },
   "Pruebas":                { c: "#047857", bg: "#ECFDF5", cierra: 1 },
   "Prueba Aprobada":        { c: "#047857", bg: "#ECFDF5", cierra: 1 },
-  "Modelo de Solución":     { c: "#374151", bg: "#F3F4F6", cierra: 1 },
+  /* 🔐 `Modelo de Solución` NO lleva `cierra` (corregido 2026-10-01). Parecía un estado de
+     cierre leyendo el nombre, y es exactamente lo contrario: en el workflow de Innew significa
+     **"el ticket ya fue tomado"** — textual de Daiana Kovacs, que es quien lo trabaja. Si todo
+     ticket entrante pasa por acá, taggearlo `cierra` llenaría "suenan a terminado" con tickets
+     recién nacidos y el grupo dejaría de ser señal. Un ticket que se queda meses acá ya lo
+     levanta `dormido`, así que no se pierde nada. */
+  "Modelo de Solución":     { c: "#374151", bg: "#F3F4F6", tomado: 1 },
+  /* 🚪 El estado de ENTRADA: acá cae todo lo que el cliente abre y nadie acusó recibo todavía.
+     Faltaba en el mapa —era el 3er estado que se omitía en silencio— y es el más importante de
+     los tres, porque es donde corre el SLA de primera respuesta. `entra` lo marca como "sin
+     tomar" para el bloque de arriba del Radar. */
+  "Esperando por ayuda":    { c: "#1d4ed8", bg: "#EFF6FF", entra: 1 },
   "En espera del cliente":  { c: "#9a3412", bg: "#FFF7ED", cliente: 1 },
   "Preparando Presupuesto": { c: "#854D0E", bg: "#FEF9C3", cliente: 1, presu: 1 },
   "Presupuesto Enviado":    { c: "#854D0E", bg: "#FEF9C3", cliente: 1, presu: 1 },
@@ -10624,10 +10635,18 @@ function jtDeCuenta(c) {
    aparece sin motivo obliga a abrir Jira para entender por qué, que es justo lo que esto evita. */
 function jtAnomalias(cuentas) {
   const A = {
+    /* 🚪 Va PRIMERO porque es lo único del radar que se mide en horas y no en días (pedido de
+       German, 01/10, a partir del mensaje de Daiana: *"ger cuando creas o recibís un ticket
+       ponelo en modelo de solución, que eso es como que ya fue 'tomado'"*). Un ticket acá no
+       está mal atendido todavía: está **sin acusar recibo**, con el reloj de primera respuesta
+       corriendo (2 hs en Highest). La trampa que hace falta nombrar: la transición a Modelo de
+       Solución es **del asignado**, así que mientras el ticket cuelgue de German nadie más lo
+       puede tomar — por eso la columna de la derecha dice quién lo está trabando. */
+    sintomar: { ic: "🚪", t: "Sin tomar — entró y nadie acusó recibo", d: "Están en Esperando por ayuda: el cliente ya escribió y el SLA de primera respuesta corre. Pasarlo a Modelo de Solución es lo que marca «tomado», y sólo puede hacerlo quien lo tiene asignado.", tono: "warn", items: [] },
     frenado: { ic: "🚨", t: "Bloquea la compra y está frenado", d: "Pausar congela el SLA. Un ticket que impide comprar no puede estar pausado ni esperando al cliente sin fecha.", tono: "bad", items: [] },
     vencido: { ic: "⏰", t: "Vencidos y nadie movió la fecha", d: "La fecha comprometida ya pasó y sigue abierto. Duplicar un ticket arrastra el vencimiento viejo: puede ser eso.", tono: "bad", items: [] },
     dormido: { ic: "😴", t: "Quietos hace " + JT_DORMIDO + " días o más", d: "Nadie lo tocó en una semana. Es la patología que Sonia marcó como la más cara: se duerme y nadie avisa.", tono: "warn", items: [] },
-    cierra:  { ic: "🫥", t: "Suenan a terminado y están abiertos", d: "Prueba, Prueba Aprobada y Modelo de Solución se leen como cerrados pero siguen corriendo SLA. Si ya está validado, hay que cerrarlo.", tono: "info", items: [] },
+    cierra:  { ic: "🫥", t: "Suenan a terminado y están abiertos", d: "Prueba, Pruebas y Prueba Aprobada se leen como cerrados pero siguen corriendo SLA. Si ya está validado, hay que cerrarlo.", tono: "info", items: [] },
     critico: { ic: "🔴", t: "Impide la compra o urgente", d: "Máxima prioridad del esquema de Innew. Van todos, estén como estén.", tono: "bad", items: [] },
     /* 🪤 Este grupo es el ÚNICO que mira los administrativos, y existe porque el test lo
        destapó: los tickets mensuales quedaban fuera de todos los grupos por ser contenedores
@@ -10654,6 +10673,7 @@ function jtAnomalias(cuentas) {
       if (t.venceEn != null && t.venceEn < 0) A.vencido.items.push(it);
       if (t.quieto != null && t.quieto >= JT_DORMIDO) A.dormido.items.push(it);
       if (est.cierra) A.cierra.items.push(it);
+      if (est.entra) A.sintomar.items.push(it);
       /* Gobernanza por técnico: lo que Sonia le pidió a German que EXIJA. No es un ranking de
          personas, es dónde poner la conversación. */
       const k = t.a || "(sin asignar)";
@@ -10665,6 +10685,10 @@ function jtAnomalias(cuentas) {
     });
   });
   // dentro de cada grupo, lo más grave primero
+  /* En "sin tomar" lo más grave es lo más VIEJO: cuanto más tiempo lleva sin que nadie acuse
+     recibo, más SLA se comió. No se ordena por `quieto` — un ticket recién creado tiene 0 días
+     quieto y sería el que menos urge, que es justo al revés. */
+  A.sintomar.items.sort((a, b) => (b.edad || 0) - (a.edad || 0));
   A.frenado.items.sort((a, b) => (b.edad || 0) - (a.edad || 0));
   A.vencido.items.sort((a, b) => (a.venceEn || 0) - (b.venceEn || 0));
   A.dormido.items.sort((a, b) => (b.quieto || 0) - (a.quieto || 0));
@@ -10710,6 +10734,12 @@ function jtFresco(ts) {
   return "hace " + Math.round(h / 24) + " d";
 }
 function jtLink(k) { return JIRA_BASE + "/browse/" + encodeURIComponent(k); }
+/* Cómo se escribe German en Jira. **Medido, no deducido** (01/10, leyendo el assignee de
+   PLM-150): `displayName` = "German Arias", sin tilde y sin punto — da la casualidad de que
+   coincide con el value de `csm_asignado`, pero son dos sistemas distintos y la coincidencia
+   no está garantizada. En 3 de 7 técnicos el nombre de Jira NO coincide con el de Slack, así
+   que acá no se adivina: si alguna vez deja de matchear, se vuelve a leer de un ticket. */
+const JIRA_YO = "German Arias";
 
 /* ═══ ESCRIBIRLE AL TÉCNICO POR SLACK (2026-09-28) ══════════════════════════════════════
    German: *"el equipo prefiere que le escriban a slack y no al ticket"*. Encaja con la
@@ -11342,8 +11372,21 @@ function jtFilaTicket(t, mostrar, gid) {
      vencido…) y decide qué borrador se arma. */
   RSOP_T[t.k] = Object.assign({}, t, { gid: gid || "" });
   const nota = rsopNotaDe(t.k);
+  /* 🚪 "Sin tomar" NO lleva el botón de nota interna: lo que falta ahí no es escribir, es
+     **mover el estado**, y eso el dashboard no lo hace. El proxy es lectura + notas internas por
+     decisión de German (23/09) y un cambio de estado **lo ve el cliente**, así que la acción
+     honesta es abrir el ticket y moverlo en Jira. El cartel de abajo es el dato que faltaba:
+     cuando el asignado sos vos, nadie más puede destrabarlo — la transición es del asignado. */
   const acciones = gid === "mios"
     ? `<span style="font-size:10.5px; color:#9ca3af;">tuyo</span>`
+    : gid === "sintomar"
+    ? `<a href="${jtLink(t.k)}" target="_blank" rel="noopener"
+          title="Abre el ticket en Jira para pasarlo a Modelo de Solución. El dashboard no mueve estados: el cliente los ve."
+          style="display:inline-block; font-family:inherit; font-size:11px; font-weight:700; padding:4px 9px; border-radius:7px;
+          border:1px solid #FDE68A; background:#FFFBEB; color:#92400e; white-space:nowrap; text-decoration:none;">🙋 Tomarlo en Jira ↗</a>${
+        t.a === JIRA_YO
+          ? `<div style="font-size:9.5px; color:#b45309; margin-top:3px; font-weight:700;">sólo vos podés</div>`
+          : (t.a ? "" : `<div style="font-size:9.5px; color:#9ca3af; margin-top:3px;">sin asignar</div>`)}`
     : `<button onclick="rsopAccion('${escAttr(t.k)}','interno')" title="Arma la nota interna (la misma opción 'Añadir nota interna' de Jira). La revisás y la publicás con un clic. El cliente no la ve."
           style="font-family:inherit; cursor:pointer; font-size:11px; font-weight:700; padding:4px 9px; border-radius:7px; border:1px solid #C7BDFF; background:#F1EFFF; color:#4030C8; white-space:nowrap;">✎ Nota interna</button>${nota ? `<div style="font-size:10px; color:#047857; margin-top:3px; text-align:right;">✓ publicada ${escAttr(nota.hora)}</div>` : ""}`;
   const bits = [];
@@ -11594,6 +11637,7 @@ async function renderRadarSoporte() {
   const kpi = (l, v, sub, col) => `<div class="cue-kpi"><div class="kl">${l}</div><div class="kv" style="font-size:21px;${col ? "color:" + col + ";" : ""}">${v}</div><div class="ks">${sub}</div></div>`;
   const kpis = `<div class="cue-kpis" style="margin-bottom:12px;">
       ${kpi("Tickets de cliente", totReal, conDato.length + " cuenta(s)" + (csmSel === "__all" ? "" : " · " + csmSel))}
+      ${kpi("Sin tomar", grupos.sintomar.items.length, "nadie acusó recibo", grupos.sintomar.items.length ? "#b45309" : "")}
       ${kpi("Impide la compra", grupos.critico.items.length, "o urgentes", grupos.critico.items.length ? "#b91c1c" : "")}
       ${kpi("Vencidos", grupos.vencido.items.length, "fecha comprometida pasada", grupos.vencido.items.length ? "#b91c1c" : "")}
       ${kpi("Dormidos", grupos.dormido.items.length, JT_DORMIDO + "+ días sin moverse", grupos.dormido.items.length ? "#b45309" : "")}
@@ -11654,6 +11698,7 @@ async function renderRadarSoporte() {
     </div>
     ${faBloqueHtml()}
     ${chipsCsm}${avisoRotas}${kpis}
+    ${bloque(grupos.sintomar)}
     ${bloque(grupos.frenado)}
     ${bloque(grupos.vencido)}
     ${bloque(grupos.dormido, "quieto")}
@@ -11667,6 +11712,9 @@ async function renderRadarSoporte() {
       son contenedores de worklog, y contarlos infla cada cuenta en +1 o +2 de forma constante.
       <b>Dormido</b> = ${JT_DORMIDO}+ días sin que nadie lo toque; se mide así y no por fecha de vencimiento porque
       dos tercios de los tickets no tienen vencimiento cargado.
+      <b>Sin tomar</b> son los que están en <i>Esperando por ayuda</i>, el estado en el que entra todo: el cliente ya escribió
+      y nadie acusó recibo. Pasarlos a <i>Modelo de Solución</i> es lo que marca «tomado» — y como esa transición
+      <b>sólo la puede hacer el asignado</b>, mientras un ticket cuelgue de vos nadie más lo puede destrabar.
       <b>✎ Nota interna</b> arma la nota interna del ticket (la misma opción "Añadir nota interna" de Jira) y la publica
       con tu OK. <b>El cliente nunca la ve</b>; desde acá no se le manda nada al cliente. Mover estados sigue siendo en Jira.
       En la tabla de abajo, <b>Últ. respuesta</b> es la fecha del último comentario del ticket — no es lo mismo que
