@@ -546,7 +546,7 @@ table.std tr:hover td { background: #fafafa; }
       <div class="nav-group">
         <div class="nav-tier-label">CRO</div>
         <div class="view-toggle vt-priority">
-          <button id="vt-foco" class="vt-btn active" onclick="setView('foco')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:5px;"><path d="M3.5 5.5l1.5 1.5l2.5 -2.5"/><path d="M3.5 11.5l1.5 1.5l2.5 -2.5"/><path d="M3.5 17.5l1.5 1.5l2.5 -2.5"/><path d="M11 6l9 0"/><path d="M11 12l9 0"/><path d="M11 18l9 0"/></svg>Foco</button>
+          <button id="vt-foco" class="vt-btn" onclick="setView('foco')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:5px;"><path d="M3.5 5.5l1.5 1.5l2.5 -2.5"/><path d="M3.5 11.5l1.5 1.5l2.5 -2.5"/><path d="M3.5 17.5l1.5 1.5l2.5 -2.5"/><path d="M11 6l9 0"/><path d="M11 12l9 0"/><path d="M11 18l9 0"/></svg>Foco</button>
           <button id="vt-emb" class="vt-btn" onclick="setView('emb')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:5px;"><path d="M4 4h16v2.172a2 2 0 0 1 -.586 1.414l-4.414 4.414v7l-6 2v-8.5l-4.48 -4.928a2 2 0 0 1 -.52 -1.345v-2.241z"/></svg>Embudo</button>
           <button id="vt-ritmo" class="vt-btn" onclick="setView('ritmo')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:5px;"><path d="M4 12h3l2 -6l4 12l2 -6h5"/></svg>Ritmo semanal</button>
         </div>
@@ -594,7 +594,7 @@ table.std tr:hover td { background: #fafafa; }
         <div class="nav-tier-label">Otras vistas</div>
         <div class="view-toggle vt-secondary">
           <button id="vt-cur" class="vt-btn" onclick="setView('cur')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><path d="M16 18a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2z"/><path d="M16 6a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2z"/><path d="M9 18a6 6 0 0 1 6 -6a6 6 0 0 1 -6 -6a6 6 0 0 1 -6 6a6 6 0 0 1 6 6z"/></svg>Curaduría</button>
-          <button id="vt-sem" class="vt-btn" onclick="setView('sem')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 10h18M8 2v4M16 2v4"/><path d="M12 14h4"/></svg>Semana</button>
+          <button id="vt-sem" class="vt-btn active" onclick="setView('sem')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 10h18M8 2v4M16 2v4"/><path d="M12 14h4"/></svg>Hoy / Semana</button>
           <button id="vt-tareas" class="vt-btn" onclick="setView('tareas')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><path d="M10 5a2 2 0 1 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3h-16a4 4 0 0 0 2 -3v-3a7 7 0 0 1 4 -6"/><path d="M9 17v1a3 3 0 0 0 6 0v-1"/></svg>Tareas</button>
           <button id="vt-marcadores" class="vt-btn" onclick="setView('marcadores')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><path d="M9 4h6a2 2 0 0 1 2 2v14l-5 -3l-5 3v-14a2 2 0 0 1 2 -2"/></svg>Marcadores</button>
           <button id="vt-bugs" class="vt-btn" onclick="setView('bugs')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><path d="M9 9v-1a3 3 0 0 1 6 0v1"/><path d="M8 9h8a6 6 0 0 1 1 3v3a5 5 0 0 1 -10 0v-3a6 6 0 0 1 1 -3"/><path d="M3 13h4"/><path d="M17 13h4"/><path d="M12 20v-6"/><path d="M4 19l3.35 -2"/><path d="M20 19l-3.35 -2"/><path d="M4 7l3.75 2.4"/><path d="M20 7l-3.75 2.4"/></svg>Avisos de bugs</button>
@@ -7633,6 +7633,10 @@ function renderTarget() {
    cuando en realidad la cookie sigue viva (Max-Age 12 h). Fijado 2026-09-19.
    VIEW_POP evita re-apilar la vista que vino justamente del botón Atrás. */
 let VIEW_POP = false;
+/* La vista con la que arranca el dashboard. En UNA sola constante: estaba repetida como
+   `"foco"` literal en el boot y en el listener de `popstate`, así que cambiarla en un solo
+   lado dejaba el Atrás llevando a otra pestaña distinta de la de arranque. */
+const VIEW_DEFAULT = "sem";
 function histPush(v) {
   try {
     if (!window.history || !history.pushState) return;
@@ -7657,7 +7661,7 @@ window.addEventListener("popstate", function (e) {
     return;
   }
   // 2) Vuelta a la pestaña anterior.
-  const v = (e.state && e.state.v) || viewDelHash() || "foco";
+  const v = (e.state && e.state.v) || viewDelHash() || VIEW_DEFAULT;
   VIEW_POP = true;
   try { setView(v, true); } finally { VIEW_POP = false; }
 });
@@ -19016,8 +19020,14 @@ async function loadTareas() {
 
 async function resolveAllTareaDeals() {
   const data = window.__tareasData || [];
+  window.__ticketDealListo = false;
   for (const t of data) {
     if (window.__ticketDeal[t.id] !== undefined) continue;
+    /* ⚡ Los mails del canal `contacto@innew.la` (DMARC, Instagram, Mercado Libre, CVs) nunca
+       tienen deal asociado. Resolverlos era **una request por cada uno** — 71 de 165 — y desde
+       que Hoy/Semana es la vista de arranque esa cola se paga en cada apertura del dashboard.
+       Saltearlos deja el mismo resultado visible ("—") a menos de la mitad de costo. */
+    if ((t.properties || {}).source_type) { window.__ticketDeal[t.id] = ""; window.__ticketDealInfo[t.id] = null; continue; }
     try {
       const res = await mcpCall("mcp__aaaa9eed-76e4-4bc8-a1a2-fad976f54ccb__search_crm_objects", {
         objectType: "deals",
@@ -19048,6 +19058,12 @@ async function resolveAllTareaDeals() {
     const cell = document.getElementById("tdeal-" + t.id);
     if (cell) cell.innerHTML = window.__ticketDeal[t.id] || "—";
   }
+  /* 🚨 Hasta acá, Hoy/Semana no sabe de ninguna tarea cuánta plata tiene atrás, así que las
+     manda a TODAS a "sin puntuar" — que es mentira: no es que no tengan deal, es que todavía
+     no se preguntó. La vista lo dice mientras tanto y se repinta sola al terminar. Misma
+     trampa que `vjCanonBuild` cacheando la lista vacía de cuentas (17/09): "no sé" ≠ "no". */
+  window.__ticketDealListo = true;
+  try { if (document.getElementById("sem-body")) renderSemana(); } catch (e) {}
 }
 
 function tareaEstado(fv) {
@@ -19495,7 +19511,14 @@ function renderSemana() {
       </td></tr>`;
   }).join("");
 
+  /* "Todavía no pregunté" se avisa; no se disfraza de "no tiene deal". */
+  const avisoPlata = window.__ticketDealListo === false
+    ? `<div style="background:#FFFBEB; border:1px solid #FDE68A; border-radius:10px; padding:9px 13px; margin-bottom:12px; font-size:12px; color:#92400e;">
+        ⏳ Todavía estoy resolviendo qué deal tiene atrás cada tarea. Hasta que termine,
+        <b>el orden y el grupo “sin puntuar” no son definitivos</b> — se repinta solo al terminar.</div>` : "";
+
   host.innerHTML = `
+    ${avisoPlata}
     ${medidor}
     ${objHtml}
     <div style="font-size:12.5px; font-weight:800; color:#6b7280; margin:16px 0 9px; letter-spacing:.5px;">
@@ -21135,12 +21158,14 @@ function renderAccuracy() {
     const arpu = won.length ? won.reduce((s, d) => s + parseFloat(d.properties.amount || 0), 0) / won.length : 0;
     document.getElementById("preview-salud").textContent = `(Win rate ${wr}% · ARPU ${fmtMoneyK(arpu)} · ${open.length} abiertos)`;
 
-    // Mostrar la vista por defecto (Foco) recién ahora que los datos ya están cargados.
-    // Sin esto, todos los divs view-* quedan en display:none y Foco aparece vacío hasta
-    // que el usuario navega a otra vista y vuelve (setView recién ahí lo hace visible).
+    // Mostrar la vista por defecto recién ahora que los datos ya están cargados.
+    // Sin esto, todos los divs view-* quedan en display:none y la vista aparece vacía hasta
+    // que el usuario navega a otra y vuelve (setView recién ahí la hace visible).
     // 📱 Si la URL trae #vista (volvió del Atrás, recargó, o iOS descartó la pestaña
-    //    en segundo plano y la restauró), arrancamos DONDE ESTABA, no en Foco.
-    setView(viewDelHash() || "foco");
+    //    en segundo plano y la restauró), arrancamos DONDE ESTABA, no en la de por defecto.
+    // 📅 Por defecto es **Hoy/Semana** desde el 2026-10-02 (pedido de German): la primera
+    //    pregunta del día es "¿qué hago hoy?", no "¿cómo viene el pipeline?".
+    setView(viewDelHash() || VIEW_DEFAULT);
 
     // Web app: candado por rol. Si el usuario es "reseller", lo dejamos solo en su panel.
     if (WEB_MODE) {
