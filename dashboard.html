@@ -594,6 +594,7 @@ table.std tr:hover td { background: #fafafa; }
         <div class="nav-tier-label">Otras vistas</div>
         <div class="view-toggle vt-secondary">
           <button id="vt-cur" class="vt-btn" onclick="setView('cur')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><path d="M16 18a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2z"/><path d="M16 6a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2z"/><path d="M9 18a6 6 0 0 1 6 -6a6 6 0 0 1 -6 -6a6 6 0 0 1 -6 6a6 6 0 0 1 6 6z"/></svg>Curaduría</button>
+          <button id="vt-sem" class="vt-btn" onclick="setView('sem')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 10h18M8 2v4M16 2v4"/><path d="M12 14h4"/></svg>Semana</button>
           <button id="vt-tareas" class="vt-btn" onclick="setView('tareas')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><path d="M10 5a2 2 0 1 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3h-16a4 4 0 0 0 2 -3v-3a7 7 0 0 1 4 -6"/><path d="M9 17v1a3 3 0 0 0 6 0v-1"/></svg>Tareas</button>
           <button id="vt-marcadores" class="vt-btn" onclick="setView('marcadores')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><path d="M9 4h6a2 2 0 0 1 2 2v14l-5 -3l-5 3v-14a2 2 0 0 1 2 -2"/></svg>Marcadores</button>
           <button id="vt-bugs" class="vt-btn" onclick="setView('bugs')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><path d="M9 9v-1a3 3 0 0 1 6 0v1"/><path d="M8 9h8a6 6 0 0 1 1 3v3a5 5 0 0 1 -10 0v-3a6 6 0 0 1 1 -3"/><path d="M3 13h4"/><path d="M17 13h4"/><path d="M12 20v-6"/><path d="M4 19l3.35 -2"/><path d="M20 19l-3.35 -2"/><path d="M4 7l3.75 2.4"/><path d="M20 7l-3.75 2.4"/></svg>Avisos de bugs</button>
@@ -1196,6 +1197,10 @@ table.std tr:hover td { background: #fafafa; }
   </div><!-- /view-nurt -->
 
   <!-- ===================== TAREAS / SEGUIMIENTO ===================== -->
+  <!-- Semana / Día. Todo lo pinta renderSemana(); el div viene vacío a propósito para que no
+       existan dos caminos que dibujen lo mismo (la trampa de escribir dos veces la misma vista). -->
+  <div id="view-sem" style="display:none"><div id="sem-body"></div></div>
+
   <div id="view-tareas" style="display:none">
     <div class="cue-alert" style="background:#F1EFFF; border-color:#C7BDFF; color:#4030C8;">📋 Todas las tareas (tickets con vencimiento). Color por estado · filtrá por owner · "Slack" arma un borrador de seguimiento al owner.</div>
     <div id="tareas-compromisos"></div>
@@ -1355,6 +1360,9 @@ const STATE_KEYS = [
   "dashComercial_genHidden",   // deals ocultos en Generación (2026-08-11)
   "dashComercial_tareaCamb",   // contador cambios de fecha de tareas (2026-08-11)
   "dashComercial_inboxEstado", // estado del chat web: sin leer / sin responder / respondido / derivado (2026-09-19)
+  "sem_objetivos",             // Semana/Día: objetivos por semana ISO, con el original congelado (2026-10-02)
+  "sem_plan",                  // Semana/Día: ticketId → día al que lo mandaste (2026-10-02)
+  "sem_estrategicas",          // Semana/Día: ids marcados como estratégicos a mano (2026-10-02)
   /* 🐛 Los 3 de Viajes faltaban y por eso NADA de lo que German cargaba en la ficha llegaba al
      celular (2026-09-21). `vj_resultados` es el más grave: ahí viven objetivo, contacto, teléfono,
      LUGAR, resultado y próximo paso de cada reunión. Se cargaba en la compu y el celular no se
@@ -1391,7 +1399,12 @@ function stateSnapshot() {
    todas las reuniones (objetivo, contacto, teléfono, lugar, resultado) del dispositivo donde las
    cargó. Mientras el server no conozca la clave, **lo local manda y se sube**. En cuanto el server
    la tiene, esta lista deja de tener efecto sola — no hay que acordarse de sacarla. */
-const STATE_KEYS_ADOPTAR = ["vj_resultados", "vj_eventos", "vj_partners", "vj_ubi_titulos"];
+const STATE_KEYS_ADOPTAR = ["vj_resultados", "vj_eventos", "vj_partners", "vj_ubi_titulos",
+  /* 🚨 Las 3 de Semana/Día van SÍ o SÍ acá además de en STATE_KEYS. Una clave nueva está por
+     definición ausente del server la primera vez, y `stateApply` BORRA lo local cuando falta:
+     sumarlas a secas haría que el primer arranque te vuele los objetivos de la semana que
+     acabás de declarar. */
+  "sem_objetivos", "sem_plan", "sem_estrategicas"];
 
 function stateApply(snap) {
   window.__stateApplying = true;
@@ -7631,7 +7644,9 @@ function viewDelHash() {
   const h = String(location.hash || "").replace(/^#/, "").trim();
   return VIEWS_VALIDAS[h] ? h : "";
 }
-const VIEWS_VALIDAS = { foco: 1, metas: 1, fuentes: 1, emb: 1, ritmo: 1, cur: 1, cue: 1, clientes: 1, nurt: 1, tareas: 1, agenda: 1, reseller: 1, target: 1, marcadores: 1, bugs: 1, guia: 1, inbound: 1 };
+/* ⚠️ Una pestaña nueva TIENE que estar acá además de en `views`/`btns` de setView: si no, el
+   arranque desde `#hash` la ignora y cae a Foco (trampa del 19/09). */
+const VIEWS_VALIDAS = { foco: 1, metas: 1, fuentes: 1, emb: 1, ritmo: 1, cur: 1, cue: 1, clientes: 1, nurt: 1, tareas: 1, sem: 1, agenda: 1, reseller: 1, target: 1, marcadores: 1, bugs: 1, guia: 1, inbound: 1 };
 
 window.addEventListener("popstate", function (e) {
   // 1) Ficha de reunión abierta (en celular es pantalla completa): el Atrás la CIERRA
@@ -7651,8 +7666,8 @@ function setView(v, fromPop) {
   // "foco" es la vista Daily (foco comercial del día). Comparten el mismo div view-daily.
   if (!fromPop && !VIEW_POP) histPush(v);   // antes de renderizar: si un render tira, el historial queda bien
   window.__view = v; // lo usa refreshGlobal() para saber qué re-renderizar
-  const views = { foco: "view-daily", metas: "view-metas", fuentes: "view-fuentes", emb: "view-embudo", ritmo: "view-ritmo", cur: "view-curaduria", cue: "view-cuentas", clientes: "view-clientes", nurt: "view-nurt", tareas: "view-tareas", agenda: "view-agenda", reseller: "view-reseller", target: "view-target", marcadores: "view-marcadores", bugs: "view-bugs", guia: "view-guia", inbound: "view-inbound" };
-  const btns = { foco: "vt-foco", metas: "vt-metas", fuentes: "vt-fuentes", emb: "vt-emb", ritmo: "vt-ritmo", cur: "vt-cur", cue: "vt-cue", clientes: "vt-clientes", nurt: "vt-nurt", tareas: "vt-tareas", agenda: "vt-agenda", reseller: "vt-reseller", target: "vt-target", marcadores: "vt-marcadores", bugs: "vt-bugs", guia: "vt-guia", inbound: "vt-inbound" };
+  const views = { foco: "view-daily", metas: "view-metas", fuentes: "view-fuentes", emb: "view-embudo", ritmo: "view-ritmo", cur: "view-curaduria", cue: "view-cuentas", clientes: "view-clientes", nurt: "view-nurt", tareas: "view-tareas", sem: "view-sem", agenda: "view-agenda", reseller: "view-reseller", target: "view-target", marcadores: "view-marcadores", bugs: "view-bugs", guia: "view-guia", inbound: "view-inbound" };
+  const btns = { foco: "vt-foco", metas: "vt-metas", fuentes: "vt-fuentes", emb: "vt-emb", ritmo: "vt-ritmo", cur: "vt-cur", cue: "vt-cue", clientes: "vt-clientes", nurt: "vt-nurt", tareas: "vt-tareas", sem: "vt-sem", agenda: "vt-agenda", reseller: "vt-reseller", target: "vt-target", marcadores: "vt-marcadores", bugs: "vt-bugs", guia: "vt-guia", inbound: "vt-inbound" };
   Object.keys(views).forEach(k => {
     const el = document.getElementById(views[k]); if (el) el.style.display = (k === v) ? "block" : "none";
     const bt = document.getElementById(btns[k]); if (bt) bt.classList.toggle("active", k === v);
@@ -7661,6 +7676,13 @@ function setView(v, fromPop) {
   if (v === "metas") renderMetas();
   if (v === "fuentes") renderFuentes();
   if (v === "tareas" && !window.__tareasLoaded) loadTareas();
+  /* Semana/Día se monta sobre los MISMOS datos que Tareas: no pide nada propio a HubSpot.
+     Si todavía no se cargaron, pinta el "cargando" y se repinta al llegar (mismo patrón que
+     `vjCuentasReady` y `jtCargarVivo`: nunca cachear un índice sobre datos que no llegaron). */
+  if (v === "sem") {
+    if (!window.__tareasLoaded) loadTareas().then(() => { try { renderSemana(); } catch (e) {} }).catch(() => {});
+    renderSemana();
+  }
   if (v === "agenda") renderAgenda();
   if (v === "reseller") renderFuentesPanel();
   if (v === "marcadores") renderMarcadores();
@@ -18812,6 +18834,9 @@ const SLACK_TOOL_SEND = "mcp__d7cb6f43-f7ee-4f18-af93-d69528c2a522__slack_send_m
 const SLACK_VENTAS_CHANNEL = "GB0NP0XP1"; // #ventas-innew
 window.__tareasFilter = window.__tareasFilter || { owner: "", estado: "", tarea: "", deal: "", vence: "", semana: "" };
 window.__ticketDeal = window.__ticketDeal || {};
+/* ticketId → { nombre, monto, etapa, pipeline } | null. Paralelo a __ticketDeal (que es y
+   sigue siendo un string). Lo llena resolveAllTareaDeals; lo consume el score de Semana/Día. */
+window.__ticketDealInfo = window.__ticketDealInfo || {};
 window.__tareasMode = window.__tareasMode || "activas";
 function getHiddenTareas() {
   try { return new Set((JSON.parse(localStorage.getItem("tareas_hidden") || "[]")).map(String)); }
@@ -18960,7 +18985,14 @@ async function loadTareas() {
         filterGroups: [{ filters: [
           { propertyName: "hs_pipeline_stage", operator: "NEQ", value: "4" }
         ] }],
-        properties: ["subject", "hs_pipeline_stage", "fecha_vencimiento", "hubspot_owner_id", "hs_lastmodifieddate", "hs_createdate", "cambios_fecha_tarea"],
+        /* 🚪 `source_type` se suma el 2026-10-02 y es lo que separa DOS poblaciones que comparten
+           el mismo pipeline de tickets y no se tocan (medido: 94 vs 71, cero solapamiento):
+             · owner German + source_type VACÍO  → tus tareas, las que escriben los agentes.
+             · source_type = "EMAIL"             → el canal contacto@innew.la (DMARC, Instagram,
+               Mercado Libre, CVs). Es el ~90% de ruido ya documentado.
+           Sin esta propiedad la vista Semana/Día no puede distinguirlas y mostraría spam como
+           trabajo pendiente. La tabla de Tareas sigue mostrando todo: el filtro es de la vista nueva. */
+        properties: ["subject", "hs_pipeline_stage", "fecha_vencimiento", "hubspot_owner_id", "hs_lastmodifieddate", "hs_createdate", "cambios_fecha_tarea", "source_type"],
         sorts: [{ propertyName: "hs_createdate", direction: "DESCENDING" }],
         limit: 200, offset,
         chatInsights: { userIntent: "Vista Tareas: todos los tickets abiertos de HubSpot", satisfaction: "NEUTRAL" }
@@ -18990,14 +19022,29 @@ async function resolveAllTareaDeals() {
       const res = await mcpCall("mcp__aaaa9eed-76e4-4bc8-a1a2-fad976f54ccb__search_crm_objects", {
         objectType: "deals",
         filterGroups: [{ filters: [], associatedWith: [{ objectType: "tickets", operator: "EQUAL", objectIdValues: [Number(t.id)] }] }],
-        properties: ["dealname"], limit: 1,
+        /* 💰 `amount` y `dealstage` se suman el 2026-10-02: son el eje de PLATA del score de la
+           vista Semana/Día. Pedir 3 propiedades en vez de 1 no cuesta una request más — ya se
+           hacía una por ticket. */
+        properties: ["dealname", "amount", "dealstage", "pipeline", "hs_deal_stage_probability"], limit: 1,
         chatInsights: { userIntent: "Vista Tareas: resolver el deal asociado al ticket", satisfaction: "NEUTRAL" }
       });
       const parsed = typeof res === "string" ? JSON.parse(res) : res;
       const r = parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
       const name = r.length ? (r[0].properties.dealname || "") : "";
       window.__ticketDeal[t.id] = name;
-    } catch (e) { window.__ticketDeal[t.id] = ""; }
+      /* 🧷 El monto va en un mapa APARTE, no adentro de `__ticketDeal`. Esa variable es un
+         **string** en todo el resto de la vista Tareas (`.toLowerCase()` en el filtro,
+         `cell.innerHTML` acá abajo): convertirla en objeto rompería el filtro por deal y la
+         celda mostraría "[object Object]". Cambiar la forma de un dato compartido es la manera
+         más barata de romper una vista que no estás mirando. */
+      window.__ticketDealInfo[t.id] = r.length
+        ? { nombre: name, monto: Number(r[0].properties.amount) || 0,
+            etapa: r[0].properties.dealstage || "", pipeline: r[0].properties.pipeline || "",
+            /* La probabilidad la manda HubSpot (regla fijada: no se hardcodea por etapa).
+               Viaja cruda y se pasa tal cual a getProbability como 2º argumento. */
+            prob: r[0].properties.hs_deal_stage_probability }
+        : null;
+    } catch (e) { window.__ticketDeal[t.id] = ""; window.__ticketDealInfo[t.id] = null; }
     const cell = document.getElementById("tdeal-" + t.id);
     if (cell) cell.innerHTML = window.__ticketDeal[t.id] || "—";
   }
@@ -19152,6 +19199,369 @@ async function tareaSetOwner(id, val) {
   } catch (e) { if (st) { st.classList.add("err"); st.textContent = "error: " + String(e.message || e).slice(0, 60); } console.warn("tareaSetOwner falló", id, e); }
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════════════════════
+   VISTA SEMANA / DÍA  (2026-10-02, pedido de German)
+   -------------------------------------------------------------------------------------------
+   *"me gustaría tener la vista de qué tengo que hacer en la semana y en el día… poner objetivos
+   de la semana y ver si lo logro… hay temas que no son BAU sino estratégicos que también debería
+   poder seguir ahí"*. Elegido tras 3 previews: esqueleto A + el medidor de C arriba + el tablero
+   de B abajo.
+
+   🧠 LA DECISIÓN DE DISEÑO QUE SOSTIENE TODO: **no hay una sola lista ordenada por impacto.**
+   German tiene cinco relojes compitiendo —soporte en horas, entrada continua, pipeline en meses,
+   cuentas mensual, y lo estratégico SIN reloj— y en una lista única lo computable (plata, SLA,
+   vencimiento) le gana siempre a lo declarado, porque tiene número y lo otro no. Por eso el día
+   tiene **dos carriles con cupo**: 2 de BAU que el motor rankea + **1 estratégica con lugar
+   reservado, que no compite**. Si se mezclaran, lo estratégico no aparecería nunca.
+
+   📊 NO PIDE NADA PROPIO A HUBSPOT para las tareas: se monta sobre `__tareasData` y
+   `__ticketDealInfo`, que ya carga la vista Tareas. Lo único que agrega es una consulta de
+   tickets CERRADOS de la semana, porque el medidor necesita saber si la pila sube o baja y
+   `__tareasData` sólo trae abiertos.
+
+   🪤 El dato que hizo falta y no estaba: `source_type`. En el mismo pipeline conviven 94 tareas
+   tuyas (owner German, sin source_type) y 71 mails del canal contacto@ (DMARC, Instagram, CVs).
+   Sin separarlos, la vista mostraría spam como trabajo pendiente. */
+
+const SEM_YO = "75005271";              // owner HubSpot de German (medido, no deducido)
+const SEM_HG = /^HG\s*\d+/i;            // los tickets de Higiene CRM ya vienen con prefijo propio
+const SEM_CUPO_BAU = 2;                 // cuántas rankeadas entran en Hoy
+const SEM_DIAS = ["lun", "mar", "mié", "jue", "vie"];
+
+function semHoy() { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }
+function semDiaKey(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+function semLunes(d) { const x = new Date(d); const dow = (x.getDay() + 6) % 7; x.setDate(x.getDate() - dow); x.setHours(0, 0, 0, 0); return x; }
+/* Semana ISO. Se usa como clave de los objetivos: si usáramos "lunes de la semana" en formato
+   fecha, cambiar de año rompería el orden alfabético del histórico. */
+function semISO(d) {
+  const x = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  x.setUTCDate(x.getUTCDate() + 4 - (x.getUTCDay() || 7));
+  const y0 = new Date(Date.UTC(x.getUTCFullYear(), 0, 1));
+  return x.getUTCFullYear() + "-W" + String(Math.ceil((((x - y0) / 86400000) + 1) / 7)).padStart(2, "0");
+}
+function semUSD(n) { return "USD " + Math.round(Number(n) || 0).toLocaleString("es-AR"); }
+
+/* ── Estado. Las 3 claves están en STATE_KEYS → `localStorage.setItem` está monkey-patcheado y
+   dispara el push solo; no hay que llamar a stateSchedulePush a mano. ────────────────────── */
+function semLS(k) { try { return JSON.parse(localStorage.getItem(k) || "{}") || {}; } catch (e) { return {}; } }
+function semLSSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+
+function semObjSemana(iso) { return semLS("sem_objetivos")[iso || semISO(semHoy())] || null; }
+/* 🧊 Los objetivos se CONGELAN al declararlos: se guarda `original` y nunca se pisa. Se pueden
+   editar, pero el cambio queda a la vista. Un objetivo editable el viernes se cumple siempre y
+   no mide nada — es la diferencia entre un compromiso y un deseo. */
+function semObjGuardar(iso, lista) {
+  const all = semLS("sem_objetivos"); const prev = all[iso];
+  all[iso] = { objetivos: lista, ts: Date.now(),
+               original: prev && prev.original ? prev.original : lista.slice(),
+               editado: !!(prev && prev.original) };
+  semLSSet("sem_objetivos", all);
+}
+function semPlan() { return semLS("sem_plan"); }
+function semAsignar(id, diaKey) { const p = semPlan(); if (diaKey) p[String(id)] = diaKey; else delete p[String(id)]; semLSSet("sem_plan", p); renderSemana(); }
+function semEstSet() { const o = semLS("sem_estrategicas"); return new Set(Object.keys(o).filter(k => o[k])); }
+function semEstToggle(id) { const o = semLS("sem_estrategicas"); o[String(id)] = !o[String(id)]; semLSSet("sem_estrategicas", o); renderSemana(); }
+
+/* ── Población: las tareas de German, sin el ruido del canal y sin las ocultas ───────────── */
+function semMias() {
+  const hidden = (typeof getHiddenTareas === "function") ? getHiddenTareas() : new Set();
+  return (window.__tareasData || []).filter(t => {
+    const p = t.properties || {};
+    if (String(p.hubspot_owner_id || "") !== SEM_YO) return false;
+    if (p.source_type) return false;          // ← el canal contacto@innew.la
+    if (hidden.has(String(t.id))) return false;
+    return true;
+  });
+}
+function semEsHigiene(t) { return SEM_HG.test(((t.properties || {}).subject || "").trim()); }
+/* La cuenta sale del prefijo del asunto que ya escriben los agentes ("Daytona - …"). Es
+   presentación, NO criterio: agrupar por ese prefijo fue exactamente el error que hizo parecer
+   que había 10 duplicados cuando eran 3 (02/10). Acá sólo se usa para mostrar un rótulo. */
+function semCuenta(t) {
+  const s = ((t.properties || {}).subject || "").trim();
+  const m = s.match(/^([^-:·]{2,34})\s*[-:·]\s+/);
+  return m ? m[1].trim() : "";
+}
+function semTexto(t) {
+  const s = ((t.properties || {}).subject || "").trim();
+  const c = semCuenta(t);
+  return c ? s.slice(s.indexOf(c) + c.length).replace(/^\s*[-:·]\s*/, "") : s;
+}
+
+/* ── Score. Devuelve `sinPuntuar` cuando NO hay con qué medir (ni deal ni fecha): esos no se
+   mandan al fondo en silencio, van a un grupo visible. Mismo criterio que "sin bolsa" en
+   Seguimiento CSM y "sin estimar" en el Radar: un ranking que esconde lo que no supo medir
+   es peor que no rankear. ──────────────────────────────────────────────────────────────── */
+function semScore(t) {
+  const p = t.properties || {};
+  const inf = (window.__ticketDealInfo || {})[t.id] || null;
+  const est = (typeof tareaEstado === "function") ? tareaEstado(p.fecha_vencimiento) : { key: "sin" };
+  const motivos = [];
+  let pts = 0, plata = null;
+
+  if (inf && inf.monto > 0) {
+    /* Nurturing es pool de reactivación, no funnel: su monto no es plata esperable. Vale 0 por
+       diseño, pero es un 0 CONOCIDO, no un "no sé" — por eso no cae en sinPuntuar. */
+    /* 🪤 `getProbability(etapa, fallback)` devuelve el FALLBACK si es un número válido, e ignora
+       la etapa. Pasarle `0` como "por si acaso" hacía que la plata diera **siempre cero** y el
+       ranking se apoyara sólo en fechas (bug encontrado por el test del 02/10, no a ojo).
+       El 2º argumento es la probabilidad que manda HubSpot, igual que en todo el resto del
+       dashboard: `getProbability(p.dealstage, p.hs_deal_stage_probability)`. */
+    const prob = inf.pipeline === "default" ? (getProbability(inf.etapa, inf.prob) || 0) : 0;
+    plata = inf.monto * prob / 100;
+    if (plata > 0) { pts += Math.min(50, plata / 500); motivos.push(semUSD(plata) + " ponderados"); }
+    else motivos.push("deal sin peso (Nurturing)");
+  }
+  if (est.key === "vencida") { pts += 30 + Math.min(20, -est.days); motivos.push("vencida hace " + (-est.days) + " d"); }
+  else if (est.days === 0) { pts += 25; motivos.push("vence hoy"); }
+  else if (est.key === "porvencer") { pts += 15; motivos.push("vence en " + est.days + " d"); }
+
+  const edad = p.hs_createdate ? Math.round((Date.now() - new Date(Number(p.hs_createdate) || p.hs_createdate)) / 86400000) : null;
+  if (edad != null && edad > 0) { pts += Math.min(15, edad / 3); if (edad >= 14) motivos.push("espera hace " + edad + " d"); }
+
+  /* Las posposiciones son la señal más honesta de evitación, y el dato ya existía sin que nadie
+     lo mirara: cada vez que moviste la fecha quedó registrado. Suma, no resta. */
+  const pos = Number(p.cambios_fecha_tarea) || 0;
+  if (pos > 0) { pts += Math.min(15, pos * 5); motivos.push("pospuesta " + pos + (pos === 1 ? " vez" : " veces")); }
+
+  const sinPuntuar = plata == null && est.key === "sin";
+  return { pts: sinPuntuar ? -1 : pts, motivos: motivos, plata: plata, edad: edad, est: est, sinPuntuar: sinPuntuar };
+}
+
+/* ── Medidor: ¿la pila sube o baja? `__tareasData` sólo trae abiertos, así que las cerradas de
+   la semana hay que pedirlas. Una request, cacheada. Si falla NO se inventa un número: el
+   medidor dice que no pudo medirlo. ──────────────────────────────────────────────────────── */
+let SEM_CERR = null, SEM_CERR_PROM = null;
+async function semCargarCerradas(forzar) {
+  if (!forzar && SEM_CERR_PROM) return SEM_CERR_PROM;
+  SEM_CERR_PROM = (async () => {
+    if (typeof WEB_MODE !== "undefined" && !WEB_MODE) { SEM_CERR = { ok: false, error: "", n: 0 }; return SEM_CERR; }
+    try {
+      const desde = semLunes(semHoy()).getTime();
+      const res = await mcpCall("mcp__aaaa9eed-76e4-4bc8-a1a2-fad976f54ccb__search_crm_objects", {
+        objectType: "tickets",
+        filterGroups: [{ filters: [
+          { propertyName: "hs_pipeline_stage", operator: "EQ", value: "4" },
+          { propertyName: "hubspot_owner_id", operator: "EQ", value: SEM_YO },
+          { propertyName: "hs_lastmodifieddate", operator: "GTE", value: String(desde) }
+        ] }],
+        properties: ["subject", "hs_lastmodifieddate", "source_type"], limit: 200,
+        chatInsights: { userIntent: "Semana/Día: cuántas tareas cerraste esta semana", satisfaction: "NEUTRAL" }
+      });
+      const parsed = typeof res === "string" ? JSON.parse(res) : res;
+      const r = parsed.results || (parsed.content && parsed.content[0] && JSON.parse(parsed.content[0].text).results) || [];
+      SEM_CERR = { ok: true, n: r.filter(x => !(x.properties || {}).source_type).length, error: "" };
+    } catch (e) { SEM_CERR = { ok: false, n: 0, error: e.message || String(e) }; }
+    return SEM_CERR;
+  })();
+  return SEM_CERR_PROM;
+}
+
+function renderSemana() {
+  const host = document.getElementById("sem-body"); if (!host) return;
+  if (!window.__tareasData) { host.innerHTML = `<div style="padding:18px; color:#9ca3af; font-size:13px;">Cargando tareas…</div>`; return; }
+  if (!SEM_CERR) semCargarCerradas().then(() => renderSemana()).catch(() => {});
+
+  const hoy = semHoy(), lunes = semLunes(hoy), iso = semISO(hoy), hoyKey = semDiaKey(hoy);
+  const mias = semMias();
+  const higiene = mias.filter(semEsHigiene);
+  const base = mias.filter(t => !semEsHigiene(t));
+  const estSet = semEstSet();
+  const plan = semPlan();
+
+  base.forEach(t => { t.__sc = semScore(t); });
+  const estrategicas = base.filter(t => estSet.has(String(t.id)));
+  const bau = base.filter(t => !estSet.has(String(t.id)) && !t.__sc.sinPuntuar).sort((a, b) => b.__sc.pts - a.__sc.pts);
+  const sinPuntuar = base.filter(t => !estSet.has(String(t.id)) && t.__sc.sinPuntuar);
+
+  /* ── MEDIDOR (del preview C) ───────────────────────────────────────────────────────────── */
+  const entradas = base.filter(t => Number((t.properties || {}).hs_createdate) >= lunes.getTime()).length;
+  const cerr = SEM_CERR;
+  const plataTot = base.reduce((s, t) => s + (t.__sc.plata || 0), 0);
+  const conPlata = base.filter(t => (t.__sc.plata || 0) > 0).length;
+  const vencidas = base.filter(t => t.__sc.est.key === "vencida").length;
+  const masVieja = base.reduce((m, t) => Math.max(m, t.__sc.edad || 0), 0);
+  const delta = cerr && cerr.ok ? cerr.n - entradas : null;
+
+  const medidor = `<div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px;">
+    <div class="cue-kpi" style="padding:13px 15px;">
+      <div class="kl">Esta semana</div>
+      <div class="kv" style="font-size:24px; color:${delta == null ? "#9ca3af" : (delta >= 0 ? "#047857" : "#b91c1c")};">
+        ${cerr && cerr.ok ? cerr.n + " cerradas" : (cerr && cerr.error ? "sin medir" : "midiendo…")}</div>
+      <div class="ks">${cerr && cerr.ok
+        ? `entraron ${entradas} · <b style="color:${delta >= 0 ? "#047857" : "#b91c1c"}">${delta >= 0 ? "la pila bajó " + delta : "la pila creció " + (-delta)}</b>`
+        : (cerr && cerr.error
+          ? `<span style="color:#b91c1c;" title="${escAttr(cerr.error)}">no pude leer las cerradas — pasá el mouse para ver el error</span>`
+          : "consultando HubSpot…")}</div>
+    </div>
+    <div class="cue-kpi" style="padding:13px 15px;">
+      <div class="kl">Deuda acumulada</div>
+      <div class="kv" style="font-size:24px; color:${base.length > 40 ? "#b45309" : "#111"};">${base.length}</div>
+      <div class="ks">la más vieja espera hace <b>${masVieja} d</b>${higiene.length ? ` · ${higiene.length} de higiene en carril aparte` : ""}</div>
+      <div style="margin-top:8px; font-size:11.5px; line-height:1.75; color:#4b5563;">
+        <div>💰 Con plata asociada · <b>${conPlata}</b>${plataTot > 0 ? " · " + semUSD(plataTot) + " ponderados" : ""}</div>
+        <div>🔥 Vencidas · <b style="color:${vencidas ? "#b91c1c" : "#6b7280"}">${vencidas}</b></div>
+        <div>🎯 Estratégicas · <b>${estrategicas.length}</b></div>
+        <div>❓ Sin puntuar <span style="color:#9ca3af;">(sin deal ni fecha)</span> · <b>${sinPuntuar.length}</b></div>
+      </div>
+    </div>
+  </div>`;
+
+  /* ── OBJETIVOS ─────────────────────────────────────────────────────────────────────────── */
+  const ob = semObjSemana(iso);
+  const objHtml = `<div style="background:#fff; border:1px solid #e8e8ec; border-radius:12px; padding:13px 16px; margin-bottom:14px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+      <div style="font-size:13px; font-weight:800;">🎯 Objetivos · semana ${escAttr(iso)}</div>
+      <div style="font-size:11px; color:#6b7280;">${ob
+        ? "declarados " + new Date(ob.ts).toLocaleDateString("es-AR") + (ob.editado ? ` · <span style="color:#b45309;">editados</span>` : "")
+        : '<span style="color:#b45309;">sin declarar</span>'}</div>
+    </div>
+    ${ob && ob.objetivos.length
+      ? ob.objetivos.map((o, i) => `<div style="display:flex; justify-content:space-between; gap:12px; font-size:12.5px; padding:6px 0; border-bottom:1px dashed #eee;">
+          <span>${escAttr(o.txt)}</span>
+          <span style="white-space:nowrap; cursor:pointer; user-select:none;" onclick="semObjTick(${i})">${o.ok ? '<b style="color:#047857;">✓ logrado</b>' : '<span style="color:#9ca3af;">⬜ pendiente</span>'}</span>
+        </div>`).join("")
+      : `<div style="font-size:12.5px; color:#6b7280;">Todavía no declaraste objetivos para esta semana.</div>`}
+    ${ob && ob.editado ? `<div style="margin-top:7px; font-size:11px; color:#92400e; background:#FFFBEB; border:1px solid #FDE68A; border-radius:7px; padding:6px 9px;">
+        Cambiaste los objetivos después de declararlos. El original queda guardado: <i>${escAttr(ob.original.map(o => o.txt).join(" · "))}</i></div>` : ""}
+    <button onclick="semObjEditar()" style="margin-top:9px; font-family:inherit; cursor:pointer; font-size:11.5px; font-weight:700; padding:5px 11px; border-radius:8px; border:1px solid #C7BDFF; background:#F1EFFF; color:#4030C8;">${ob ? "✎ Editar" : "+ Declarar los de esta semana"}</button>
+  </div>`;
+
+  /* ── HOY: 2 de BAU + 1 estratégica con cupo PROTEGIDO ──────────────────────────────────── */
+  /* Si planificaste el día, manda tu plan; si no planificaste nada, el motor propone las mejores.
+     No al revés: la vista no te re-prioriza lo que vos ya decidiste el lunes. */
+  const delDia = bau.filter(t => plan[String(t.id)] === hoyKey);
+  const hoyBau = (delDia.length ? delDia : bau).slice(0, SEM_CUPO_BAU);
+  const hoyEst = estrategicas.slice(0, 1);
+
+  const card = (t, tipo) => {
+    const sc = t.__sc, cta = semCuenta(t);
+    const col = tipo === "est" ? { bd: "#C7BDFF", bg: "#F7F5FF", fg: "#4030C8", et: "Estratégico · lugar fijo" }
+      : sc.est.key === "vencida" || sc.est.days === 0 ? { bd: "#FECACA", bg: "#FEF2F2", fg: "#b91c1c", et: sc.est.days === 0 ? "Vence hoy" : "Vencida" }
+      : { bd: "#A7F3D0", bg: "#ECFDF5", fg: "#047857", et: sc.plata ? "Plata en juego" : "Prioridad" };
+    return `<div style="background:#fff; border:1.5px solid ${col.bd}; border-radius:13px; padding:14px 16px; margin-bottom:10px;">
+      <div style="font-size:10.5px; font-weight:800; letter-spacing:.4px; text-transform:uppercase; color:#6b7280;">
+        <span style="display:inline-block; font-size:9.5px; border-radius:999px; padding:2px 8px; background:${col.bg}; color:${col.fg};">${escAttr(col.et)}</span>
+        ${cta ? "&nbsp;" + escAttr(cta) : ""}</div>
+      <div style="font-size:15px; font-weight:700; margin:6px 0 8px; line-height:1.35;">${escAttr(semTexto(t))}</div>
+      ${sc.motivos.length ? `<div style="font-size:11.5px; color:#6b7280; background:#fafafc; border-radius:7px; padding:6px 10px; margin-bottom:10px;">
+        <b style="color:#374151;">Por qué está acá:</b> ${sc.motivos.map(escAttr).join(" · ")}</div>` : ""}
+      <button onclick="tareaDone('${escAttr(String(t.id))}')" style="font-family:inherit; cursor:pointer; font-size:11.5px; font-weight:700; padding:5px 12px; border-radius:8px; border:1px solid #C7BDFF; background:#F1EFFF; color:#4030C8;">✓ Hecho</button>
+      <button onclick="semAsignar('${escAttr(String(t.id))}','${escAttr(semDiaKey(new Date(lunes.getTime() + 7 * 86400000)))}')" style="font-family:inherit; cursor:pointer; font-size:11.5px; font-weight:700; padding:5px 12px; border-radius:8px; border:1px solid #e5e7eb; background:#fff; color:#6b7280;">Pasar al lunes</button>
+      <button onclick="semEstToggle('${escAttr(String(t.id))}')" style="font-family:inherit; cursor:pointer; font-size:11.5px; font-weight:700; padding:5px 12px; border-radius:8px; border:1px solid #e5e7eb; background:#fff; color:#6b7280;">${tipo === "est" ? "No es estratégica" : "Marcar estratégica"}</button>
+      <a href="https://app.hubspot.com/contacts/${ACCOUNT_ID}/record/0-5/${escAttr(String(t.id))}" target="_blank" rel="noopener" style="font-size:11.5px; font-weight:700; color:#4030C8; margin-left:6px; text-decoration:none;">HubSpot ↗</a>
+    </div>`;
+  };
+
+  /* 🚪 El hueco estratégico NO se rellena con BAU cuando está vacío. Si no hay ninguna marcada,
+     invita a marcar una y propone candidatas (las que no tienen deal asociado suelen ser trabajo
+     interno). Rellenarlo con la siguiente de la lista sería romper el único mecanismo que hace
+     que lo estratégico exista. */
+  const candidatas = bau.filter(t => !(window.__ticketDealInfo || {})[t.id]).slice(0, 3);
+  const estHtml = hoyEst.length ? card(hoyEst[0], "est")
+    : `<div style="background:#fff; border:1.5px dashed #C7BDFF; border-radius:13px; padding:14px 16px; margin-bottom:10px;">
+        <div style="font-size:12.5px; font-weight:700; color:#4030C8;">🎯 El lugar de lo estratégico está vacío</div>
+        <div style="font-size:12px; color:#6b7280; margin:5px 0 9px; line-height:1.6;">Este espacio está reservado y <b>no se llena con BAU</b>: si lo hiciera, lo estratégico no entraría nunca. Marcá una tarea y queda fija acá.</div>
+        ${candidatas.map(t => `<div style="font-size:12px; padding:4px 0;">· ${escAttr(semTexto(t).slice(0, 90))}
+          <button onclick="semEstToggle('${escAttr(String(t.id))}')" style="font-family:inherit; cursor:pointer; font-size:10.5px; font-weight:700; padding:2px 8px; border-radius:7px; border:1px solid #C7BDFF; background:#F1EFFF; color:#4030C8; margin-left:5px;">marcar</button></div>`).join("")}
+      </div>`;
+
+  /* ── TABLERO DE LA SEMANA (del preview B) ──────────────────────────────────────────────── */
+  const dias = SEM_DIAS.map((n, i) => { const d = new Date(lunes.getTime() + i * 86400000); return { n, d, k: semDiaKey(d) }; });
+  const enDia = k => base.filter(t => plan[String(t.id)] === k);
+  const sinRepartir = base.filter(t => !plan[String(t.id)]);
+  const cols = dias.map(dd => {
+    const items = enDia(dd.k), esHoy = dd.k === hoyKey;
+    return `<div style="background:#fff; border:1px solid ${esHoy ? "#430C89" : "#e8e8ec"}; ${esHoy ? "box-shadow:0 0 0 3px #F1EFFF;" : ""} border-radius:11px; min-height:150px; padding:9px;">
+      <div style="font-size:11.5px; font-weight:800; color:${esHoy ? "#4030C8" : "#6b7280"}; margin-bottom:7px; display:flex; justify-content:space-between;">
+        <span>${esHoy ? "HOY · " : ""}${dd.n.toUpperCase()} ${dd.d.getDate()}</span><span>${items.length || ""}</span></div>
+      ${items.map(t => `<div style="background:#fafafc; border:1px solid #ececf2; border-radius:8px; padding:6px 8px; margin-bottom:5px; font-size:11.5px; line-height:1.35;">
+        <b style="display:block; font-size:10.5px; color:#4030C8; margin-bottom:2px;">${escAttr(semCuenta(t) || "—")}</b>${escAttr(semTexto(t).slice(0, 70))}
+        <div style="margin-top:4px;"><span onclick="semMover('${escAttr(String(t.id))}',-1)" style="cursor:pointer; color:#9ca3af;">◀</span>
+          <span onclick="semMover('${escAttr(String(t.id))}',1)" style="cursor:pointer; color:#9ca3af; margin-left:6px;">▶</span>
+          <span onclick="semAsignar('${escAttr(String(t.id))}','')" style="cursor:pointer; color:#9ca3af; margin-left:6px;" title="Sacar de la semana">✕</span></div>
+      </div>`).join("")}
+    </div>`;
+  }).join("");
+
+  const colaHtml = sinRepartir.slice(0, 12).map(t => {
+    const sc = t.__sc;
+    return `<tr>
+      <td style="font-size:11.5px; white-space:nowrap; font-weight:700;">${escAttr(semCuenta(t) || "—")}</td>
+      <td style="font-size:12px;">${escAttr(semTexto(t).slice(0, 110))}
+        ${sc.motivos.length ? `<div style="font-size:10.5px; color:#9ca3af; margin-top:2px;">${sc.motivos.map(escAttr).join(" · ")}</div>` : ""}</td>
+      <td style="text-align:right; white-space:nowrap; width:1%;">
+        ${dias.map(dd => `<span onclick="semAsignar('${escAttr(String(t.id))}','${dd.k}')" title="Mandar a ${dd.n}" style="cursor:pointer; font-size:10.5px; font-weight:700; color:#4030C8; background:#F1EFFF; border:1px solid #C7BDFF; border-radius:6px; padding:2px 6px; margin-left:3px;">${dd.n}</span>`).join("")}
+      </td></tr>`;
+  }).join("");
+
+  host.innerHTML = `
+    ${medidor}
+    ${objHtml}
+    <div style="font-size:12.5px; font-weight:800; color:#6b7280; margin:16px 0 9px; letter-spacing:.5px;">
+      HOY · ${hoy.toLocaleDateString("es-AR", { weekday: "long", day: "numeric", month: "long" }).toUpperCase()}</div>
+    ${hoyBau.map(t => card(t, "bau")).join("") || `<div style="padding:14px; background:#ECFDF5; border:1px solid #A7F3D0; border-radius:11px; font-size:12.5px; color:#047857;">✓ No queda nada rankeado para hoy.</div>`}
+    ${estHtml}
+    <div style="border:1px solid #e8e8ec; border-radius:12px; background:#fff; overflow:hidden; margin-top:17px;">
+      <div style="padding:10px 14px; border-bottom:1px solid #e8e8ec; font-size:12.5px; font-weight:800;">📅 El resto de la semana que elegiste
+        <span style="margin-left:9px; font-weight:500; color:#9ca3af;">el lunes planificás acá; todos los días ejecutás arriba</span></div>
+      <div style="padding:11px; display:grid; grid-template-columns:repeat(5,1fr); gap:9px;">${cols}</div>
+    </div>
+    ${sinRepartir.length ? `<div style="border:1px solid #FDE68A; border-radius:12px; background:#fff; overflow:hidden; margin-top:11px;">
+      <div style="padding:10px 14px; background:#FFFBEB; color:#92400e; border-bottom:1px solid #FDE68A; font-size:12.5px; font-weight:800;">
+        📥 Entrada sin repartir <span style="margin-left:auto; float:right; font-weight:600;">${sinRepartir.length}</span></div>
+      <table class="cue-table" style="font-size:12px;"><tbody>${colaHtml}</tbody></table>
+      ${sinRepartir.length > 12 ? `<div style="padding:8px 14px; font-size:11.5px; color:#9ca3af;">Se muestran las 12 de mayor impacto. El resto vive en la pestaña Tareas.</div>` : ""}
+    </div>` : ""}
+    ${sinPuntuar.length ? `<div style="border:1px solid #e8e8ec; border-radius:12px; background:#fff; overflow:hidden; margin-top:11px;">
+      <div style="padding:10px 14px; border-bottom:1px solid #e8e8ec; font-size:12.5px; font-weight:800;">❓ Sin puntuar
+        <span style="margin-left:9px; font-weight:500; color:#6b7280;">no tienen deal asociado ni fecha, así que no hay con qué rankearlas</span>
+        <span style="float:right; font-weight:600; color:#9ca3af;">${sinPuntuar.length}</span></div>
+      <div style="padding:9px 14px; font-size:11.5px; color:#92400e; background:#FFFBEB; border-bottom:1px solid #FDE68A; line-height:1.6;">
+        ⚠️ <b>Acá suele estar lo mejor, no el resto.</b> Si la tarea es "cargar el deal que el cliente ya aceptó",
+        por definición todavía no hay deal del cual sacar el monto — la tarea más valiosa es justo la que el motor
+        no puede medir. Por eso se listan, no se cuentan.</div>
+      <table class="cue-table" style="font-size:12px;"><tbody>${sinPuntuar.slice(0, 8).map(t => `<tr>
+        <td style="font-size:11.5px; white-space:nowrap; font-weight:700;">${escAttr(semCuenta(t) || "—")}</td>
+        <td style="font-size:12px;">${escAttr(semTexto(t).slice(0, 110))}</td>
+        <td style="text-align:right; white-space:nowrap; width:1%;">
+          <span onclick="semEstToggle('${escAttr(String(t.id))}')" style="cursor:pointer; font-size:10.5px; font-weight:700; color:#4030C8; background:#F1EFFF; border:1px solid #C7BDFF; border-radius:6px; padding:2px 7px;">marcar estratégica</span>
+          ${dias.map(dd => `<span onclick="semAsignar('${escAttr(String(t.id))}','${dd.k}')" title="Mandar a ${dd.n}" style="cursor:pointer; font-size:10.5px; font-weight:700; color:#4030C8; margin-left:4px;">${dd.n}</span>`).join("")}
+        </td></tr>`).join("")}</tbody></table>
+    </div>` : ""}
+    <div class="small" style="margin-top:9px; font-style:italic; color:#888; line-height:1.6;">
+      Esta vista sólo muestra <b>tus</b> tickets (owner German) y <b>excluye el canal <code>contacto@innew.la</code></b>,
+      que comparte el mismo pipeline y es casi todo ruido. Los <code>HG*</code> de higiene van aparte.
+      El <b>lugar estratégico no se llena con BAU</b> aunque esté vacío: es la única forma de que lo que no tiene
+      monto ni vencimiento no desaparezca. <b>Sin puntuar</b> = sin deal asociado y sin fecha: no hay con qué medirlo,
+      así que se cuenta aparte en vez de mandarlo al fondo en silencio.
+    </div>`;
+}
+function semMover(id, delta) {
+  const plan = semPlan(), k = plan[String(id)]; if (!k) return;
+  const parts = k.split("-"); const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+  d.setDate(d.getDate() + delta);
+  semAsignar(id, semDiaKey(d));
+}
+function semObjTick(i) {
+  const iso = semISO(semHoy()), ob = semObjSemana(iso); if (!ob) return;
+  ob.objetivos[i].ok = !ob.objetivos[i].ok;
+  const all = semLS("sem_objetivos"); all[iso] = ob; semLSSet("sem_objetivos", all);
+  renderSemana();
+}
+function semObjEditar() {
+  const iso = semISO(semHoy()), ob = semObjSemana(iso);
+  const act = ob ? ob.objetivos.map(o => o.txt).join("\n") : "";
+  const txt = prompt("Objetivos de la semana (uno por línea):\n\nEl original queda guardado: si los editás, el dashboard lo muestra.", act);
+  if (txt === null) return;
+  const lista = txt.split("\n").map(s => s.trim()).filter(Boolean).map(s => {
+    const prev = ob && ob.objetivos.find(o => o.txt === s);
+    return { txt: s, ok: prev ? prev.ok : false };
+  });
+  semObjGuardar(iso, lista);
+  renderSemana();
+}
+
 function renderTareas() {
   const cont = document.getElementById("tareas-tabla");
   if (!cont) return;
@@ -19266,6 +19676,9 @@ async function tareaDone(id) {
     await hsWrite({ updateRequest: { objects: [{ objectType: "tickets", objectId: Number(id), properties: { hs_pipeline_stage: "4" } }] } });
     window.__tareasData = (window.__tareasData || []).filter(x => String(x.id) !== String(id));
     renderTareas();
+    /* Semana/Día lee la MISMA lista, así que si no se repinta queda mostrando una tarjeta de algo
+       ya cerrado. Un solo camino para cerrar (este) y todos los que miran se enteran. */
+    try { if (document.getElementById("sem-body")) renderSemana(); } catch (e) {}
     try { if (typeof renderScorecard === "function") renderScorecard(); refreshFocoSug(); } catch (e) {}
   } catch (e) { if (st) { st.classList.add("err"); st.textContent = "error: " + String(e.message || e).slice(0, 80); } console.warn("tareaDone falló", id, e); }
 }
