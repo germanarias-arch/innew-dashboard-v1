@@ -10702,12 +10702,19 @@ function jtAnomalias(cuentas) {
       if (est.entra) A.sintomar.items.push(it);
       /* Gobernanza por técnico: lo que Sonia le pidió a German que EXIJA. No es un ranking de
          personas, es dónde poner la conversación. */
+      /* 🎫 Se guardan los TICKETS, no sólo el contador (02/10 → 05/10, pedido de German:
+         *"quiero poder clickear los tickets que tienen y poder entrar en el ticket en Jira"*).
+         Antes esta tabla contaba y tiraba la lista, así que para saber CUÁL era el dormido de
+         Ulises había que ir a buscarlo a mano.
+         🪤 Los nombres son `tk*` y NO reusan `dormidos`/`vencidos`: si quedara algún consumidor
+         viejo esperando un número, al encontrarse un array rompería ruidosamente en vez de
+         imprimir `[object Object]` o un conteo equivocado. */
       const k = t.a || "(sin asignar)";
-      const g = porTec[k] || (porTec[k] = { tec: k, n: 0, dormidos: 0, vencidos: 0, criticos: 0 });
-      g.n++;
-      if (t.quieto != null && t.quieto >= JT_DORMIDO) g.dormidos++;
-      if (t.venceEn != null && t.venceEn < 0) g.vencidos++;
-      if (pr.crit) g.criticos++;
+      const g = porTec[k] || (porTec[k] = { tec: k, tkTodos: [], tkDorm: [], tkVenc: [], tkCrit: [] });
+      g.tkTodos.push(it);
+      if (t.quieto != null && t.quieto >= JT_DORMIDO) g.tkDorm.push(it);
+      if (t.venceEn != null && t.venceEn < 0) g.tkVenc.push(it);
+      if (pr.crit) g.tkCrit.push(it);
     });
   });
   // dentro de cada grupo, lo más grave primero
@@ -10722,7 +10729,7 @@ function jtAnomalias(cuentas) {
   A.critico.items.sort((a, b) => (b.edad || 0) - (a.edad || 0));
   A.mios.items.sort((a, b) => String(a.cli).localeCompare(String(b.cli)));
   const tecs = Object.keys(porTec).map(k => porTec[k])
-    .sort((a, b) => (b.vencidos + b.dormidos) - (a.vencidos + a.dormidos) || b.n - a.n);
+    .sort((a, b) => (b.tkVenc.length + b.tkDorm.length) - (a.tkVenc.length + a.tkDorm.length) || b.tkTodos.length - a.tkTodos.length);
   Object.keys(A).forEach(k => { A[k].id = k; });   // el grupo viaja con el ticket: decide qué borrador se arma
   return { grupos: A, tecs: tecs };
 }
@@ -11110,6 +11117,13 @@ function csmToggle(id) {
   renderCsm();
 }
 function csmFiltro(v) { window.__csmFiltro = v; renderCsm(); }
+/* Abre/cierra el detalle de un balde de "Quién tiene qué". NO re-renderiza: sólo cambia
+   `display` de una fila que ya está dibujada. Un `renderRadarSoporte()` acá destruiría la
+   tabla entera y cerraría de paso cualquier otro detalle abierto. */
+function gobTog(id) {
+  const n = document.getElementById(id); if (!n) return;
+  n.style.display = (n.style.display === "none" || !n.style.display) ? "table-row" : "none";
+}
 function rsopCsm(v) { window.__rsopCsm = v; renderRadarSoporte(); }
 /* Vuelve a preguntarle a Jira y repinta las dos vistas que dependen del dato. */
 function jtRefrescar() {
@@ -11695,13 +11709,36 @@ async function renderRadarSoporte() {
       </div>
       <table class="cue-table" style="font-size:12px;"><thead><tr>
         <th>Técnico</th><th style="text-align:right;">Abiertos</th><th style="text-align:right;">Dormidos</th><th style="text-align:right;">Vencidos</th><th style="text-align:right;">Críticos</th></tr></thead>
-      <tbody>${tecs.map(g => `<tr>
+      <tbody>${tecs.map((g, i) => {
+        /* Cada número con contenido es un botón que abre SU lista. Las filas de detalle se
+           dibujan ya armadas y ocultas, y el clic sólo cambia `display`: **no hay re-render**,
+           así que no se repite la trampa del nodo que muere entre el clic y el repintado.
+           Los ids son `g<i>-<balde>` — nunca el nombre del técnico, que trae espacios y tildes. */
+        const num = (arr, col, bid) => {
+          const n = arr.length;
+          if (!n) return `<td style="text-align:right; color:#d1d5db;">—</td>`;
+          return `<td style="text-align:right;"><span onclick="gobTog('g${i}-${bid}')" title="Ver cuáles son y abrirlos en Jira"
+            style="cursor:pointer; font-weight:700; color:${col}; border-bottom:1px dotted ${col};">${n} ▸</span></td>`;
+        };
+        /* El detalle linkea al ticket mismo (`browse/KEY`), no a una búsqueda: la lista sale de
+           lo que el radar YA contó, así que el número y la lista no se pueden despegar. */
+        const det = (arr, bid, lbl) => arr.length ? `<tr id="g${i}-${bid}" style="display:none; background:#FAFAFC;">
+          <td colspan="5" style="padding:8px 14px;">
+            <div style="font-size:10.5px; font-weight:700; color:#6b7280; text-transform:uppercase; letter-spacing:.4px; margin-bottom:5px;">${escAttr(lbl)} · ${escAttr(g.tec)}</div>
+            ${arr.map(t => `<div style="font-size:12px; padding:3px 0;">
+              <a href="${jtLink(t.k)}" target="_blank" rel="noopener" style="font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#4030C8; font-weight:700; text-decoration:none;">${escAttr(t.k)} ↗</a>
+              <span style="color:#9ca3af; margin:0 6px;">${escAttr(t.cli || "—")}</span>${escAttr(String(t.r || "").slice(0, 95))}
+              <span style="color:#9ca3af; font-size:10.5px; margin-left:5px;">${escAttr(t.s)}${t.quieto != null ? " · " + t.quieto + " d quieto" : ""}${t.venceEn != null && t.venceEn < 0 ? " · venció hace " + (-t.venceEn) + " d" : ""}</span>
+            </div>`).join("")}
+          </td></tr>` : "";
+        return `<tr>
         <td style="font-weight:600; white-space:nowrap;">${escAttr(g.tec)}${jtSlackBtn(g.tec)}</td>
-        <td style="text-align:right;">${g.n}</td>
-        <td style="text-align:right; ${g.dormidos ? "color:#b45309; font-weight:700;" : "color:#d1d5db;"}">${g.dormidos || "—"}</td>
-        <td style="text-align:right; ${g.vencidos ? "color:#b91c1c; font-weight:700;" : "color:#d1d5db;"}">${g.vencidos || "—"}</td>
-        <td style="text-align:right; ${g.criticos ? "color:#b91c1c; font-weight:700;" : "color:#d1d5db;"}">${g.criticos || "—"}</td>
-      </tr>`).join("")}</tbody></table>
+        ${num(g.tkTodos, "#4030C8", "all")}
+        ${num(g.tkDorm, "#b45309", "dor")}
+        ${num(g.tkVenc, "#b91c1c", "ven")}
+        ${num(g.tkCrit, "#b91c1c", "cri")}
+      </tr>${det(g.tkTodos, "all", "Todos los abiertos")}${det(g.tkDorm, "dor", "Dormidos")}${det(g.tkVenc, "ven", "Vencidos")}${det(g.tkCrit, "cri", "Críticos")}`;
+      }).join("")}</tbody></table>
     </div>` : "";
 
   const avisoRotas = rotas.length ? `<div style="margin-bottom:10px; padding:8px 12px; background:#FEF2F2; border:1px solid #FECACA; border-radius:8px; font-size:11.5px; color:#b91c1c;">
