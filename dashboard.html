@@ -11410,7 +11410,21 @@ function jtFilaTicket(t, mostrar, gid) {
   /* Registro para los botones de acción: el clic recupera el ticket entero por clave, sin
      serializar el objeto adentro del onclick. `gid` es el grupo que lo trajo (frenado,
      vencido…) y decide qué borrador se arma. */
-  RSOP_T[t.k] = Object.assign({}, t, { gid: gid || "" });
+  /* 🪤 Un ticket cae en VARIOS grupos a la vez (los `if` de jtAnomalias son independientes, no
+     excluyentes), así que esta línea se ejecuta varias veces para la misma clave. Hasta el
+     08/10 ganaba **el último que se dibujara**, o sea que el ORDEN VISUAL de los bloques
+     decidía en silencio qué borrador se armaba: al mover Crítico más arriba, un ticket
+     crítico-y-dormido habría pasado a tener borrador de "dormido". Orden de pantalla y
+     gravedad son dos cosas distintas y no pueden estar acopladas — ahora gana el grupo más
+     grave, lo dibuje donde lo dibuje. Frenado le gana a Crítico porque es el diagnóstico más
+     específico (Frenado ⊂ Crítico: además de impedir la compra, está pausado o esperando al
+     cliente sin fecha). El sello de pasada evita que un gid viejo sobreviva a un repintado en
+     el que el ticket ya no esté en ese grupo. */
+  const rank = RSOP_GID_RANK[gid] != null ? RSOP_GID_RANK[gid] : -1;
+  const prev = RSOP_T[t.k];
+  if (!prev || prev._pass !== RSOP_PASS || rank > prev._rank) {
+    RSOP_T[t.k] = Object.assign({}, t, { gid: gid || "", _pass: RSOP_PASS, _rank: rank });
+  }
   const nota = rsopNotaDe(t.k);
   /* 🚪 "Sin tomar" NO lleva el botón de nota interna: lo que falta ahí no es escribir, es
      **mover el estado**, y eso el dashboard no lo hace. El proxy es lectura + notas internas por
@@ -11466,6 +11480,13 @@ function jtFilaTicket(t, mostrar, gid) {
    localStorage (`rsop_notas`) para que un mismo ticket no reciba dos notas iguales en el
    mismo día por un doble clic. */
 const RSOP_T = {};
+/* Gravedad del grupo, para decidir qué borrador se arma cuando un ticket cae en varios.
+   Es DELIBERADAMENTE independiente del orden de los bloques en pantalla: el orden visual lo
+   decide German y puede cambiar, la gravedad no. `sintomar` va bajo porque ahí lo que falta
+   no es escribir una nota sino mover el estado en Jira; `mios` es lo menos grave (es trabajo
+   administrativo propio, no del cliente). */
+const RSOP_GID_RANK = { frenado: 6, critico: 5, vencido: 4, dormido: 3, cierra: 2, sintomar: 1, mios: 0 };
+let RSOP_PASS = 0;   // sello de repintado: ver jtFilaTicket
 const RSOP_NOTAS_KEY = "rsop_notas";
 function rsopNotas() { try { return JSON.parse(localStorage.getItem(RSOP_NOTAS_KEY) || "{}") || {}; } catch (e) { return {}; } }
 function rsopNotaDe(k) {
@@ -11670,6 +11691,7 @@ async function renderRadarSoporte() {
   }
 
   const { grupos, tecs } = jtAnomalias(conDato);
+  RSOP_PASS++;   // nueva pasada de dibujo: los gid de la anterior ya no valen (ver jtFilaTicket)
   const totReal = conDato.reduce((s, c) => s + jtDeCuenta(c).real.length, 0);
   const totAdmin = conDato.reduce((s, c) => s + jtDeCuenta(c).admin.length, 0);
   const ts = conDato.map(c => jtDeCuenta(c).ts).filter(Boolean).sort().pop();
@@ -11768,9 +11790,15 @@ async function renderRadarSoporte() {
     ${bloque(grupos.sintomar)}
     ${faBloqueHtml()}
     ${bloque(grupos.frenado)}
+    ${/* 🔴 Va pegado a Frenado desde el 2026-10-08 (pedido de German: *"debería ir abajo de
+          «Bloquea la compra y está frenado»"*). Antes caía después de Dormidos y los dos
+          bloques rojos —los únicos que son «van todos, estén como estén»— quedaban separados
+          por dos bloques ámbar, así que la lectura de arriba hacia abajo no seguía la
+          gravedad. Frenado primero y Crítico después es de lo particular a lo general:
+          Frenado ⊂ Crítico (ver jtAnomalias, exige pr.crit). */""}
+    ${bloque(grupos.critico)}
     ${bloque(grupos.vencido)}
     ${bloque(grupos.dormido, "quieto")}
-    ${bloque(grupos.critico)}
     ${bloque(grupos.mios)}
     ${bloque(grupos.cierra)}
     ${gob}
