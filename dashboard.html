@@ -11445,6 +11445,30 @@ function jtFilaTicket(t, mostrar, gid) {
           style="font-family:inherit; cursor:pointer; font-size:11px; font-weight:700; padding:4px 9px; border-radius:7px; border:1px solid #C7BDFF; background:#F1EFFF; color:#4030C8; white-space:nowrap;">✎ Nota interna</button>${nota ? `<div style="font-size:10px; color:#047857; margin-top:3px; text-align:right;">✓ publicada ${escAttr(nota.hora)}</div>` : ""}`;
   const bits = [];
   if (mostrar !== "quieto" && t.quieto != null) bits.push(t.quieto === 0 ? "movido hoy" : t.quieto + " d quieto");
+  /* ✉ Última respuesta: CUÁNDO y QUIÉN (pedido de German 2026-10-22). El dato ya venía del
+     proxy (`lc`/`la`/`nc` desde el 28/09) y ya se mostraba en la tabla de abajo, pero no en
+     las filas del Radar, que son las que él mira.
+     🪤 Va pegado a `quieto` a propósito, porque juntos desarman un espejismo: **"movido hoy"
+     no quiere decir que alguien haya contestado**. Cargar horas, editar un campo o mover el
+     estado tocan `updated` sin que el cliente reciba una palabra, así que un ticket puede
+     verse atendido y tener la última respuesta hace tres semanas. Mostrar los dos al lado
+     hace visible la brecha en vez de taparla.
+     🤐 NO se deduce si el que escribió es del cliente o de Innew: esa decisión ya está tomada
+     en `rsopPelota` (ver el comentario de la tabla) y se sostiene — un nombre desconocido
+     puede ser de cualquiera de los dos, y clasificar mal en silencio es peor que no
+     clasificar. Para eso está la columna Pelota, que sale del estado, que es dato duro.
+     `nc` separa "nadie escribió nunca" de "el proxy no trajo la fecha": sin esa distinción un
+     ticket virgen y uno con un hueco de datos se verían idénticos. */
+  if (t.resp) {
+    const rd = t.respDias;
+    const frio = rd != null && rd >= JT_DORMIDO;
+    bits.push(`<span${frio ? ' style="color:#b45309; font-weight:700;"' : ""}`
+      + ` title="Última respuesta en el ticket${t.respQuien ? ": " + escAttr(t.respQuien) : ""}. No es lo mismo que la última modificación.">`
+      + `✉ ${rd === 0 ? "hoy" : rd + " d"}${t.respQuien ? " · " + escAttr(rsopNombre(t.respQuien)) : ""}</span>`);
+  } else {
+    bits.push(`<span style="color:#cbd5e1;" title="${t.nCom ? "Hay respuestas pero el proxy no trajo la fecha" : "Nadie escribió todavía en este ticket"}">`
+      + `${t.nCom ? "✉ —" : "✉ sin respuestas"}</span>`);
+  }
   if (t.edad != null) bits.push(t.edad + " d abierto");
   if (t.venceEn != null) bits.push(t.venceEn < 0
     ? `<b style="color:#b91c1c;">venció hace ${-t.venceEn} d</b>`
