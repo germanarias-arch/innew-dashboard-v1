@@ -10891,6 +10891,103 @@ function csmCardHtml(f, mesPct) {
         ${salTxt ? `<span style="background:${critica ? "#FEF2F2" : "#F3F4F6"}; color:${critica ? "#b91c1c" : "#6b7280"}; border:1px solid ${critica ? "#FECACA" : "#e5e7eb"}; border-radius:999px; padding:1px 8px; font-weight:700; font-size:10.5px;">${escAttr(salTxt)}</span>` : ""}
       </div></div>`;
 }
+/* ═══ CARA "PLAN" — el acumulado contra el plan contratado ════════════════════════════════
+   Dos caras del MISMO bloque, elegidas con un switch. **No reemplaza la vista del mes**
+   (pedido explícito de German 28/10): el mes en curso es la pregunta operativa ("¿llego a
+   fin de mes?") y el plan es la pregunta comercial ("¿nos vamos a comer la bolsa del
+   semestre?"). Son horizontes distintos y mezclarlos en una sola tarjeta fue exactamente
+   lo que falló en los dos intentos anteriores de meter el fill rate en la tabla.
+
+   📥 De dónde sale: `horas_plan_total` + `horas_consumidas_semestre` + `fin_acuerdo`, las
+   tres en la company. Las cargué el 28/10 desde el Sheet "Liquidaciones 2026" sumando
+   `Consumo Plan` dentro de la ventana de cada plan (fin − plan/bolsa meses).
+
+   🚫 **`horas_hist` NO sirve para esto y hay que saberlo**: arranca en 2026-09, tiene dos
+   meses. Un acumulado semestral armado con eso daría ~15% en todas las cuentas y parecería
+   un dato. Por eso el acumulado viene del Sheet y no se recalcula en el front.
+
+   ⚠️ **Acumulado ausente ≠ cero.** 5 cuentas (Atlantic, Espacio Casa, Farmacia del Pueblo,
+   Las Margaritas, SBS) tienen meses vacíos adentro de una ventana ya cerrada, y otras 8
+   tienen la ventana arrancando en 2025, fuera del Sheet. En todas ésas `horas_consumidas_semestre`
+   quedó VACÍA a propósito: la tarjeta dice "acumulado incompleto" en vez de mostrar un
+   número que se lee como completo y miente hacia abajo. Mismo criterio que `csmPct` con las
+   cuentas sin bolsa. */
+function csmPlanCalc(p) {
+  const plan = (p.horas_plan_total != null && p.horas_plan_total !== "") ? parseFloat(p.horas_plan_total) : null;
+  if (plan == null || !(plan > 0)) return null;                 // sin plan cargado: no hay cara plan
+  const acumRaw = p.horas_consumidas_semestre;
+  const acum = (acumRaw != null && acumRaw !== "") ? parseFloat(acumRaw) : null;
+  const fin = (typeof cuHsDate === "function") ? cuHsDate(p.fin_acuerdo) : null;   // "YYYY-MM-DD" o null
+  let vencido = false, finTxt = "";
+  if (fin) {
+    const d = new Date(fin + "T00:00:00");
+    vencido = d.getTime() < Date.now();
+    finTxt = d.toLocaleDateString("es-AR", { month: "short", year: "2-digit" }).replace(".", "");
+  }
+  return {
+    plan: plan, acum: acum, fin: fin, finTxt: finTxt, vencido: vencido,
+    pct: acum == null ? null : (acum * 100) / plan,
+    resto: acum == null ? null : Math.max(0, plan - acum)
+  };
+}
+/* Modo del bloque. Vive a nivel módulo junto a `CSM_FR_ORD`/`CSM_FR_Q` porque el switch,
+   igual que el buscador, repinta SÓLO la grilla. */
+let CSM_FR_MODO = "mes";
+function csmFrSetModo(v) {
+  if (v !== "mes" && v !== "plan") return;
+  CSM_FR_MODO = v;
+  /* El orden elegido puede no existir en el otro modo (no hay "Hueco" en la cara plan).
+     Si no existe, se cae al primero del modo nuevo en vez de dejar un `select` apuntando a
+     un orden fantasma que silenciosamente no ordena nada. */
+  if (!csmFrOrdenes().some(o => o.v === CSM_FR_ORD)) CSM_FR_ORD = csmFrOrdenes()[0].v;
+  if (typeof renderCsm === "function") renderCsm();            // la barra entera cambia, no sólo la grilla
+}
+/* Una tarjeta en modo plan. El % grande es del PLAN, no del mes: en esta cara la pregunta es
+   cuánto de la bolsa contratada se consumió, y a qué ritmo contra lo que queda de plazo. */
+function csmCardPlanHtml(f) {
+  const pl = f.plan, critica = f.sal && f.sal.nivel === "critica";
+  const salTxt = f.sal && f.sal.txt ? (/^sin /.test(f.sal.txt) ? f.sal.txt : "cola " + f.sal.txt) : "";
+  const sinDato = pl.pct == null;
+  /* Color: en un plan VENCIDO el subconsumo ya no es "vamos lento", es plata no entregada y
+     argumento de no-renovación. En un plan EN CURSO el mismo número puede estar bien. */
+  const t = sinDato ? { c: "#9ca3af" }
+    : pl.pct >= 95 ? { c: "#047857" }
+    : pl.pct >= 70 ? { c: "#4030C8" }
+    : pl.vencido   ? { c: "#b91c1c" }
+    : { c: "#92400e" };
+  const w = sinDato ? 0 : Math.max(1.2, Math.min(100, pl.pct));
+  const kv = (l, v, fuerte) => `<div style="display:flex; justify-content:space-between; align-items:baseline; font-size:12px; color:#6b7280; padding:3px 0;${fuerte ? " border-top:1px solid #f0f0f5; margin-top:5px; padding-top:7px;" : ""}">
+      <span${fuerte ? ' style="font-weight:700; color:#374151;"' : ""}>${l}</span>
+      <b style="color:${fuerte ? t.c : "#1f2937"}; font-variant-numeric:tabular-nums;">${v}</b></div>`;
+  return `<div style="border:1px solid ${critica ? "#FECACA" : "#e9e9ef"}; background:${critica ? "#FFFCFC" : "#fff"}; border-radius:12px; padding:15px 16px;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:12px;">
+        <div style="min-width:0;">
+          <div style="font-weight:700; font-size:13.5px; color:#430C89; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escAttr(f.cli)}</div>
+          <div style="font-size:10.5px; color:#9ca3af;">${escAttr(f.csm || "sin CSM")}${f.keys ? " · " + escAttr(f.keys.join(" + ")) : ""}</div>
+        </div>
+        <b style="font-size:21px; font-weight:800; color:${t.c}; line-height:1; white-space:nowrap;">${sinDato ? "—" : Math.round(pl.pct) + "%"}</b>
+      </div>
+      <div style="position:relative; height:24px; background:#F0F0F5; border-radius:7px; overflow:hidden; display:flex;"
+           title="${sinDato ? "Acumulado del plan incompleto" : csmH(pl.acum) + " de " + csmH(pl.plan)}">
+        ${sinDato ? `<div style="width:100%; background:repeating-linear-gradient(45deg,#E5E7EB,#E5E7EB 5px,#F0F0F5 5px,#F0F0F5 11px);"></div>`
+                  : `<div style="height:100%; width:${w}%; background:${t.c};"></div>`}
+      </div>
+      <div style="margin-top:11px;">
+        ${kv("Plan contratado", csmH(pl.plan))}
+        ${kv("Consumido del plan", sinDato ? "incompleto" : csmH(pl.acum))}
+        ${kv("Bolsa del mes", csmH(f.cont))}
+        ${kv(pl.vencido ? "Sin entregar al cierre" : "Resto del plan", sinDato ? "—" : csmH(pl.resto), 1)}
+      </div>
+      <div style="margin-top:10px; display:flex; gap:5px; flex-wrap:wrap;">
+        ${pl.finTxt ? `<span title="${pl.vencido
+            ? "El plan cerró en esta fecha. Lo que figura es el cierre de un acuerdo ANTERIOR, no el plan vigente — y la fecha del Sheet venía congelada, así que si se renovó hay que actualizarla."
+            : "Fecha de cierre del plan vigente."}"
+          style="background:${pl.vencido ? "#F3F4F6" : "#EEF2FF"}; color:${pl.vencido ? "#6b7280" : "#4030C8"}; border:1px solid ${pl.vencido ? "#e5e7eb" : "#C7D2FE"}; border-radius:999px; padding:1px 8px; font-weight:700; font-size:10.5px;">${pl.vencido ? "plan cerrado " : "cierra "}${escAttr(pl.finTxt)}</span>` : ""}
+        ${sinDato ? `<span title="El Sheet tiene meses sin cargar dentro de la ventana de este plan, o la ventana arranca antes de 2026. Sumar lo que hay daría un número que se lee como completo y miente hacia abajo, así que no se muestra."
+          style="background:#FFFBEB; color:#92400e; border:1px solid #FDE68A; border-radius:999px; padding:1px 8px; font-weight:700; font-size:10.5px;">acumulado incompleto</span>` : ""}
+        ${salTxt ? `<span style="background:${critica ? "#FEF2F2" : "#F3F4F6"}; color:${critica ? "#b91c1c" : "#6b7280"}; border:1px solid ${critica ? "#FECACA" : "#e5e7eb"}; border-radius:999px; padding:1px 8px; font-weight:700; font-size:10.5px;">${escAttr(salTxt)}</span>` : ""}
+      </div></div>`;
+}
 const CSM_FR_ORDENES = [
   { v: "hueco",  l: "Hueco (horas)",        f: (a, b) => b.fr.hueco - a.fr.hueco },
   { v: "fill",   l: "Cumplimiento ↑ (peor)", f: (a, b) => a.fr.fill - b.fr.fill },
@@ -10900,26 +10997,44 @@ const CSM_FR_ORDENES = [
   { v: "sinp",   l: "Sin proyectar",         f: (a, b) => (b.fr.sinProy || 0) - (a.fr.sinProy || 0) },
   { v: "nombre", l: "Nombre (A-Z)",          f: (a, b) => String(a.cli).localeCompare(String(b.cli)) }
 ];
+/* Órdenes de la cara PLAN. Son otros ejes: acá no existe "hueco del mes" ni "sin proyectar".
+   🪤 El orden por defecto es **"Sin entregar (horas)"** y no el porcentaje, por lo mismo que
+   en la cara del mes: Antuan al 49% y Bremen al 53% se parecen en porcentaje, pero son 15,3 h
+   contra 227,3 h sin entregar. El porcentaje dice qué tan mal está; las horas dicen cuánto
+   cuesta, y es lo que se lleva a una conversación de renovación. */
+const CSM_PL_ORDENES = [
+  { v: "resto",  l: "Sin entregar (horas)",   f: (a, b) => (b.plan.resto == null ? -1 : b.plan.resto) - (a.plan.resto == null ? -1 : a.plan.resto) },
+  { v: "plpct",  l: "Consumo del plan ↑ (peor)", f: (a, b) => (a.plan.pct == null ? 999 : a.plan.pct) - (b.plan.pct == null ? 999 : b.plan.pct) },
+  { v: "plpctD", l: "Consumo del plan ↓ (mejor)", f: (a, b) => (b.plan.pct == null ? -1 : b.plan.pct) - (a.plan.pct == null ? -1 : a.plan.pct) },
+  { v: "plan",   l: "Plan contratado",        f: (a, b) => b.plan.plan - a.plan.plan },
+  { v: "fin",    l: "Fecha de cierre",        f: (a, b) => String(a.plan.fin || "9999").localeCompare(String(b.plan.fin || "9999")) },
+  { v: "nombre", l: "Nombre (A-Z)",           f: (a, b) => String(a.cli).localeCompare(String(b.cli)) }
+];
+function csmFrOrdenes() { return CSM_FR_MODO === "plan" ? CSM_PL_ORDENES : CSM_FR_ORDENES; }
 let CSM_FR_ORD = "hueco";
 let CSM_FR_Q = "";
 /* El buscador mira nombre, CSM y clave de portal: en esta tabla la gente busca tanto por
    "Margaritas" como por "PLM", y hacerlo sólo por nombre obliga a saber cómo está escrita
    la cuenta en HubSpot ("Velenet" con E, el proyecto `VALENET` con A). */
 function csmFrFiltradas() {
-  const rows = (window.__frRows || []).slice();
+  /* En modo plan la población es OTRA: sólo las cuentas con `horas_plan_total` cargada.
+     No son las mismas 20 de la cara del mes y el contador de arriba tiene que decirlo. */
+  const base = CSM_FR_MODO === "plan" ? (window.__plRows || []) : (window.__frRows || []);
+  const rows = base.slice();
   const q = CSM_FR_Q.trim().toLowerCase();
   const vis = q ? rows.filter(f => {
     const hay = [f.cli, f.csm].concat(f.keys || []).join(" ").toLowerCase();
     return hay.indexOf(q) >= 0;
   }) : rows;
-  const o = CSM_FR_ORDENES.filter(x => x.v === CSM_FR_ORD)[0] || CSM_FR_ORDENES[0];
+  const L = csmFrOrdenes();
+  const o = L.filter(x => x.v === CSM_FR_ORD)[0] || L[0];
   return vis.sort(o.f);
 }
 function csmFrPintar() {
   const g = document.getElementById("csm-fr-grid"); if (!g) return;
   const rows = csmFrFiltradas();
   g.innerHTML = rows.length
-    ? rows.map(f => csmCardHtml(f, window.__frMesPct || 0)).join("")
+    ? rows.map(f => CSM_FR_MODO === "plan" ? csmCardPlanHtml(f) : csmCardHtml(f, window.__frMesPct || 0)).join("")
     : `<div style="grid-column:1/-1; padding:16px; color:#9ca3af; font-size:12.5px;">Ninguna cuenta coincide con “${escAttr(CSM_FR_Q)}”.</div>`;
   const n = document.getElementById("csm-fr-n");
   if (n) n.textContent = rows.length + (rows.length === 1 ? " cuenta" : " cuentas");
@@ -10963,6 +11078,7 @@ function renderCsm() {
       cont: cont, cons: cons, pct: csmPct(cons, cont), ab: ab, pr: pr,
       abReal: abReal, sal: sal,                     // salud de la cola, del detalle por ticket
       keys: csmKeys(c.id),                          // null = no tiene portal en Jira
+      plan: csmPlanCalc(p),                         // null = sin plan cargado → fuera de la cara "Plan"
       medida: cons != null || ab != null            // ¿el task la tocó alguna vez?
     };
   });
@@ -11281,29 +11397,53 @@ function renderCsm() {
      de CSM** de arriba: el filtro por CSM que pidió German ya existe y no se duplica. */
   window.__frRows = vis.filter(f => f.fr);
   window.__frMesPct = mesPct;
+  /* 🚫 La cara "Plan" NO exige bolsa mensual: Rouge y Sanitarios Arieta tienen plan cargado y
+     no tienen `horas_de_sg_contratadas`. Filtrar por bolsa acá las dejaría afuera de su propia
+     pregunta. Lo único obligatorio es `horas_plan_total`. */
+  window.__plRows = vis.filter(f => f.plan);
   const sinBolsa = vis.filter(f => f.pct == null).length;
   const inpS = "font-family:inherit; font-size:12px; padding:5px 9px; border:1px solid #e5e7eb; border-radius:8px; background:#fff; color:#374151;";
-  const cards = !window.__frRows.length ? "" : `<div style="margin-bottom:16px;">
+  /* El switch. Mantener ambas caras en el MISMO bloque (y no en dos bloques apilados) es
+     deliberado: son la misma pregunta —¿se está consumiendo lo contratado?— en dos horizontes.
+     Dos bloques obligarían a comparar con scroll y duplicarían buscador y orden. */
+  const esPlan = CSM_FR_MODO === "plan";
+  const nPl = (window.__plRows || []).length;
+  const swBtn = (v, l, tip) => `<button onclick="csmFrSetModo('${v}')" title="${tip}"
+      style="font-family:inherit; cursor:pointer; font-size:11.5px; font-weight:700; padding:4px 11px; border-radius:7px;
+      border:1px solid ${CSM_FR_MODO === v ? "#430C89" : "#e5e7eb"}; background:${CSM_FR_MODO === v ? "#430C89" : "#fff"};
+      color:${CSM_FR_MODO === v ? "#fff" : "#6b7280"};">${l}</button>`;
+  const sw = `<span style="display:inline-flex; gap:4px;">
+      ${swBtn("mes", "Mes en curso", "Cuánto de la bolsa de ESTE mes se consumió. La pregunta operativa: ¿llego a fin de mes?")}
+      ${swBtn("plan", "Plan", "Cuánto del plan contratado se consumió en toda su ventana. La pregunta comercial: ¿nos comemos la bolsa del semestre?")}
+    </span>`;
+  const hayAlgo = esPlan ? nPl : window.__frRows.length;
+  const cards = !hayAlgo ? "" : `<div style="margin-bottom:16px;">
       <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px;
            padding:10px 13px; background:#FAFAFC; border:1px solid #ececf2; border-radius:9px; font-size:11.5px; color:#4b5563;">
-        <b style="color:#374151; font-size:12.5px;">Fill rate del mes</b>
-        <span id="csm-fr-n" style="color:#9ca3af;">${window.__frRows.length} cuentas</span>
+        <b style="color:#374151; font-size:12.5px;">${esPlan ? "Consumo del plan contratado" : "Fill rate del mes"}</b>
+        ${sw}
+        <span id="csm-fr-n" style="color:#9ca3af;">${hayAlgo} cuentas</span>
         <input id="csm-fr-q" type="search" placeholder="Buscar cuenta, CSM o portal…" value="${escAttr(CSM_FR_Q)}"
            oninput="csmFrSetQ(this.value)" style="${inpS} width:230px;">
         <label style="color:#6b7280;">Ordenar por
           <select onchange="csmFrSetOrd(this.value)" style="${inpS} margin-left:5px;">
-            ${CSM_FR_ORDENES.map(o => `<option value="${o.v}"${o.v === CSM_FR_ORD ? " selected" : ""}>${escAttr(o.l)}</option>`).join("")}
+            ${csmFrOrdenes().map(o => `<option value="${o.v}"${o.v === CSM_FR_ORD ? " selected" : ""}>${escAttr(o.l)}</option>`).join("")}
           </select></label>
         <span style="margin-left:auto; display:flex; gap:13px; flex-wrap:wrap; align-items:center;">
+          ${esPlan ? `<span><span style="display:inline-block; width:13px; height:11px; border-radius:3px; background:#4030C8; vertical-align:-1px; margin-right:5px;"></span>consumido del plan</span>
+          <span><span style="display:inline-block; width:13px; height:11px; border-radius:3px; background:repeating-linear-gradient(45deg,#E5E7EB,#E5E7EB 5px,#F0F0F5 5px,#F0F0F5 11px); vertical-align:-1px; margin-right:5px;"></span>acumulado incompleto</span>` : `
           <span><span style="display:inline-block; width:13px; height:11px; border-radius:3px; background:#4030C8; vertical-align:-1px; margin-right:5px;"></span>consumido</span>
           <span><span style="display:inline-block; width:13px; height:11px; border-radius:3px; background:repeating-linear-gradient(45deg,${CSM_COMP_COL},${CSM_COMP_COL} 4px,#EDE9FE 4px,#EDE9FE 9px); vertical-align:-1px; margin-right:5px;"></span>comprometido c/fecha</span>
           <span><span style="display:inline-block; width:13px; height:11px; border-radius:3px; background:#F0F0F5; vertical-align:-1px; margin-right:5px;"></span>hueco</span>
-          <span><span style="display:inline-block; width:2px; height:12px; background:#111827; opacity:.4; vertical-align:-2px; margin-right:6px;"></span>hoy (${Math.round(mesPct)}%)</span>
+          <span><span style="display:inline-block; width:2px; height:12px; background:#111827; opacity:.4; vertical-align:-2px; margin-right:6px;"></span>hoy (${Math.round(mesPct)}%)</span>`}
         </span>
       </div>
       <div id="csm-fr-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:12px;"></div>
-      ${sinBolsa ? `<div style="font-size:11.5px; color:#9ca3af; margin-top:9px;">
-        ${sinBolsa} cuenta(s) sin bolsa contratada quedan fuera del fill rate: sin denominador el porcentaje no significa nada, y mostrarlas en 0% las pondría como las más sanas del tablero.</div>` : ""}
+      ${esPlan
+        ? ((vis.length - nPl) > 0 ? `<div style="font-size:11.5px; color:#9ca3af; margin-top:9px;">
+            ${vis.length - nPl} cuenta(s) sin plan cargado quedan fuera de esta cara. El plan vive en <code>horas_plan_total</code> de la company y sale del Sheet de liquidaciones: si falta, es que esa cuenta no tenía plan definido ahí (Thomson Reuters lo tiene como <code>??</code>) o que el plan arranca antes de 2026.</div>` : "")
+        : (sinBolsa ? `<div style="font-size:11.5px; color:#9ca3af; margin-top:9px;">
+            ${sinBolsa} cuenta(s) sin bolsa contratada quedan fuera del fill rate: sin denominador el porcentaje no significa nada, y mostrarlas en 0% las pondría como las más sanas del tablero.</div>` : "")}
     </div>`;
 
   host.innerHTML = barra + kpis + cards + `<div style="overflow-x:auto;"><table class="cue-table">
@@ -13153,7 +13293,7 @@ async function fetchCuentas() {
       /* `jira_tickets` lo escribe el task `jira-radar-soporte` cada 2 h con el detalle por
          ticket (estado, días quieto, prioridad, asignado, vencimiento y el flag de contenedor
          de worklog). Es la única fuente del Radar de soporte y de la salud de cola. */
-      properties: ["name", "csm_asignado", "horas_de_sg_contratadas", "country", "num_associated_deals", "calificacion_matriz_bcg", "valor_hora", "valor_hora_us", "monto_mensual_us", "tipo_de_plan", "fin_acuerdo", "semaforo", "gmv_mensual", "horas_consumidas_mes", "horas_hist", "es_scale", "estado_facturacion", "tickets_abiertos", "tickets_prioritarios", "jira_tickets"],
+      properties: ["name", "csm_asignado", "horas_de_sg_contratadas", "country", "num_associated_deals", "calificacion_matriz_bcg", "valor_hora", "valor_hora_us", "monto_mensual_us", "tipo_de_plan", "fin_acuerdo", "semaforo", "gmv_mensual", "horas_consumidas_mes", "horas_hist", "horas_plan_total", "horas_consumidas_semestre", "es_scale", "estado_facturacion", "tickets_abiertos", "tickets_prioritarios", "jira_tickets"],
       sorts: [{ propertyName: "name", direction: "ASCENDING" }],
       limit: 100, offset,
       chatInsights: { userIntent: "Dashboard: cuentas activas (customer) con CSM y horas S&G", satisfaction: "NEUTRAL" }
