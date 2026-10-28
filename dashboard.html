@@ -11009,34 +11009,24 @@ function renderCsm() {
      convierte el número en juicio — 11% consumido el día 3 está bien; el día 28 es otra cosa.
      El dato ya existía (`mesPct`) y no se estaba mostrando en ningún lado de la fila. */
   const CSM_COMP_COL = "#A78BFA";       // violeta de "comprometido": categoría, no alarma
+  /* 🔙 **La celda de la tabla volvió a ser la simple** (2026-10-28, al implementar la opción B).
+     Meter el fill rate acá fue el intento que falló dos veces: *"sigue comprimido, sigue sin
+     ser claro"*. La causa no era el diseño de la celda sino que **la tabla le pedía a una
+     celda de ~250 px que fuera un gráfico**, dentro de una fila de 9 columnas donde además
+     "Bolsa h", "Consumidas" y "% consumido" ya decían el mismo número tres veces.
+     🚫 **Y NO se duplica el dato.** La tabla contesta *"¿cuánto consumió?"* (operativo, se
+     compara línea a línea); las tarjetas de arriba contestan *"¿cuánto va a llenarse?"*
+     (proyección). Son preguntas distintas y cada una vive en un solo lugar: tener el mismo
+     número en los dos envejece mal — a los tres meses uno de los dos queda desactualizado y
+     nadie sabe cuál manda. */
   const barraPct = (f) => {
     if (f.pct == null) return `<span style="font-size:11px; color:#9ca3af;">s/bolsa</span>`;
     const t = csmTono(f.pct, mesPct);
-    const fr = f.fr;
-    const wCons = Math.max(1.5, Math.min(100, f.pct));
-    const wComp = fr && fr.comp ? Math.min(Math.max(0, 100 - wCons), (fr.comp * 100) / f.cont) : 0;
-    const tFill = fr ? csmTono(fr.fill, mesPct) : t;
-    const hoy = Math.min(99.4, mesPct);
-    const tip = `Bolsa ${f.cont} h · consumido ${csmH(fr ? fr.cons : f.cons)}`
-      + (fr && fr.comp ? ` · comprometido con fecha ${csmH(fr.comp)}` : "")
-      + (fr ? ` · hueco ${csmH(fr.hueco)}` : "")
-      + (fr && fr.sinProy ? ` · ${fr.sinProy} ticket(s) sin estimación o sin fecha, no proyectables` : "");
-    return `<div style="min-width:238px;">
-        <div style="display:flex; align-items:center; gap:9px;">
-          <div title="${escAttr(tip)}" style="position:relative; flex:1; min-width:120px; height:16px; background:#F1F1F6; border-radius:5px; overflow:hidden; display:flex;">
-            <div style="height:100%; width:${wCons}%; background:${t.c};"></div>
-            <div style="height:100%; width:${wComp}%; background:repeating-linear-gradient(45deg,${CSM_COMP_COL},${CSM_COMP_COL} 3px,#EDE9FE 3px,#EDE9FE 7px);"></div>
-            <div title="Hoy: ${Math.round(mesPct)}% del mes transcurrido" style="position:absolute; left:${hoy}%; top:0; width:2px; height:100%; background:#1f2937; opacity:.42;"></div>
-          </div>
-          <b style="font-size:16px; font-weight:800; color:${tFill.c}; min-width:46px; text-align:right; line-height:1;">${Math.round(fr ? fr.fill : f.pct)}%</b>
-        </div>
-        <div style="font-size:11px; color:#6b7280; margin-top:5px; line-height:1.5;">
-          <span title="Horas ya imputadas en el mes">${Math.round(f.pct)}% consumido</span>
-          ${fr && fr.comp ? ` <span style="color:#d1d5db;">·</span> <span title="Trabajo aprobado con fecha de entrega dentro del mes" style="color:#6d28d9;">+${csmH(fr.comp)} comprometidas</span>` : ""}
-          ${fr ? `<br><span title="Horas de la bolsa que hoy no tienen trabajo asignado">hueco <b style="color:#374151;">${csmH(fr.hueco)}</b></span>` : ""}
-          ${fr && fr.sinProy ? ` <span style="color:#d1d5db;">·</span> <span title="Tickets sin estimación o sin fecha de entrega: no se pueden proyectar, así que el hueco real puede ser menor que el que se muestra."
-              style="display:inline-block; background:#FFFBEB; color:#92400e; border:1px solid #FDE68A; border-radius:999px; padding:0 7px; font-weight:700; font-size:10.5px;">${fr.sinProy} sin proyectar</span>` : ""}
-        </div></div>`;
+    const w = Math.max(2, Math.min(100, f.pct));
+    return `<div title="${escAttr(t.t)}" style="display:flex; align-items:center; gap:7px;">
+        <div style="flex:1; min-width:54px; height:7px; background:#f0f0f6; border-radius:4px; overflow:hidden;">
+          <div style="height:100%; width:${w}%; background:${t.c}; border-radius:4px;"></div></div>
+        <b style="font-size:12px; color:${t.c}; min-width:38px; text-align:right;">${Math.round(f.pct)}%</b></div>`;
   };
   /* Contador clickeable → abre la lista VIVA en Jira con el JQL exacto.
      El cero también es link: "¿de verdad no hay nada abierto?" es una pregunta legítima y
@@ -11185,25 +11175,75 @@ function renderCsm() {
     </tr>` + (abierto ? detalleFila(f, 10) : "");
   }).join("");
 
-  /* 📖 Leyenda. German, sobre la v1: *"no tiene las aclaraciones"*. Una barra con dos
-     texturas y una marca vertical no se explica sola, y el costo de no explicarla no es
-     estético: **se lee mal y se decide mal**. Va una sola vez arriba de la tabla, no por
-     fila, y nombra exactamente los tres segmentos y la marca. */
-  const leyenda = `<div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin-bottom:10px;
-       padding:9px 13px; background:#FAFAFC; border:1px solid #ececf2; border-radius:9px; font-size:11.5px; color:#4b5563;">
-      <b style="color:#374151;">Fill rate:</b>
-      <span><span style="display:inline-block; width:13px; height:11px; border-radius:3px; background:#4030C8; vertical-align:-1px; margin-right:5px;"></span>consumido</span>
-      <span><span style="display:inline-block; width:13px; height:11px; border-radius:3px; background:repeating-linear-gradient(45deg,${CSM_COMP_COL},${CSM_COMP_COL} 3px,#EDE9FE 3px,#EDE9FE 7px); vertical-align:-1px; margin-right:5px;"></span>comprometido con fecha</span>
-      <span><span style="display:inline-block; width:13px; height:11px; border-radius:3px; background:#F1F1F6; vertical-align:-1px; margin-right:5px;"></span>hueco</span>
-      <span><span style="display:inline-block; width:2px; height:12px; background:#1f2937; opacity:.42; vertical-align:-2px; margin-right:6px;"></span>hoy (${Math.round(mesPct)}% del mes)</span>
-      <span style="margin-left:auto; color:#92400e;"><b>sin proyectar</b> = tickets sin estimación o sin fecha: el hueco real puede ser menor.</span>
+  /* ═══ TARJETAS DE FILL RATE (opción B, 2026-10-28) ═══════════════════════════════════════
+     German eligió sacar el fill rate de la tabla después de dos intentos fallidos de meterlo
+     adentro. Acá cada dato tiene su renglón y la barra tiene el ancho que necesita.
+
+     📐 **Ordenadas por HUECO EN HORAS, no por porcentaje.** Es la decisión que hace útil al
+     bloque: Guatapora al 11% y SBS al 0% se parecen en porcentaje, pero el hueco es de 88,7 h
+     contra 63,9 h. El porcentaje dice qué tan mal está; **las horas dicen cuánto cuesta**, y
+     eso es lo que se lleva a una conversación de renovación.
+
+     🚫 **Sólo cuentas CON bolsa.** Sin `horas_de_sg_contratadas` no hay denominador y el fill
+     rate no significa nada — las "s/bolsa" no se dibujan en cero, que las mostraría como las
+     más sanas del tablero. Se dicen aparte, abajo, contadas.
+
+     🔗 Respeta el filtro de CSM de arriba: si estás viendo "Jenny", las tarjetas son de Jenny. */
+  const frCards = vis.filter(f => f.fr).sort((a, b) => b.fr.hueco - a.fr.hueco);
+  const sinBolsa = vis.filter(f => f.pct == null).length;
+  const card = (f) => {
+    const fr = f.fr, t = csmTono(f.pct, mesPct), tFill = csmTono(fr.fill, mesPct);
+    const wCons = Math.max(1.2, Math.min(100, f.pct));
+    const wComp = fr.comp ? Math.min(Math.max(0, 100 - wCons), (fr.comp * 100) / f.cont) : 0;
+    const critica = f.sal && f.sal.nivel === "critica";
+    const kv = (l, v, fuerte) => `<div style="display:flex; justify-content:space-between; align-items:baseline; font-size:12px; color:#6b7280; padding:3px 0;${fuerte ? " border-top:1px solid #f0f0f5; margin-top:5px; padding-top:7px;" : ""}">
+        <span${fuerte ? ' style="font-weight:700; color:#374151;"' : ""}>${l}</span>
+        <b style="color:${fuerte ? tFill.c : "#1f2937"}; font-variant-numeric:tabular-nums;">${v}</b></div>`;
+    return `<div style="border:1px solid ${critica ? "#FECACA" : "#e9e9ef"}; background:${critica ? "#FFFCFC" : "#fff"}; border-radius:12px; padding:15px 16px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:12px;">
+          <div style="min-width:0;">
+            <div style="font-weight:700; font-size:13.5px; color:#430C89; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escAttr(f.cli)}</div>
+            <div style="font-size:10.5px; color:#9ca3af;">${escAttr(f.csm || "sin CSM")}${f.keys ? " · " + escAttr(f.keys.join(" + ")) : ""}</div>
+          </div>
+          <b style="font-size:21px; font-weight:800; color:${tFill.c}; line-height:1; white-space:nowrap;">${Math.round(fr.fill)}%</b>
+        </div>
+        <div title="Hoy va ${Math.round(mesPct)}% del mes" style="position:relative; height:24px; background:#F0F0F5; border-radius:7px; overflow:hidden; display:flex;">
+          <div style="height:100%; width:${wCons}%; background:${t.c};"></div>
+          <div style="height:100%; width:${wComp}%; background:repeating-linear-gradient(45deg,${CSM_COMP_COL},${CSM_COMP_COL} 4px,#EDE9FE 4px,#EDE9FE 9px);"></div>
+          <div style="position:absolute; left:${Math.min(99.3, mesPct)}%; top:0; width:2px; height:100%; background:#111827; opacity:.4;"></div>
+        </div>
+        <div style="margin-top:11px;">
+          ${kv("Bolsa del mes", csmH(f.cont))}
+          ${kv("Consumido", csmH(fr.cons))}
+          ${kv("Comprometido c/fecha", fr.comp ? csmH(fr.comp) : "—")}
+          ${kv("Hueco", csmH(fr.hueco), 1)}
+        </div>
+        <div style="margin-top:10px; display:flex; gap:5px; flex-wrap:wrap;">
+          ${fr.sinProy ? `<span title="Tickets sin estimación o sin fecha de entrega: no se pueden proyectar, así que el hueco real puede ser menor."
+            style="background:#FFFBEB; color:#92400e; border:1px solid #FDE68A; border-radius:999px; padding:1px 8px; font-weight:700; font-size:10.5px;">${fr.sinProy} sin proyectar</span>` : ""}
+          ${f.sal && f.sal.nivel !== "sin" ? `<span style="background:${critica ? "#FEF2F2" : "#F3F4F6"}; color:${critica ? "#b91c1c" : "#6b7280"}; border:1px solid ${critica ? "#FECACA" : "#e5e7eb"}; border-radius:999px; padding:1px 8px; font-weight:700; font-size:10.5px;">cola ${escAttr(f.sal.txt)}</span>` : ""}
+        </div></div>`;
+  };
+  const cards = !frCards.length ? "" : `<div style="margin-bottom:16px;">
+      <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin-bottom:10px;
+           padding:9px 13px; background:#FAFAFC; border:1px solid #ececf2; border-radius:9px; font-size:11.5px; color:#4b5563;">
+        <b style="color:#374151;">Fill rate del mes</b>
+        <span><span style="display:inline-block; width:13px; height:11px; border-radius:3px; background:#4030C8; vertical-align:-1px; margin-right:5px;"></span>consumido</span>
+        <span><span style="display:inline-block; width:13px; height:11px; border-radius:3px; background:repeating-linear-gradient(45deg,${CSM_COMP_COL},${CSM_COMP_COL} 4px,#EDE9FE 4px,#EDE9FE 9px); vertical-align:-1px; margin-right:5px;"></span>comprometido con fecha</span>
+        <span><span style="display:inline-block; width:13px; height:11px; border-radius:3px; background:#F0F0F5; vertical-align:-1px; margin-right:5px;"></span>hueco</span>
+        <span><span style="display:inline-block; width:2px; height:12px; background:#111827; opacity:.4; vertical-align:-2px; margin-right:6px;"></span>hoy (${Math.round(mesPct)}% del mes)</span>
+        <span style="margin-left:auto; color:#9ca3af;">ordenadas por hueco en horas</span>
+      </div>
+      <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:12px;">${frCards.map(card).join("")}</div>
+      ${sinBolsa ? `<div style="font-size:11.5px; color:#9ca3af; margin-top:9px;">
+        ${sinBolsa} cuenta(s) sin bolsa contratada quedan fuera del fill rate: sin denominador el porcentaje no significa nada, y mostrarlas en 0% las pondría como las más sanas del tablero.</div>` : ""}
     </div>`;
 
-  host.innerHTML = barra + kpis + leyenda + `<div style="overflow-x:auto;"><table class="cue-table">
+  host.innerHTML = barra + kpis + cards + `<div style="overflow-x:auto;"><table class="cue-table">
       <thead><tr>
         <th style="position:sticky; left:0; background:#fafafa; min-width:180px;">Cuenta</th>
         <th>CSM</th><th style="text-align:right;">Bolsa h</th><th style="text-align:right;">Consumidas</th>
-        <th style="min-width:252px;" title="Consumido + lo comprometido con fecha de entrega dentro del mes, sobre la bolsa. El número grande es el PROYECTADO: cómo va a cerrar el mes, no cómo viene.">Fill rate del mes</th><th style="text-align:right;" title="Tickets de CLIENTE. No incluye los contenedores de worklog mensuales. El ▸ abre el detalle con el link a cada ticket.">Tickets</th><th style="text-align:right;">Prioritarios</th>
+        <th title="Horas ya imputadas sobre la bolsa del mes. La PROYECCIÓN (cuánto va a llenarse) está en las tarjetas de arriba.">% de la bolsa</th><th style="text-align:right;" title="Tickets de CLIENTE. No incluye los contenedores de worklog mensuales. El ▸ abre el detalle con el link a cada ticket.">Tickets</th><th style="text-align:right;">Prioritarios</th>
         <th style="text-align:right;" title="Por ejecutar: horas que faltan de los tickets aprobados — es lo que va a consumir la bolsa. Presup.: horas cotizadas esperando el OK del cliente, todavía no ejecutables.">Horas</th>
         <th title="Cómo está la cola de soporte: críticos, vencidos y dormidos. No es lo mismo que el consumo de la bolsa.">Salud de la cola</th><th></th>
       </tr></thead><tbody>${cuerpo || `<tr><td colspan="10" style="padding:18px; color:#9ca3af;">Sin cuentas para este filtro.</td></tr>`}</tbody></table></div>
