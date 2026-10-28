@@ -10878,6 +10878,18 @@ function renderCsm() {
     };
   });
 
+  /* ⚠️ Estas cuatro líneas van ACÁ y no más abajo, al lado de `barraPct`, que es donde
+     naturalmente caerían. `kpis` se construye antes que `barraPct` y ya consume `f.fr` y
+     `csmH`: definirlos después los dejaba en zona muerta temporal y el fill rate agregado
+     salía 0 sin romper nada visible. Orden de declaración y orden de uso no son lo mismo. */
+  const csmH = n => (n == null ? "—" : (Math.round(n * 10) / 10).toLocaleString("es-AR") + " h");
+  const CSM_CERRADO = { "Prueba Aprobada": 1 };
+  const diasRest = (() => {
+    const h = new Date();
+    return new Date(h.getFullYear(), h.getMonth() + 1, 0).getDate() - h.getDate();
+  })();
+  filas.forEach(f => { f.fr = csmFill(f); });
+
   const sel = window.__csmFiltro || "all";
   const vis = filas.filter(f => sel === "all" ? true : (sel === "__sin" ? !f.medida : f.csm === sel));
   /* Orden: primero lo que pide acción. Las sin bolsa al fondo — no compiten por atención
@@ -10920,22 +10932,83 @@ function renderCsm() {
   const cerca = conBolsa.filter(f => f.pct >= CSM_UMBRAL.ambar && f.pct < CSM_UMBRAL.rojo).length;
   const sub = conBolsa.filter(f => mesPct > 50 && f.pct < 40).length;
   const totPr = vis.reduce((s, f) => s + (f.pr || 0), 0);
+  /* Fill rate agregado. El denominador son SÓLO las cuentas con bolsa — las que no tienen
+     plan no entran ni como cero, mismo criterio que `csmPct`. Y `sinProyTot` se muestra
+     siempre que haya alguno: un fill rate proyectado sin decir cuántos tickets quedaron
+     afuera de la cuenta se lee como completo y miente hacia abajo. */
+  const sumComp = conBolsa.reduce((s, f) => s + ((f.fr && f.fr.comp) || 0), 0);
+  const sinProyTot = conBolsa.reduce((s, f) => s + ((f.fr && f.fr.sinProy) || 0), 0);
+  const fillTot = sumCont ? Math.round((sumCons + sumComp) * 100 / sumCont) : null;
   const kpis = `<div class="cue-kpis" style="margin-bottom:12px;">
       <div class="cue-kpi"><div class="kl">Bolsa consumida</div><div class="kv">${sumCont ? Math.round(sumCons / sumCont * 100) + "%" : "—"}<span class="ks"> ${sumCons.toFixed(1)} de ${sumCont} h</span></div></div>
+      <div class="cue-kpi" title="Consumido + lo comprometido con fecha de entrega dentro del mes, sobre la bolsa de las cuentas que tienen plan."><div class="kl">Fill rate proyectado</div><div class="kv" style="color:${fillTot == null ? "" : (fillTot >= 80 ? "#047857" : fillTot >= 50 ? "#b45309" : "#b91c1c")}">${fillTot == null ? "—" : fillTot + "%"}</div><div class="ks">${sumComp ? "+" + csmH(sumComp) + " comprometidas" : "sin trabajo comprometido"}${sinProyTot ? " · " + sinProyTot + " sin proyectar" : ""}</div></div>
       <div class="cue-kpi"><div class="kl">Pasadas de bolsa</div><div class="kv" style="color:${pasadas ? "#b91c1c" : ""}">${pasadas}</div></div>
       <div class="cue-kpi"><div class="kl">Cerca del tope</div><div class="kv" style="color:${cerca ? "#b45309" : ""}">${cerca}</div></div>
       <div class="cue-kpi"><div class="kl">Subconsumo</div><div class="kv" style="color:${sub ? "#4030C8" : ""}">${mesPct > 50 ? sub : "—"}<span class="ks">${mesPct > 50 ? " bajo 40%" : " se mide pasado el día 15"}</span></div></div>
       <div class="cue-kpi"><div class="kl">Tickets prioritarios</div><div class="kv" style="color:${totPr ? "#b91c1c" : ""}">${totPr}</div></div>
     </div>`;
 
+  /* ═══ FILL RATE (2026-10-28) ═══════════════════════════════════════════════════════════
+     Pedido de Cristian vía Jennifer: que el fill rate salga solo. La pregunta que contesta
+     NO es "cuánto se consumió" —eso ya estaba— sino **"cuánto va a terminar consumiéndose"**,
+     que es lo único accionable mientras el mes corre.
+
+     `fill = (consumido + comprometido) / bolsa`.
+
+     🔐 **Qué cuenta como cerrado lo definió Jennifer el 28/10: "aprobado + done + cancelados".**
+     Done y Cancelado ni aparecen acá (el radar sólo trae abiertos), así que en la práctica la
+     regla es **`Prueba Aprobada`**: ese trabajo ya se entregó y no va a comer más bolsa.
+     🪤 **NO se puede reusar el tag `cierra` para esto.** `cierra` agrupa `Prueba`, `Pruebas` y
+     `Prueba Aprobada` porque las tres "suenan a terminado y siguen abiertas" — es un detector de
+     anomalía, no un estado de cierre. Jen fue explícita en que **sólo la aprobada** cuenta;
+     `Prueba` a secas sigue esperando el OK del cliente y todavía puede consumir horas.
+     Mezclar los dos conceptos porque comparten un tag es exactamente el error que se cometió
+     con `Modelo de Solución` el 01/10. Por eso va una constante aparte.
+
+     🚨 **Lo no proyectable NO se dibuja.** Un ticket sin estimación o sin fecha de entrega no
+     tiene horas que podamos pintar, y rellenarlo con un promedio sería inventar el número que
+     justamente decide si la bolsa se llena. Se cuenta y se avisa al lado de la barra; el hueco
+     queda grande a propósito, con el cartel que explica cuánto de ese hueco no sabemos. */
+  function csmFill(f) {
+    if (f.pct == null) return null;                       // sin bolsa: el fill rate no significa nada
+    const jt = f.sal && f.sal.jt;
+    const cons = f.cons || 0;
+    if (!jt || (jt.estado !== "ok" && jt.estado !== "vacio")) {
+      return { cons: cons, comp: null, sinProy: null, hueco: Math.max(0, f.cont - cons), fill: f.pct };
+    }
+    let comp = 0, sinProy = 0;
+    jt.real.forEach(t => {
+      const e = jtEst(t.s);
+      if (e.presu) return;                                // cotizado: plata esperando OK, no trabajo
+      if (CSM_CERRADO[t.s]) return;                       // ya entregado (regla de Jen)
+      const enMes = t.venceEn != null && t.venceEn <= diasRest;   // vencido también cuenta: sigue debiéndose
+      const hs = t.hRest != null ? t.hRest : t.hEst;
+      if (enMes && hs != null) comp += hs;
+      else sinProy++;                                     // sin fecha o sin estimación: no se puede proyectar
+    });
+    const fill = ((cons + comp) * 100) / f.cont;
+    return { cons: cons, comp: comp, sinProy: sinProy, hueco: Math.max(0, f.cont - cons - comp), fill: fill };
+  }
+
   const barraPct = (f) => {
     if (f.pct == null) return `<span style="font-size:11px; color:#9ca3af;">s/bolsa</span>`;
     const t = csmTono(f.pct, mesPct);
-    const w = Math.max(2, Math.min(100, f.pct));
-    return `<div title="${escAttr(t.t)}" style="display:flex; align-items:center; gap:7px;">
-        <div style="flex:1; min-width:54px; height:7px; background:#f0f0f6; border-radius:4px; overflow:hidden;">
-          <div style="height:100%; width:${w}%; background:${t.c}; border-radius:4px;"></div></div>
-        <b style="font-size:12px; color:${t.c}; min-width:38px; text-align:right;">${Math.round(f.pct)}%</b></div>`;
+    const fr = f.fr;
+    const wCons = Math.max(1.5, Math.min(100, f.pct));
+    const wComp = fr && fr.comp ? Math.min(100 - wCons, (fr.comp * 100) / f.cont) : 0;
+    const tFill = fr ? csmTono(fr.fill, mesPct) : t;
+    return `<div>
+        <div style="display:flex; align-items:center; gap:7px;">
+          <div title="Consumido ${csmH(fr ? fr.cons : f.cons)}${fr && fr.comp ? " · comprometido con fecha " + csmH(fr.comp) : ""} sobre ${f.cont} h"
+               style="flex:1; min-width:54px; height:7px; background:#f0f0f6; border-radius:4px; overflow:hidden; display:flex;">
+            <div style="height:100%; width:${wCons}%; background:${t.c};"></div>
+            <div style="height:100%; width:${wComp}%; background:repeating-linear-gradient(45deg,${tFill.c},${tFill.c} 3px,transparent 3px,transparent 6px); opacity:.55;"></div>
+          </div>
+          <b style="font-size:12px; color:${t.c}; min-width:38px; text-align:right;">${Math.round(f.pct)}%</b></div>
+        ${fr && fr.comp != null ? `<div style="font-size:10px; color:#6b7280; margin-top:3px; line-height:1.45;">
+            proyectado <b style="color:${tFill.c};">${Math.round(fr.fill)}%</b> · hueco <b>${csmH(fr.hueco)}</b>
+            ${fr.sinProy ? `<span title="Tickets sin estimación o sin fecha de entrega. No se pueden proyectar, así que el hueco real puede ser menor." style="color:#b45309; font-weight:700;"> · ${fr.sinProy} sin proyectar</span>` : ""}
+          </div>` : ""}</div>`;
   };
   /* Contador clickeable → abre la lista VIVA en Jira con el JQL exacto.
      El cero también es link: "¿de verdad no hay nada abierto?" es una pregunta legítima y
@@ -10980,7 +11053,6 @@ function renderCsm() {
     });
     return r;
   };
-  const csmH = n => (n == null ? "—" : (Math.round(n * 10) / 10).toLocaleString("es-AR") + " h");
   const horasCell = f => {
     const h = f.horas;
     if (!h) return `<span style="color:#d1d5db;">—</span>`;
