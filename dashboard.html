@@ -11446,34 +11446,38 @@ function renderCsm() {
             ${sinBolsa} cuenta(s) sin bolsa contratada quedan fuera del fill rate: sin denominador el porcentaje no significa nada, y mostrarlas en 0% las pondría como las más sanas del tablero.</div>` : "")}
     </div>`;
 
-  host.innerHTML = barra + kpis + cards + `<div style="overflow-x:auto;"><table class="cue-table">
-      <thead><tr>
-        <th style="position:sticky; left:0; background:#fafafa; min-width:180px;">Cuenta</th>
-        <th>CSM</th><th style="text-align:right;">Bolsa h</th><th style="text-align:right;">Consumidas</th>
-        <th title="Horas ya imputadas sobre la bolsa del mes. La PROYECCIÓN (cuánto va a llenarse) está en las tarjetas de arriba.">% de la bolsa</th><th style="text-align:right;" title="Tickets de CLIENTE. No incluye los contenedores de worklog mensuales. El ▸ abre el detalle con el link a cada ticket.">Tickets</th><th style="text-align:right;">Prioritarios</th>
-        <th style="text-align:right;" title="Por ejecutar: horas que faltan de los tickets aprobados — es lo que va a consumir la bolsa. Presup.: horas cotizadas esperando el OK del cliente, todavía no ejecutables.">Horas</th>
-        <th title="Cómo está la cola de soporte: críticos, vencidos y dormidos. No es lo mismo que el consumo de la bolsa.">Salud de la cola</th><th></th>
-      </tr></thead><tbody>${cuerpo || `<tr><td colspan="10" style="padding:18px; color:#9ca3af;">Sin cuentas para este filtro.</td></tr>`}</tbody></table></div>
+  /* ═══ LA TABLA DE CUENTAS SE FUE (2026-10-28, pedido de German) ═══════════════════════════
+     Mostraba Bolsa / Consumidas / % de la bolsa / Tickets / Prioritarios / Horas / Salud, y
+     para cuando las tarjetas de fill rate estuvieron arriba **las siete columnas ya estaban
+     dichas dos veces en la misma pantalla**. Dos controles para el mismo dato terminan
+     contradiciéndose; es la misma razón por la que el filtro de CSM no se duplicó en las
+     tarjetas.
+     En su lugar va la tabla de tickets del Radar, con otro orden por defecto: arriba la
+     pregunta de la CUENTA (¿se consume la bolsa?), abajo la del TICKET (¿qué muevo primero?).
+
+     🧟 `cuerpo` (arriba) quedó sin lector. Se deja a propósito y no se borra en la misma pasada
+     que saca la tabla: construye strings sin efectos secundarios, cuesta ~30 iteraciones, y
+     arrastra `detalleFila`/`horasCell`/`saludCell`, que hay que verificar quién más usa antes
+     de tocarlas. Podarlo es una tarea aparte, no un bonus de ésta. */
+  const tDatos = data.filter(c => vis.some(f => String(f.id) === String(c.id)));
+  host.innerHTML = barra + kpis + cards + rsopTablaHtml(tDatos, "csmt", "🎫 Tickets por prioridad ponderada") + `
     <div class="small" style="margin-top:10px; font-style:italic; color:#888;">
-      <b>Clic en el nombre</b> abre el portal de esa cuenta en Jira; <b>clic en un número</b> abre la lista de esos tickets.
-      La columna <b>Tickets</b> cuenta sólo trabajo de cliente: tus contenedores de worklog mensuales van aparte como <b>+N adm.</b>,
-      porque sumarlos infla cada cuenta en +1 o +2 de forma constante.
-      <b>Salud de la cola</b> sale del detalle que trae el task <code>jira-radar-soporte</code> cada 2 h; el desglose ticket por ticket está en <b>🚨 Radar de soporte</b>.
-      Los números son la foto del lunes —los escribe el task <code>horas-jira-a-hubspot</code>—, pero los links abren la <b>lista viva</b>: si no coinciden, manda Jira.
-      <b>Prioritarios</b> = tickets abiertos con prioridad <b>🚨 Impide la compra</b> o <b>⚡ Urgente</b>.
-      Los portales de Innew no usan las prioridades estándar de Jira: filtrar por “Highest” da cero en las 24 cuentas.
-      <b>s/bolsa</b> = la cuenta tiene portal pero no tiene horas contratadas, así que el % no aplica.
-      <b>Sin medir</b> = no tiene portal en Jira (está en IDP o no tiene S&amp;G) — no es deuda.
-      <b>▸ en Tickets</b> despliega el detalle: cada ticket con su link directo a Jira, estado, prioridad, asignado y horas.
-      <b>Horas · por ejecutar</b> es el tiempo restante de los tickets ya aprobados —lo que va a consumir la bolsa—;
-      <b>presup.</b> son horas cotizadas esperando el OK del cliente, que todavía <i>no</i> son trabajo ejecutable y por eso van aparte.
-      Los tickets <b>sin estimación en Jira no se cuentan como cero</b>: se informan al lado para que sepas cuánto le falta al total.
+      <b>Prioridad pond.</b> = <b>60% tiempo quieto</b> + <b>40% horas del requerimiento</b>, multiplicado por el <b>tipo de cuenta</b>
+      (Estrella 1 · Vaca 0,85 · Incógnita 0,6 · Perro 0,45, de <code>calificacion_matriz_bcg</code> en HubSpot).
+      El tipo de cuenta <b>multiplica en vez de sumar</b>: así desempata entre dos tickets parecidos en vez de darle puntaje a un ticket nuevo
+      sólo por el cliente que lo pidió.
+      Los factores saturan a los <b>21 días</b> quieto y a las <b>40 h</b> — entre abandonado hace 40 días y hace 80 ya no hay diferencia accionable.
+      Un ticket <b>sin estimación no vale cero horas</b>: pondera neutro y la celda lo marca con <b>~</b>, porque lo que nadie dimensionó suele ser lo más grande.
+      Respeta el filtro de CSM de arriba. <b>Tocá cualquier encabezado</b> para reordenar.
+      🛑 Un <b>compromiso ya dado no se vuelve a pushear</b>: si el asignado puso fecha, el ticket está comprometido, no dormido —
+      y varios del equipo avanzan por Slack, así que <i>Quieto</i> mide Jira, no la conversación.
     </div>`;
   /* La grilla se pinta DESPUÉS del innerHTML: antes de esta línea el contenedor todavía no
      existe en el DOM. Es la misma función que usan el buscador y el selector de orden, así
      que el primer dibujo y los repintados posteriores comparten camino — si divergieran,
      el orden inicial podría no ser el que muestra el desplegable. */
   csmFrPintar();
+  rsopTablaPintar("csmt");   // mismo motivo: el contenedor recién existe después del innerHTML
 }
 /* Abrir/cerrar el detalle de una cuenta. Vive en `window.__csmOpen` (memoria de la sesión, no
    se persiste: es estado de lectura, no trabajo del usuario). */
@@ -11635,6 +11639,24 @@ function faBloqueHtml() {
    CSM puede hacer algo hoy. No se deriva del autor del último comentario — un nombre
    desconocido puede ser del cliente o alguien nuevo de Innew, y clasificar mal en silencio
    es peor que no clasificar. */
+/* 🔁 **La tabla de tickets se instancia DOS veces** (Radar de soporte y Seguimiento CSM) y por
+   eso todo lo suyo va indexado por un **prefijo**. Si compartieran estado, ordenar en una
+   reordenaría la otra, y los ids de DOM repetidos harían que `getElementById` le pegara
+   siempre a la primera — repintando la tabla equivocada. `RSOP_LISTA` queda como alias de la
+   instancia "rsop" para no romper a quien la lea de afuera. */
+const RSOP_LISTAS = {};          // pfx -> tickets de esa instancia
+const RSOP_UI = {};              // pfx -> { ord, q, adm }
+function rsopUI(pfx) {
+  if (!RSOP_UI[pfx]) RSOP_UI[pfx] = { ord: null, q: "", adm: false };
+  return RSOP_UI[pfx];
+}
+/* Orden por defecto de cada instancia. El Radar sigue abriendo por **Quieto** (su pregunta es
+   "¿qué se está muriendo?"); Seguimiento CSM abre por **Prioridad ponderada**. */
+const RSOP_ORD_DEF = { rsop: { c: "quieto", d: -1 }, csmt: { c: "score", d: -1 } };
+function rsopOrdDe(pfx) {
+  const u = rsopUI(pfx);
+  return u.ord || RSOP_ORD_DEF[pfx] || { c: "quieto", d: -1 };
+}
 let RSOP_LISTA = [];
 function rsopPelota(t) {
   const e = jtEst(t.s);
@@ -11651,6 +11673,47 @@ function rsopFechaC(iso) {
 /* Columnas: `v` devuelve el valor de ORDEN (número o texto) y `d` la dirección por defecto
    al tocarla por primera vez. Separar orden de presentación es lo que permite mostrar
    "18/09 · 9 d" y ordenar bien igual. */
+/* ═══ PRIORIDAD PONDERADA ════════════════════════════════════════════════════════════════
+   Criterio pedido por German (28/10): **tiempo quieto · horas del requerimiento (a más horas,
+   más peso) · tipo de cuenta**.
+
+       score = (0.60 · quieto + 0.40 · horas) × tipoDeCuenta × 100
+
+   📐 **Por qué el tipo de cuenta MULTIPLICA y no suma.** Si sumara, un ticket recién creado en
+   una Estrella ya arrancaría con puntaje por el solo hecho de ser Estrella, y el ranking
+   dejaría de hablar de urgencia para hablar de quién es el cliente. Multiplicando, el tipo de
+   cuenta **modula** una urgencia que ya existe: desempata entre dos tickets parecidos, no
+   inventa uno.
+
+   🪤 **Un ticket sin estimación NO vale cero horas.** Valdría cero el factor horas y bajaría
+   al fondo justo el trabajo que nadie dimensionó todavía — que suele ser el más grande. Se le
+   asigna un valor neutro (0.35 ≈ 14 h) y la celda lo dice: un número que salió de un supuesto
+   tiene que verse distinto de uno medido. Mismo criterio que "sin estimar" en la columna Horas.
+
+   Techos: 21 días de quieto y 40 h. Arriba de eso el factor satura — entre un ticket quieto
+   hace 40 días y otro hace 80 ya no hay diferencia accionable, los dos están abandonados. */
+const RSOP_TIPO_PESO = { "Estrella": 1, "Vaca": 0.85, "Incognita": 0.6, "Perro": 0.45 };
+const RSOP_TIPO_NEUTRO = 0.6;    // sin calificación cargada: ni premio ni castigo
+const RSOP_H_NEUTRA = 0.35;      // sin estimación: NO es cero
+function rsopTipoCuenta(coId) {
+  const d = window.__cuentasData || [];
+  for (let i = 0; i < d.length; i++) {
+    if (String(d[i].id) === String(coId)) return (d[i].properties || {}).calificacion_matriz_bcg || "";
+  }
+  return "";
+}
+function rsopHorasTicket(t) {
+  const h = (t.hEst != null ? t.hEst : t.hRest);
+  return (h != null && h > 0) ? h : null;
+}
+function rsopScore(t) {
+  const q = t.quieto != null ? Math.min(t.quieto / 21, 1) : 0;
+  const hs = rsopHorasTicket(t);
+  const h = hs != null ? Math.min(hs / 40, 1) : RSOP_H_NEUTRA;
+  const tipo = rsopTipoCuenta(t.coId);
+  const cf = RSOP_TIPO_PESO[tipo] != null ? RSOP_TIPO_PESO[tipo] : RSOP_TIPO_NEUTRO;
+  return Math.round((0.60 * q + 0.40 * h) * cf * 100);
+}
 const RSOP_COLS = [
   { id: "k",      t: "Ticket",        v: t => t.k,               d: 1,  al: "left" },
   { id: "cli",    t: "Cuenta",        v: t => t.cli,             d: 1,  al: "left" },
@@ -11662,16 +11725,17 @@ const RSOP_COLS = [
   { id: "creado", t: "Carga",         v: t => t.edad,            d: -1, al: "right" },
   { id: "resp",   t: "Últ. respuesta",v: t => t.respDias,        d: -1, al: "right" },
   { id: "vence",  t: "Vence",         v: t => t.venceEn,         d: 1,  al: "right" },
-  { id: "quieto", t: "Quieto",        v: t => t.quieto,          d: -1, al: "right" }
+  { id: "quieto", t: "Quieto",        v: t => t.quieto,          d: -1, al: "right" },
+  { id: "score",  t: "Prioridad pond.", v: t => rsopScore(t),     d: -1, al: "right" }
 ];
 function rsopCol(id) { return RSOP_COLS.filter(c => c.id === id)[0] || RSOP_COLS[10]; }
-function rsopOrden(id) {
-  const o = window.__rsopOrd || { c: "quieto", d: -1 };
-  window.__rsopOrd = (o.c === id) ? { c: id, d: -o.d } : { c: id, d: rsopCol(id).d };
-  rsopTablaPintar();
+function rsopOrden(pfx, id) {
+  const o = rsopOrdDe(pfx);
+  rsopUI(pfx).ord = (o.c === id) ? { c: id, d: -o.d } : { c: id, d: rsopCol(id).d };
+  rsopTablaPintar(pfx);
 }
-function rsopBuscar(v) { window.__rsopQ = v; rsopTablaPintar(); }
-function rsopVerAdm(v) { window.__rsopAdm = !!v; rsopTablaPintar(); }
+function rsopBuscar(pfx, v) { rsopUI(pfx).q = v; rsopTablaPintar(pfx); }
+function rsopVerAdm(pfx, v) { rsopUI(pfx).adm = !!v; rsopTablaPintar(pfx); }
 /* Comparador. 🚨 Los vacíos van SIEMPRE al fondo, en las dos direcciones: un ticket sin
    vencimiento cargado no puede ganarle el podio de "más vencido" a uno que sí venció, y dos
    tercios de la cartera no tienen fecha. Invertir los nulos con la flecha es la forma
@@ -11686,28 +11750,31 @@ function rsopCmp(a, b, col, dir) {
   if (typeof va === "number" && typeof vb === "number") return (va - vb) * dir || String(a.k).localeCompare(String(b.k));
   return String(va).localeCompare(String(vb), "es") * dir || String(a.k).localeCompare(String(b.k));
 }
-function rsopTablaFilas() {
-  const q = String(window.__rsopQ || "").trim().toLowerCase();
-  const verAdm = !!window.__rsopAdm;
-  const o = window.__rsopOrd || { c: "quieto", d: -1 };
-  let l = RSOP_LISTA.filter(t => verAdm || !t.adm);
+function rsopTablaFilas(pfx) {
+  const u = rsopUI(pfx), o = rsopOrdDe(pfx);
+  const q = String(u.q || "").trim().toLowerCase();
+  const verAdm = !!u.adm;
+  let l = (RSOP_LISTAS[pfx] || []).filter(t => verAdm || !t.adm);
   if (q) l = l.filter(t => (t.k + " " + t.cli + " " + t.r + " " + t.s + " " + t.a).toLowerCase().indexOf(q) >= 0);
   return l.slice().sort((a, b) => rsopCmp(a, b, o.c, o.d));
 }
 /* Repinta SÓLO la tabla, no la vista entera: el buscador vive afuera de este nodo para que
    escribir no le robe el foco al input en cada tecla (mismo error que costó el clic del
    cronograma el 18/09 — un render en el medio destruye el nodo con el que estabas). */
-function rsopTablaPintar() {
-  const host = document.getElementById("rsop-tabla");
+function rsopTablaPintar(pfx) {
+  pfx = pfx || "rsop";
+  const host = document.getElementById(pfx + "-tabla");
   if (!host) return;
-  const o = window.__rsopOrd || { c: "quieto", d: -1 };
-  const filas = rsopTablaFilas();
+  const o = rsopOrdDe(pfx);
+  const filas = rsopTablaFilas(pfx);
   const th = RSOP_COLS.map(c => {
     const on = o.c === c.id;
-    return `<th onclick="rsopOrden('${c.id}')" title="Ordenar por ${escAttr(c.t)}"
+    return `<th onclick="rsopOrden('${pfx}','${c.id}')" title="${c.id === "score"
+      ? "Ordenar por prioridad ponderada: 60% tiempo quieto + 40% horas del requerimiento, multiplicado por el tipo de cuenta (Estrella 1 · Vaca 0,85 · Incógnita 0,6 · Perro 0,45)."
+      : "Ordenar por " + escAttr(c.t)}"
       style="cursor:pointer; user-select:none; text-align:${c.al}; white-space:nowrap; ${on ? "color:#4030C8;" : ""}">${escAttr(c.t)}<span style="opacity:${on ? 1 : .25}; margin-left:3px;">${on ? (o.d > 0 ? "▲" : "▼") : "↕"}</span></th>`;
   }).join("");
-  const cnt = document.getElementById("rsop-tabla-cnt");
+  const cnt = document.getElementById(pfx + "-tabla-cnt");
   if (cnt) cnt.textContent = filas.length + (filas.length === 1 ? " ticket" : " tickets");
   if (!filas.length) {
     host.innerHTML = `<div style="padding:16px 14px; font-size:12.5px; color:#9ca3af;">Ningún ticket coincide con el filtro.</div>`;
@@ -11734,32 +11801,46 @@ function rsopTablaPintar() {
       <td style="text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums;">${resp}</td>
       <td style="text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums;">${venc}</td>
       <td style="text-align:right; font-variant-numeric:tabular-nums; font-weight:${t.quieto >= JT_DORMIDO ? 700 : 400}; color:${t.quieto >= 14 ? "#b91c1c" : (t.quieto >= JT_DORMIDO ? "#b45309" : "#6b7280")};">${t.quieto != null ? t.quieto + " d" : "—"}</td>
+      ${(() => {
+        const sc = rsopScore(t), hs = rsopHorasTicket(t), tipo = rsopTipoCuenta(t.coId);
+        /* El color del puntaje usa los mismos cortes que el resto del Radar. El "~" avisa que
+           las horas son un supuesto, no una medición: sin eso el ranking se lee como si todo
+           estuviera dimensionado. */
+        const col = sc >= 55 ? "#b91c1c" : (sc >= 35 ? "#b45309" : "#6b7280");
+        return `<td style="text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; font-weight:700; color:${col};"
+          title="Quieto ${t.quieto != null ? t.quieto + " d" : "—"} · ${hs != null ? csmH(hs) : "sin estimar (se pondera neutro, no cero)"} · cuenta ${escAttr(tipo || "sin calificar")}">
+          ${sc}${hs == null ? `<span style="color:#9ca3af; font-weight:400;" title="Las horas de este ticket son un supuesto: no tiene estimación en Jira.">~</span>` : ""}</td>`;
+      })()}
     </tr>`;
   }).join("")}</tbody></table>`;
 }
 /* Arma el cajón y deja la lista lista para que los handlers repinten sin recalcular la vista. */
-function rsopTablaHtml(conDato) {
-  RSOP_LISTA = [];
+function rsopTablaHtml(conDato, pfx, titulo) {
+  pfx = pfx || "rsop";
+  const lista = [];
   (conDato || []).forEach(c => {
     const jt = jtDeCuenta(c);
     if (jt.estado !== "ok") return;
     const cli = ((c.properties || {}).name || "").trim();
-    jt.real.forEach(t => RSOP_LISTA.push(Object.assign({ cli: cli, coId: c.id, adm: 0 }, t)));
-    jt.admin.forEach(t => RSOP_LISTA.push(Object.assign({ cli: cli, coId: c.id, adm: 1 }, t)));
+    jt.real.forEach(t => lista.push(Object.assign({ cli: cli, coId: c.id, adm: 0 }, t)));
+    jt.admin.forEach(t => lista.push(Object.assign({ cli: cli, coId: c.id, adm: 1 }, t)));
   });
-  const nAdm = RSOP_LISTA.filter(t => t.adm).length;
+  RSOP_LISTAS[pfx] = lista;
+  if (pfx === "rsop") RSOP_LISTA = lista;      // alias histórico
+  const u = rsopUI(pfx);
+  const nAdm = lista.filter(t => t.adm).length;
   return `<div style="border:1px solid #e8e8ec; border-radius:11px; background:#fff; overflow:hidden; margin-top:14px;">
     <div style="padding:10px 14px; border-bottom:1px solid #e8e8ec; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-      <div style="font-size:13px; font-weight:800; color:#374151;">📋 Todos los tickets</div>
-      <span id="rsop-tabla-cnt" style="font-size:11px; color:#6b7280; background:#F3F4F6; border-radius:999px; padding:2px 9px;"></span>
-      <input id="rsop-q" type="text" placeholder="Filtrar por cuenta, ticket, asunto, estado o persona…"
-        oninput="rsopBuscar(this.value)" value="${escAttr(window.__rsopQ || "")}"
+      <div style="font-size:13px; font-weight:800; color:#374151;">${escAttr(titulo || "📋 Todos los tickets")}</div>
+      <span id="${pfx}-tabla-cnt" style="font-size:11px; color:#6b7280; background:#F3F4F6; border-radius:999px; padding:2px 9px;"></span>
+      <input id="${pfx}-q" type="text" placeholder="Filtrar por cuenta, ticket, asunto, estado o persona…"
+        oninput="rsopBuscar('${pfx}', this.value)" value="${escAttr(u.q || "")}"
         style="font-family:inherit; font-size:12px; padding:6px 10px; border:1px solid #e5e7eb; border-radius:8px; min-width:280px; flex:1;">
       <label style="font-size:11.5px; color:#6b7280; display:flex; align-items:center; gap:5px; cursor:pointer; white-space:nowrap;">
-        <input type="checkbox" onchange="rsopVerAdm(this.checked)" ${window.__rsopAdm ? "checked" : ""}> incluir mis mensuales${nAdm ? " (" + nAdm + ")" : ""}</label>
+        <input type="checkbox" onchange="rsopVerAdm('${pfx}', this.checked)" ${u.adm ? "checked" : ""}> incluir mis mensuales${nAdm ? " (" + nAdm + ")" : ""}</label>
       <span style="font-size:10.5px; color:#9ca3af; white-space:nowrap;">tocá un encabezado para ordenar</span>
     </div>
-    <div id="rsop-tabla" style="overflow:auto;"></div>
+    <div id="${pfx}-tabla" style="overflow:auto;"></div>
   </div>`;
 }
 
