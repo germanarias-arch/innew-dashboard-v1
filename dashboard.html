@@ -10841,6 +10841,95 @@ function csmTono(pct, mesPct) {
   return { c: "#047857", bg: "transparent", t: "" };
 }
 
+/* ═══ TARJETAS DE FILL RATE — orden, búsqueda y repintado aislado ════════════════════════
+   Viven FUERA de `renderCsm` a propósito. Si el buscador repintara toda la vista, el input
+   se destruiría en cada tecla y el foco se perdería: hay que poder repintar **sólo la
+   grilla**. Por eso las filas se dejan en `window.__frRows` y la grilla tiene su propio id.
+
+   🔗 **El filtro por CSM NO se duplica acá.** Los chips de arriba ya filtran la vista entera
+   —tabla y tarjetas— y `__frRows` sale de `vis`, que ya viene filtrado. Agregar un segundo
+   selector de CSM sería el mismo error que duplicar el dato: dos controles para lo mismo
+   que tarde o temprano se contradicen. */
+/* Formateador de horas y color de lo comprometido: a nivel módulo porque los usan tanto
+   `renderCsm` como `csmCardHtml`, que vive afuera para poder repintarse sola. */
+const csmH = n => (n == null ? "—" : (Math.round(n * 10) / 10).toLocaleString("es-AR") + " h");
+const CSM_COMP_COL = "#A78BFA";       // violeta de "comprometido": categoría, no alarma
+/* Una tarjeta. 🩹 El chip de salud **no antepone "cola "** cuando el texto ya lo dice: antes
+   salía *"cola sin cola"* en las cuentas sin tickets. Concatenar a ciegas un prefijo con un
+   texto que no controlás es cómo aparecen esas frases. */
+function csmCardHtml(f, mesPct) {
+  const fr = f.fr, t = csmTono(f.pct, mesPct), tFill = csmTono(fr.fill, mesPct);
+  const wCons = Math.max(1.2, Math.min(100, f.pct));
+  const wComp = fr.comp ? Math.min(Math.max(0, 100 - wCons), (fr.comp * 100) / f.cont) : 0;
+  const critica = f.sal && f.sal.nivel === "critica";
+  const salTxt = f.sal && f.sal.txt ? (/^sin /.test(f.sal.txt) ? f.sal.txt : "cola " + f.sal.txt) : "";
+  const kv = (l, v, fuerte) => `<div style="display:flex; justify-content:space-between; align-items:baseline; font-size:12px; color:#6b7280; padding:3px 0;${fuerte ? " border-top:1px solid #f0f0f5; margin-top:5px; padding-top:7px;" : ""}">
+      <span${fuerte ? ' style="font-weight:700; color:#374151;"' : ""}>${l}</span>
+      <b style="color:${fuerte ? tFill.c : "#1f2937"}; font-variant-numeric:tabular-nums;">${v}</b></div>`;
+  return `<div style="border:1px solid ${critica ? "#FECACA" : "#e9e9ef"}; background:${critica ? "#FFFCFC" : "#fff"}; border-radius:12px; padding:15px 16px;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:12px;">
+        <div style="min-width:0;">
+          <div style="font-weight:700; font-size:13.5px; color:#430C89; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escAttr(f.cli)}</div>
+          <div style="font-size:10.5px; color:#9ca3af;">${escAttr(f.csm || "sin CSM")}${f.keys ? " · " + escAttr(f.keys.join(" + ")) : ""}</div>
+        </div>
+        <b style="font-size:21px; font-weight:800; color:${tFill.c}; line-height:1; white-space:nowrap;">${Math.round(fr.fill)}%</b>
+      </div>
+      <div title="Hoy va ${Math.round(mesPct)}% del mes" style="position:relative; height:24px; background:#F0F0F5; border-radius:7px; overflow:hidden; display:flex;">
+        <div style="height:100%; width:${wCons}%; background:${t.c};"></div>
+        <div style="height:100%; width:${wComp}%; background:repeating-linear-gradient(45deg,${CSM_COMP_COL},${CSM_COMP_COL} 4px,#EDE9FE 4px,#EDE9FE 9px);"></div>
+        <div style="position:absolute; left:${Math.min(99.3, mesPct)}%; top:0; width:2px; height:100%; background:#111827; opacity:.4;"></div>
+      </div>
+      <div style="margin-top:11px;">
+        ${kv("Bolsa del mes", csmH(f.cont))}
+        ${kv("Consumido", csmH(fr.cons))}
+        ${kv("Comprometido c/fecha", fr.comp ? csmH(fr.comp) : "—")}
+        ${kv("Hueco", csmH(fr.hueco), 1)}
+      </div>
+      <div style="margin-top:10px; display:flex; gap:5px; flex-wrap:wrap;">
+        ${fr.sinProy ? `<span title="Tickets sin estimación o sin fecha de entrega: no se pueden proyectar, así que el hueco real puede ser menor."
+          style="background:#FFFBEB; color:#92400e; border:1px solid #FDE68A; border-radius:999px; padding:1px 8px; font-weight:700; font-size:10.5px;">${fr.sinProy} sin proyectar</span>` : ""}
+        ${salTxt ? `<span style="background:${critica ? "#FEF2F2" : "#F3F4F6"}; color:${critica ? "#b91c1c" : "#6b7280"}; border:1px solid ${critica ? "#FECACA" : "#e5e7eb"}; border-radius:999px; padding:1px 8px; font-weight:700; font-size:10.5px;">${escAttr(salTxt)}</span>` : ""}
+      </div></div>`;
+}
+const CSM_FR_ORDENES = [
+  { v: "hueco",  l: "Hueco (horas)",        f: (a, b) => b.fr.hueco - a.fr.hueco },
+  { v: "fill",   l: "Cumplimiento ↑ (peor)", f: (a, b) => a.fr.fill - b.fr.fill },
+  { v: "fillD",  l: "Cumplimiento ↓ (mejor)", f: (a, b) => b.fr.fill - a.fr.fill },
+  { v: "bolsa",  l: "Bolsa contratada",      f: (a, b) => b.cont - a.cont },
+  { v: "cons",   l: "Horas consumidas",      f: (a, b) => (b.fr.cons || 0) - (a.fr.cons || 0) },
+  { v: "sinp",   l: "Sin proyectar",         f: (a, b) => (b.fr.sinProy || 0) - (a.fr.sinProy || 0) },
+  { v: "nombre", l: "Nombre (A-Z)",          f: (a, b) => String(a.cli).localeCompare(String(b.cli)) }
+];
+let CSM_FR_ORD = "hueco";
+let CSM_FR_Q = "";
+/* El buscador mira nombre, CSM y clave de portal: en esta tabla la gente busca tanto por
+   "Margaritas" como por "PLM", y hacerlo sólo por nombre obliga a saber cómo está escrita
+   la cuenta en HubSpot ("Velenet" con E, el proyecto `VALENET` con A). */
+function csmFrFiltradas() {
+  const rows = (window.__frRows || []).slice();
+  const q = CSM_FR_Q.trim().toLowerCase();
+  const vis = q ? rows.filter(f => {
+    const hay = [f.cli, f.csm].concat(f.keys || []).join(" ").toLowerCase();
+    return hay.indexOf(q) >= 0;
+  }) : rows;
+  const o = CSM_FR_ORDENES.filter(x => x.v === CSM_FR_ORD)[0] || CSM_FR_ORDENES[0];
+  return vis.sort(o.f);
+}
+function csmFrPintar() {
+  const g = document.getElementById("csm-fr-grid"); if (!g) return;
+  const rows = csmFrFiltradas();
+  g.innerHTML = rows.length
+    ? rows.map(f => csmCardHtml(f, window.__frMesPct || 0)).join("")
+    : `<div style="grid-column:1/-1; padding:16px; color:#9ca3af; font-size:12.5px;">Ninguna cuenta coincide con “${escAttr(CSM_FR_Q)}”.</div>`;
+  const n = document.getElementById("csm-fr-n");
+  if (n) n.textContent = rows.length + (rows.length === 1 ? " cuenta" : " cuentas");
+}
+function csmFrSetOrd(v) { CSM_FR_ORD = v; csmFrPintar(); }
+/* ⚠️ Sólo repinta la grilla, nunca la vista: si llamara a `renderCsm()` el input se
+   destruiría en cada tecla y escribir se volvería imposible. Mismo patrón que la trampa del
+   nodo que muere entre el clic y el repintado (18/09). */
+function csmFrSetQ(v) { CSM_FR_Q = v || ""; csmFrPintar(); }
+
 function renderCsm() {
   const host = document.getElementById("csm-body"); if (!host) return;
   const data = window.__cuentasData;
@@ -10882,7 +10971,6 @@ function renderCsm() {
      naturalmente caerían. `kpis` se construye antes que `barraPct` y ya consume `f.fr` y
      `csmH`: definirlos después los dejaba en zona muerta temporal y el fill rate agregado
      salía 0 sin romper nada visible. Orden de declaración y orden de uso no son lo mismo. */
-  const csmH = n => (n == null ? "—" : (Math.round(n * 10) / 10).toLocaleString("es-AR") + " h");
   const CSM_CERRADO = { "Prueba Aprobada": 1 };
   const diasRest = (() => {
     const h = new Date();
@@ -11008,7 +11096,6 @@ function renderCsm() {
      📍 **Marca de hoy**: línea vertical en el % del mes transcurrido. Es el contexto que
      convierte el número en juicio — 11% consumido el día 3 está bien; el día 28 es otra cosa.
      El dato ya existía (`mesPct`) y no se estaba mostrando en ningún lado de la fila. */
-  const CSM_COMP_COL = "#A78BFA";       // violeta de "comprometido": categoría, no alarma
   /* 🔙 **La celda de la tabla volvió a ser la simple** (2026-10-28, al implementar la opción B).
      Meter el fill rate acá fue el intento que falló dos veces: *"sigue comprimido, sigue sin
      ser claro"*. La causa no era el diseño de la celda sino que **la tabla le pedía a una
@@ -11189,52 +11276,32 @@ function renderCsm() {
      más sanas del tablero. Se dicen aparte, abajo, contadas.
 
      🔗 Respeta el filtro de CSM de arriba: si estás viendo "Jenny", las tarjetas son de Jenny. */
-  const frCards = vis.filter(f => f.fr).sort((a, b) => b.fr.hueco - a.fr.hueco);
+  /* Las filas se publican para que la grilla pueda repintarse sola al buscar u ordenar, sin
+     volver a pasar por `renderCsm`. Salen de `vis`, así que **ya vienen filtradas por el chip
+     de CSM** de arriba: el filtro por CSM que pidió German ya existe y no se duplica. */
+  window.__frRows = vis.filter(f => f.fr);
+  window.__frMesPct = mesPct;
   const sinBolsa = vis.filter(f => f.pct == null).length;
-  const card = (f) => {
-    const fr = f.fr, t = csmTono(f.pct, mesPct), tFill = csmTono(fr.fill, mesPct);
-    const wCons = Math.max(1.2, Math.min(100, f.pct));
-    const wComp = fr.comp ? Math.min(Math.max(0, 100 - wCons), (fr.comp * 100) / f.cont) : 0;
-    const critica = f.sal && f.sal.nivel === "critica";
-    const kv = (l, v, fuerte) => `<div style="display:flex; justify-content:space-between; align-items:baseline; font-size:12px; color:#6b7280; padding:3px 0;${fuerte ? " border-top:1px solid #f0f0f5; margin-top:5px; padding-top:7px;" : ""}">
-        <span${fuerte ? ' style="font-weight:700; color:#374151;"' : ""}>${l}</span>
-        <b style="color:${fuerte ? tFill.c : "#1f2937"}; font-variant-numeric:tabular-nums;">${v}</b></div>`;
-    return `<div style="border:1px solid ${critica ? "#FECACA" : "#e9e9ef"}; background:${critica ? "#FFFCFC" : "#fff"}; border-radius:12px; padding:15px 16px;">
-        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:12px;">
-          <div style="min-width:0;">
-            <div style="font-weight:700; font-size:13.5px; color:#430C89; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escAttr(f.cli)}</div>
-            <div style="font-size:10.5px; color:#9ca3af;">${escAttr(f.csm || "sin CSM")}${f.keys ? " · " + escAttr(f.keys.join(" + ")) : ""}</div>
-          </div>
-          <b style="font-size:21px; font-weight:800; color:${tFill.c}; line-height:1; white-space:nowrap;">${Math.round(fr.fill)}%</b>
-        </div>
-        <div title="Hoy va ${Math.round(mesPct)}% del mes" style="position:relative; height:24px; background:#F0F0F5; border-radius:7px; overflow:hidden; display:flex;">
-          <div style="height:100%; width:${wCons}%; background:${t.c};"></div>
-          <div style="height:100%; width:${wComp}%; background:repeating-linear-gradient(45deg,${CSM_COMP_COL},${CSM_COMP_COL} 4px,#EDE9FE 4px,#EDE9FE 9px);"></div>
-          <div style="position:absolute; left:${Math.min(99.3, mesPct)}%; top:0; width:2px; height:100%; background:#111827; opacity:.4;"></div>
-        </div>
-        <div style="margin-top:11px;">
-          ${kv("Bolsa del mes", csmH(f.cont))}
-          ${kv("Consumido", csmH(fr.cons))}
-          ${kv("Comprometido c/fecha", fr.comp ? csmH(fr.comp) : "—")}
-          ${kv("Hueco", csmH(fr.hueco), 1)}
-        </div>
-        <div style="margin-top:10px; display:flex; gap:5px; flex-wrap:wrap;">
-          ${fr.sinProy ? `<span title="Tickets sin estimación o sin fecha de entrega: no se pueden proyectar, así que el hueco real puede ser menor."
-            style="background:#FFFBEB; color:#92400e; border:1px solid #FDE68A; border-radius:999px; padding:1px 8px; font-weight:700; font-size:10.5px;">${fr.sinProy} sin proyectar</span>` : ""}
-          ${f.sal && f.sal.nivel !== "sin" ? `<span style="background:${critica ? "#FEF2F2" : "#F3F4F6"}; color:${critica ? "#b91c1c" : "#6b7280"}; border:1px solid ${critica ? "#FECACA" : "#e5e7eb"}; border-radius:999px; padding:1px 8px; font-weight:700; font-size:10.5px;">cola ${escAttr(f.sal.txt)}</span>` : ""}
-        </div></div>`;
-  };
-  const cards = !frCards.length ? "" : `<div style="margin-bottom:16px;">
-      <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin-bottom:10px;
-           padding:9px 13px; background:#FAFAFC; border:1px solid #ececf2; border-radius:9px; font-size:11.5px; color:#4b5563;">
-        <b style="color:#374151;">Fill rate del mes</b>
-        <span><span style="display:inline-block; width:13px; height:11px; border-radius:3px; background:#4030C8; vertical-align:-1px; margin-right:5px;"></span>consumido</span>
-        <span><span style="display:inline-block; width:13px; height:11px; border-radius:3px; background:repeating-linear-gradient(45deg,${CSM_COMP_COL},${CSM_COMP_COL} 4px,#EDE9FE 4px,#EDE9FE 9px); vertical-align:-1px; margin-right:5px;"></span>comprometido con fecha</span>
-        <span><span style="display:inline-block; width:13px; height:11px; border-radius:3px; background:#F0F0F5; vertical-align:-1px; margin-right:5px;"></span>hueco</span>
-        <span><span style="display:inline-block; width:2px; height:12px; background:#111827; opacity:.4; vertical-align:-2px; margin-right:6px;"></span>hoy (${Math.round(mesPct)}% del mes)</span>
-        <span style="margin-left:auto; color:#9ca3af;">ordenadas por hueco en horas</span>
+  const inpS = "font-family:inherit; font-size:12px; padding:5px 9px; border:1px solid #e5e7eb; border-radius:8px; background:#fff; color:#374151;";
+  const cards = !window.__frRows.length ? "" : `<div style="margin-bottom:16px;">
+      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px;
+           padding:10px 13px; background:#FAFAFC; border:1px solid #ececf2; border-radius:9px; font-size:11.5px; color:#4b5563;">
+        <b style="color:#374151; font-size:12.5px;">Fill rate del mes</b>
+        <span id="csm-fr-n" style="color:#9ca3af;">${window.__frRows.length} cuentas</span>
+        <input id="csm-fr-q" type="search" placeholder="Buscar cuenta, CSM o portal…" value="${escAttr(CSM_FR_Q)}"
+           oninput="csmFrSetQ(this.value)" style="${inpS} width:230px;">
+        <label style="color:#6b7280;">Ordenar por
+          <select onchange="csmFrSetOrd(this.value)" style="${inpS} margin-left:5px;">
+            ${CSM_FR_ORDENES.map(o => `<option value="${o.v}"${o.v === CSM_FR_ORD ? " selected" : ""}>${escAttr(o.l)}</option>`).join("")}
+          </select></label>
+        <span style="margin-left:auto; display:flex; gap:13px; flex-wrap:wrap; align-items:center;">
+          <span><span style="display:inline-block; width:13px; height:11px; border-radius:3px; background:#4030C8; vertical-align:-1px; margin-right:5px;"></span>consumido</span>
+          <span><span style="display:inline-block; width:13px; height:11px; border-radius:3px; background:repeating-linear-gradient(45deg,${CSM_COMP_COL},${CSM_COMP_COL} 4px,#EDE9FE 4px,#EDE9FE 9px); vertical-align:-1px; margin-right:5px;"></span>comprometido c/fecha</span>
+          <span><span style="display:inline-block; width:13px; height:11px; border-radius:3px; background:#F0F0F5; vertical-align:-1px; margin-right:5px;"></span>hueco</span>
+          <span><span style="display:inline-block; width:2px; height:12px; background:#111827; opacity:.4; vertical-align:-2px; margin-right:6px;"></span>hoy (${Math.round(mesPct)}%)</span>
+        </span>
       </div>
-      <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:12px;">${frCards.map(card).join("")}</div>
+      <div id="csm-fr-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:12px;"></div>
       ${sinBolsa ? `<div style="font-size:11.5px; color:#9ca3af; margin-top:9px;">
         ${sinBolsa} cuenta(s) sin bolsa contratada quedan fuera del fill rate: sin denominador el porcentaje no significa nada, y mostrarlas en 0% las pondría como las más sanas del tablero.</div>` : ""}
     </div>`;
@@ -11262,6 +11329,11 @@ function renderCsm() {
       <b>presup.</b> son horas cotizadas esperando el OK del cliente, que todavía <i>no</i> son trabajo ejecutable y por eso van aparte.
       Los tickets <b>sin estimación en Jira no se cuentan como cero</b>: se informan al lado para que sepas cuánto le falta al total.
     </div>`;
+  /* La grilla se pinta DESPUÉS del innerHTML: antes de esta línea el contenedor todavía no
+     existe en el DOM. Es la misma función que usan el buscador y el selector de orden, así
+     que el primer dibujo y los repintados posteriores comparten camino — si divergieran,
+     el orden inicial podría no ser el que muestra el desplegable. */
+  csmFrPintar();
 }
 /* Abrir/cerrar el detalle de una cuenta. Vive en `window.__csmOpen` (memoria de la sesión, no
    se persiste: es estado de lectura, no trabajo del usuario). */
