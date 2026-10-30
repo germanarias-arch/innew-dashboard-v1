@@ -161,7 +161,7 @@ function mencionaA(nodo, accountId) {
 /* Reduce el hilo a lo que la vista necesita. Devuelve claves cortas, igual que el resto. */
 function hilo(comentarios, reporterName) {
   const cs = Array.isArray(comentarios) ? comentarios : [];
-  let yo = null, otro = null, oa = "", oint = 0, men = 0, mena = "", menf = null;
+  let yo = null, otro = null, oa = "", oint = 0, men = 0, mena = "", menf = null, meni = 0;
   cs.forEach(c => {
     const id = (c.author && c.author.accountId) ? String(c.author.accountId) : "";
     const f = c.created ? String(c.created) : null;
@@ -176,6 +176,11 @@ function hilo(comentarios, reporterName) {
     }
     if (mencionaA(c.body, YO_ID) && (!menf || f > menf)) {
       menf = f; mena = (c.author && c.author.displayName) || ""; men = 1;
+      /* 🪤 La visibilidad que importa es la DE LA MENCIÓN, no la del último comentario del
+         hilo. Si Daiana te arroba en una nota interna el lunes y el jueves escribe el cliente
+         en público, mirar el último diría "lo vio el cliente" sobre algo que el cliente nunca
+         vio. Lo destapó una mutación: el fixture tenía las dos fechas iguales y lo tapaba. */
+      meni = (c.jsdPublic === false) ? 1 : 0;
     }
   });
   /* La pelota es de German cuando el último movimiento ajeno es posterior a su última respuesta
@@ -191,6 +196,8 @@ function hilo(comentarios, reporterName) {
     oi: oint,                                 // 1 = era nota interna
     pe: pend ? 1 : 0,                         // 1 = espera respuesta de German
     me: (men && (!yo || (menf && menf > yo))) ? 1 : 0,   // lo arrobaron y no contestó después
+    mf: menf ? menf.slice(0, 10) : null,      // CUÁNDO lo arrobaron: el reloj arranca acá
+    mi: meni,                                 // la mención fue en nota interna
     ma: mena,                                 // quién lo arrobó
     cl: esCli ? 1 : 0                         // 1 = el que espera es el cliente
   };
@@ -211,7 +218,7 @@ function plano(it) {
   return {
     k: it.key,
     /* Hilo reducido: quién espera a quién. Ver el bloque "ESPERAN MI RESPUESTA" arriba. */
-    yo: h.yo, ot: h.ot, oa: h.oa, oi: h.oi, pe: h.pe, me: h.me, ma: h.ma, cl: h.cl,
+    yo: h.yo, ot: h.ot, oa: h.oa, oi: h.oi, pe: h.pe, me: h.me, mf: h.mf, mi: h.mi, ma: h.ma, cl: h.cl,
     rp: (f.reporter && f.reporter.displayName) || "",
     lc: (ult && ult.created) ? String(ult.created).slice(0, 10) : null,   // fecha última respuesta
     la: (ult && ult.author && ult.author.displayName) || "",              // quién respondió
