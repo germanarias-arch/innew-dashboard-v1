@@ -10633,7 +10633,20 @@ function jtArmar(lista, ts, fuente) {
          propósito — "sin estimar" no es "cero horas", y contarlo como cero miente hacia abajo
          justo en el número que se usa para decidir si la bolsa alcanza. */
       hEst: t.eo == null ? null : Number(t.eo) / 3600,   // presupuesto original
-      hRest: t.er == null ? null : Number(t.er) / 3600   // restante por ejecutar
+      hRest: t.er == null ? null : Number(t.er) / 3600,  // restante por ejecutar
+      /* ── Quién espera a quién (2026-10-29) ────────────────────────────────────────────
+         Viene del proxy, que lee el hilo y reduce. El snapshot viejo no trae nada de esto y
+         queda todo en null/0: el grupo aparece vacío en vez de mentir con datos de otra era. */
+      espera: t.pe ? 1 : 0,                  // el último movimiento ajeno es posterior a mi respuesta
+      ultOtro: t.ot || null,                 // fecha de ese movimiento
+      ultOtroQuien: t.oa || "",              // quién lo escribió
+      ultOtroInterna: t.oi ? 1 : 0,          // era nota interna (el cliente no la vio)
+      arrobado: t.me ? 1 : 0,                // me mencionaron y no contesté después
+      arrobadoPor: t.ma || "",
+      esCliente: t.cl ? 1 : 0,               // el que espera es el informador del ticket
+      informador: t.rp || "",
+      miResp: t.yo || null,                  // última vez que YO contesté
+      sinResp: t.pe ? jtDias(t.ot) : null    // días que lleva esperándome
     };
     (t.m ? admin : real).push(x);
   });
@@ -10681,6 +10694,14 @@ function jtAnomalias(cuentas) {
        El cliente ve el estado, así que uno que dice "Modelo de Solución" a fin de mes le
        está mintiendo. Excluirlos de las patologías del equipo era correcto; excluirlos de
        SU propia tarea era perder trabajo real. */
+    /* ⏳ VA PRIMERO (pedido de German, 29/10): *"hay tickets que Dai o algunas personas me
+       arroban con nota interna… deberías verlo primero"*. Es el único grupo donde el que
+       traba es él, así que mezclarlo entre las patologías del equipo lo volvía invisible.
+       🪤 La @-mención NO se detecta por texto — ver el bloque del proxy. BREMEN-195, donde
+       Daiana escribió "3 hs @German Arias", no aparece buscando su nombre como string.
+       Incluye las dos cosas que pidió: las notas internas del equipo y los pedidos del
+       cliente, en una sola lista ordenada por lo que más tiempo lleva esperándolo. */
+    respondeme: { ic: "⏳", t: "Esperan mi respuesta", d: "El último que escribió no fuiste vos. Ordenados por lo que llevan esperándote. 💬 es una nota interna del equipo que te arrobó; 🙋 es el cliente escribiendo en el portal.", tono: "bad", items: [] },
     mios: { ic: "📋", t: "Tus mensuales sin poner En Curso", d: "Los contenedores de worklog del mes tienen que estar En Curso mientras el mes corre, aunque todavía no hayas imputado horas. El cliente ve el estado.", tono: "info", items: [] }
   };
   const porTec = {};
@@ -10700,6 +10721,7 @@ function jtAnomalias(cuentas) {
       if (t.quieto != null && t.quieto >= JT_DORMIDO) A.dormido.items.push(it);
       if (est.cierra) A.cierra.items.push(it);
       if (est.entra) A.sintomar.items.push(it);
+      if (t.espera) A.respondeme.items.push(it);
       /* Gobernanza por técnico: lo que Sonia le pidió a German que EXIJA. No es un ranking de
          personas, es dónde poner la conversación. */
       /* 🎫 Se guardan los TICKETS, no sólo el contador (02/10 → 05/10, pedido de German:
@@ -10721,6 +10743,10 @@ function jtAnomalias(cuentas) {
   /* En "sin tomar" lo más grave es lo más VIEJO: cuanto más tiempo lleva sin que nadie acuse
      recibo, más SLA se comió. No se ordena por `quieto` — un ticket recién creado tiene 0 días
      quieto y sería el que menos urge, que es justo al revés. */
+  /* Lo que más tiempo lleva esperándolo, primero. Los que no trajeron fecha van al fondo en
+     vez de al tope: un null tratado como 0 los pondría como los más urgentes siendo los que
+     menos se sabe. */
+  A.respondeme.items.sort((a, b) => (b.sinResp == null ? -1 : b.sinResp) - (a.sinResp == null ? -1 : a.sinResp));
   A.sintomar.items.sort((a, b) => (b.edad || 0) - (a.edad || 0));
   A.frenado.items.sort((a, b) => (b.edad || 0) - (a.edad || 0));
   A.vencido.items.sort((a, b) => (a.venceEn || 0) - (b.venceEn || 0));
@@ -12106,6 +12132,14 @@ function jtFilaTicket(t, mostrar, gid) {
     bits.push(`<span style="color:#cbd5e1;" title="${t.nCom ? "Hay respuestas pero el proxy no trajo la fecha" : "Nadie escribió todavía en este ticket"}">`
       + `${t.nCom ? "✉ —" : "✉ sin respuestas"}</span>`);
   }
+  /* Quién lo está esperando. El 💬/🙋 no es decorativo: una nota interna del equipo el cliente
+     NO la vio, así que el costo de no contestar es distinto en cada caso. */
+  if (t.espera) {
+    const d = t.sinResp, q = rsopNombre(t.ultOtroQuien || "");
+    bits.push(`<span style="color:#b91c1c; font-weight:800;" title="${t.arrobado ? "Te arrobaron y todavía no contestaste" : "El último que escribió no fuiste vos"}${t.ultOtroInterna ? ". Fue una nota interna: el cliente no la vio." : ". Es visible para el cliente."}">`
+      + `${t.ultOtroInterna ? "💬" : "🙋"} ${t.arrobado ? "te arrobó" : "espera"}${q ? " " + escAttr(q) : ""}`
+      + `${d != null ? " · " + (d === 0 ? "hoy" : d + " d") : ""}</span>`);
+  }
   if (t.edad != null) bits.push(t.edad + " d abierto");
   if (t.venceEn != null) bits.push(t.venceEn < 0
     ? `<b style="color:#b91c1c;">venció hace ${-t.venceEn} d</b>`
@@ -12146,7 +12180,10 @@ const RSOP_T = {};
    decide German y puede cambiar, la gravedad no. `sintomar` va bajo porque ahí lo que falta
    no es escribir una nota sino mover el estado en Jira; `mios` es lo menos grave (es trabajo
    administrativo propio, no del cliente). */
-const RSOP_GID_RANK = { frenado: 6, critico: 5, vencido: 4, dormido: 3, cierra: 2, sintomar: 1, mios: 0 };
+/* `respondeme` arriba de todo: cuando el que traba es German, la acción concreta es contestar,
+   no diagnosticar el ticket de nuevo. Un ticket frenado Y esperándolo arma el borrador de
+   respuesta, que es lo que destraba. */
+const RSOP_GID_RANK = { respondeme: 7, frenado: 6, critico: 5, vencido: 4, dormido: 3, cierra: 2, sintomar: 1, mios: 0 };
 let RSOP_PASS = 0;   // sello de repintado: ver jtFilaTicket
 const RSOP_NOTAS_KEY = "rsop_notas";
 function rsopNotas() { try { return JSON.parse(localStorage.getItem(RSOP_NOTAS_KEY) || "{}") || {}; } catch (e) { return {}; } }
@@ -12360,6 +12397,7 @@ async function renderRadarSoporte() {
   const kpi = (l, v, sub, col) => `<div class="cue-kpi"><div class="kl">${l}</div><div class="kv" style="font-size:21px;${col ? "color:" + col + ";" : ""}">${v}</div><div class="ks">${sub}</div></div>`;
   const kpis = `<div class="cue-kpis" style="margin-bottom:12px;">
       ${kpi("Tickets de cliente", totReal, conDato.length + " cuenta(s)" + (csmSel === "__all" ? "" : " · " + csmSel))}
+      ${kpi("Esperan mi respuesta", grupos.respondeme.items.length, "el último no fui yo", grupos.respondeme.items.length ? "#b91c1c" : "")}
       ${kpi("Sin tomar", grupos.sintomar.items.length, "nadie acusó recibo", grupos.sintomar.items.length ? "#b45309" : "")}
       ${kpi("Impide la compra", grupos.critico.items.length, "o urgentes", grupos.critico.items.length ? "#b91c1c" : "")}
       ${kpi("Vencidos", grupos.vencido.items.length, "fecha comprometida pasada", grupos.vencido.items.length ? "#b91c1c" : "")}
@@ -12448,6 +12486,9 @@ async function renderRadarSoporte() {
           todo desde el 30/09 y tapaba los KPIs, que son lo primero que él mira.
           Orden: primero el filtrado por cartera (Sin tomar), después el que NO filtra
           (Fila única) — así la lista no alterna entre dos alcances. */""}
+    ${/* ⏳ Primero el que depende de German. Todo lo demás del Radar es trabajo de otros que
+          él audita; esto es lo único que está trabado en su bandeja. */""}
+    ${bloque(grupos.respondeme)}
     ${bloque(grupos.sintomar)}
     ${faBloqueHtml()}
     ${bloque(grupos.frenado)}
