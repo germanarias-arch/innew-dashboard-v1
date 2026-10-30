@@ -10642,11 +10642,16 @@ function jtArmar(lista, ts, fuente) {
       ultOtroQuien: t.oa || "",              // quién lo escribió
       ultOtroInterna: t.oi ? 1 : 0,          // era nota interna (el cliente no la vio)
       arrobado: t.me ? 1 : 0,                // me mencionaron y no contesté después
+      arrobadoFecha: t.mf || null,           // cuándo me arrobaron
+      arrobadoInterna: t.mi ? 1 : 0,         // la mención fue en nota interna (NO la del último comentario)
       arrobadoPor: t.ma || "",
       esCliente: t.cl ? 1 : 0,               // el que espera es el informador del ticket
       informador: t.rp || "",
       miResp: t.yo || null,                  // última vez que YO contesté
-      sinResp: t.pe ? jtDias(t.ot) : null    // días que lleva esperándome
+      /* El reloj arranca cuando te arrobaron, no cuando alguien comentó: si Daiana te pingea el
+         lunes y el jueves escribe otro sin nombrarte, lo que llevás debiendo son los días desde
+         el lunes. */
+      sinResp: t.me ? jtDias(t.mf) : null    // días desde que me arrobaron
     };
     (t.m ? admin : real).push(x);
   });
@@ -10694,14 +10699,19 @@ function jtAnomalias(cuentas) {
        El cliente ve el estado, así que uno que dice "Modelo de Solución" a fin de mes le
        está mintiendo. Excluirlos de las patologías del equipo era correcto; excluirlos de
        SU propia tarea era perder trabajo real. */
-    /* ⏳ VA PRIMERO (pedido de German, 29/10): *"hay tickets que Dai o algunas personas me
+    /* @ VA PRIMERO (pedido de German, 29/10): *"hay tickets que Dai o algunas personas me
        arroban con nota interna… deberías verlo primero"*. Es el único grupo donde el que
        traba es él, así que mezclarlo entre las patologías del equipo lo volvía invisible.
+       🎯 **Sólo menciones, no "el último que escribió no fui yo"** (acotado por German el
+       30/10: *"la idea era solo los que estoy @"*). La primera versión usaba `espera`, que
+       entraba también cuando alguien comentaba sin nombrarlo — mucho más ruidoso y no era lo
+       que pidió. `espera` sigue calculándose en el proxy y queda disponible por si algún día
+       hace falta, pero no alimenta este bloque.
        🪤 La @-mención NO se detecta por texto — ver el bloque del proxy. BREMEN-195, donde
        Daiana escribió "3 hs @German Arias", no aparece buscando su nombre como string.
        Incluye las dos cosas que pidió: las notas internas del equipo y los pedidos del
        cliente, en una sola lista ordenada por lo que más tiempo lleva esperándolo. */
-    respondeme: { ic: "⏳", t: "Esperan mi respuesta", d: "El último que escribió no fuiste vos. Ordenados por lo que llevan esperándote. 💬 es una nota interna del equipo que te arrobó; 🙋 es el cliente escribiendo en el portal.", tono: "bad", items: [] },
+    respondeme: { ic: "@", t: "Te arrobaron y no contestaste", d: "Sólo los tickets donde alguien te mencionó con @ y todavía no respondiste. Ordenados por lo que llevan esperándote desde la mención. 💬 fue en una nota interna (el cliente no la vio); 🙋 fue en un comentario visible para el cliente.", tono: "bad", items: [] },
     mios: { ic: "📋", t: "Tus mensuales sin poner En Curso", d: "Los contenedores de worklog del mes tienen que estar En Curso mientras el mes corre, aunque todavía no hayas imputado horas. El cliente ve el estado.", tono: "info", items: [] }
   };
   const porTec = {};
@@ -10721,7 +10731,7 @@ function jtAnomalias(cuentas) {
       if (t.quieto != null && t.quieto >= JT_DORMIDO) A.dormido.items.push(it);
       if (est.cierra) A.cierra.items.push(it);
       if (est.entra) A.sintomar.items.push(it);
-      if (t.espera) A.respondeme.items.push(it);
+      if (t.arrobado) A.respondeme.items.push(it);
       /* Gobernanza por técnico: lo que Sonia le pidió a German que EXIJA. No es un ranking de
          personas, es dónde poner la conversación. */
       /* 🎫 Se guardan los TICKETS, no sólo el contador (02/10 → 05/10, pedido de German:
@@ -12134,10 +12144,10 @@ function jtFilaTicket(t, mostrar, gid) {
   }
   /* Quién lo está esperando. El 💬/🙋 no es decorativo: una nota interna del equipo el cliente
      NO la vio, así que el costo de no contestar es distinto en cada caso. */
-  if (t.espera) {
-    const d = t.sinResp, q = rsopNombre(t.ultOtroQuien || "");
-    bits.push(`<span style="color:#b91c1c; font-weight:800;" title="${t.arrobado ? "Te arrobaron y todavía no contestaste" : "El último que escribió no fuiste vos"}${t.ultOtroInterna ? ". Fue una nota interna: el cliente no la vio." : ". Es visible para el cliente."}">`
-      + `${t.ultOtroInterna ? "💬" : "🙋"} ${t.arrobado ? "te arrobó" : "espera"}${q ? " " + escAttr(q) : ""}`
+  if (t.arrobado) {
+    const d = t.sinResp, q = rsopNombre(t.arrobadoPor || "");
+    bits.push(`<span style="color:#b91c1c; font-weight:800;" title="Te arrobaron y todavía no contestaste${t.arrobadoInterna ? ". Fue en una nota interna: el cliente no la vio." : ". Fue en un comentario visible para el cliente."}">`
+      + `${t.arrobadoInterna ? "💬" : "🙋"} te arrobó${q ? " " + escAttr(q) : ""}`
       + `${d != null ? " · " + (d === 0 ? "hoy" : d + " d") : ""}</span>`);
   }
   if (t.edad != null) bits.push(t.edad + " d abierto");
@@ -12397,7 +12407,7 @@ async function renderRadarSoporte() {
   const kpi = (l, v, sub, col) => `<div class="cue-kpi"><div class="kl">${l}</div><div class="kv" style="font-size:21px;${col ? "color:" + col + ";" : ""}">${v}</div><div class="ks">${sub}</div></div>`;
   const kpis = `<div class="cue-kpis" style="margin-bottom:12px;">
       ${kpi("Tickets de cliente", totReal, conDato.length + " cuenta(s)" + (csmSel === "__all" ? "" : " · " + csmSel))}
-      ${kpi("Esperan mi respuesta", grupos.respondeme.items.length, "el último no fui yo", grupos.respondeme.items.length ? "#b91c1c" : "")}
+      ${kpi("Te arrobaron", grupos.respondeme.items.length, "sin contestar", grupos.respondeme.items.length ? "#b91c1c" : "")}
       ${kpi("Sin tomar", grupos.sintomar.items.length, "nadie acusó recibo", grupos.sintomar.items.length ? "#b45309" : "")}
       ${kpi("Impide la compra", grupos.critico.items.length, "o urgentes", grupos.critico.items.length ? "#b91c1c" : "")}
       ${kpi("Vencidos", grupos.vencido.items.length, "fecha comprometida pasada", grupos.vencido.items.length ? "#b91c1c" : "")}
@@ -12486,7 +12496,7 @@ async function renderRadarSoporte() {
           todo desde el 30/09 y tapaba los KPIs, que son lo primero que él mira.
           Orden: primero el filtrado por cartera (Sin tomar), después el que NO filtra
           (Fila única) — así la lista no alterna entre dos alcances. */""}
-    ${/* ⏳ Primero el que depende de German. Todo lo demás del Radar es trabajo de otros que
+    ${/* @ Primero el que depende de German. Todo lo demás del Radar es trabajo de otros que
           él audita; esto es lo único que está trabado en su bandeja. */""}
     ${bloque(grupos.respondeme)}
     ${bloque(grupos.sintomar)}
