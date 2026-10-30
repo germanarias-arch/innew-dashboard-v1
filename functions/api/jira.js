@@ -76,7 +76,7 @@ PROY_GERMAN.concat(PROY_JENNY).forEach(k => { PROY_OK[k] = 1; });
    de las dos carteras, así que el número es real y no una estimación nuestra. Los que vienen
    en `null` NO se cuentan como 0 — se informan aparte como "sin estimar", misma lógica que
    `csmPct` con las cuentas sin bolsa: un vacío contado como cero miente hacia abajo. */
-const FIELDS = ["key", "summary", "status", "priority", "assignee", "created", "updated", "duedate", "comment",
+const FIELDS = ["key", "summary", "status", "priority", "assignee", "reporter", "created", "updated", "duedate", "comment",
                 "timeoriginalestimate", "timeestimate"];
 
 function json(obj, status) {
@@ -127,6 +127,75 @@ async function jiraFetch(env, path, body) {
    El patrón NO es uniforme entre cuentas (en PMP va sin `|` y sin `&`, y conviven
    "Soporte & Evolutivo" con "Soluciones & Evolutivo"), así que se detecta por palabras
    sueltas sobre el texto normalizado, nunca por match exacto. */
+/* ── ESPERAN MI RESPUESTA (2026-10-29) ──────────────────────────────────────────────────
+   Pedido de German: los tickets donde el equipo o el cliente lo arrobaron y él todavía no
+   contestó, ordenados por tiempo sin respuesta SUYA.
+
+   🪤 **Una @-mención NO se encuentra buscando el nombre como texto.** Medido contra el Jira de
+   Innew el 29/10: `comment ~ "German Arias"` devuelve 2 tickets, y BREMEN-195 —donde Daiana
+   escribió literalmente "3 hs @German Arias"— **no está entre ellos**. El motivo es que en ADF
+   la mención es un nodo `{type:"mention", attrs:{id:<accountId>}}`: el nombre que se ve en
+   pantalla es decoración, el dato es el id. Buscar por texto no falla ruidosamente, falla
+   **omitiendo**, que es la peor forma de fallar en un tablero de pendientes.
+   Por eso se camina el ADF y se compara el accountId. El displayName no se mira nunca.
+
+   💰 Costo cero de red: el cuerpo de cada comentario YA viajaba de Jira al worker (se pedía
+   `comment` desde el 28/09 para la fecha de última respuesta) y se tiraba. Acá se usa antes de
+   descartarlo. Al navegador sigue bajando el mismo objeto plano: los cuerpos no salen del worker.
+
+   ⚠️ Límite conocido: Jira devuelve las últimas ~20 entradas del hilo (pagina hasta el final).
+   Si German no comentó en esas 20, `yo` queda null — que para esta vista significa lo mismo
+   que "hace mucho", así que no cambia la conclusión. */
+const YO_ID = "608876525432640068531be5";   // German Arias. Verificado el 2026-09-18.
+
+/* Camina el ADF de un comentario y dice si hay una mención a `accountId`. Recursivo porque la
+   mención puede estar dentro de una lista, una cita o una tabla, no sólo en un párrafo suelto. */
+function mencionaA(nodo, accountId) {
+  if (!nodo || typeof nodo !== "object") return false;
+  if (nodo.type === "mention" && nodo.attrs && String(nodo.attrs.id) === accountId) return true;
+  const hijos = Array.isArray(nodo.content) ? nodo.content : [];
+  for (let i = 0; i < hijos.length; i++) if (mencionaA(hijos[i], accountId)) return true;
+  return false;
+}
+
+/* Reduce el hilo a lo que la vista necesita. Devuelve claves cortas, igual que el resto. */
+function hilo(comentarios, reporterName) {
+  const cs = Array.isArray(comentarios) ? comentarios : [];
+  let yo = null, otro = null, oa = "", oint = 0, men = 0, mena = "", menf = null;
+  cs.forEach(c => {
+    const id = (c.author && c.author.accountId) ? String(c.author.accountId) : "";
+    const f = c.created ? String(c.created) : null;
+    if (!f) return;
+    if (id === YO_ID) { if (!yo || f > yo) yo = f; return; }
+    if (!otro || f > otro) {
+      otro = f;
+      oa = (c.author && c.author.displayName) || "";
+      /* `jsdPublic` lo expone Jira Service Management: true = el cliente lo ve y le llega por
+         mail. false = nota interna. Si no viene, se asume pública, que es el caso peligroso. */
+      oint = (c.jsdPublic === false) ? 1 : 0;
+    }
+    if (mencionaA(c.body, YO_ID) && (!menf || f > menf)) {
+      menf = f; mena = (c.author && c.author.displayName) || ""; men = 1;
+    }
+  });
+  /* La pelota es de German cuando el último movimiento ajeno es posterior a su última respuesta
+     (o cuando nunca respondió). Comparar ISO como string es correcto: mismo formato, misma zona. */
+  const pend = otro ? (!yo || otro > yo) : 0;
+  /* ¿El que espera es el cliente o el equipo? Se decide por el informador del ticket, que en los
+     portales de Innew es siempre la persona del cliente que lo abrió. */
+  const esCli = !!(otro && reporterName && oa && oa === reporterName);
+  return {
+    yo: yo ? yo.slice(0, 10) : null,          // última vez que German contestó
+    ot: otro ? otro.slice(0, 10) : null,      // último comentario ajeno
+    oa: oa,                                   // quién lo escribió
+    oi: oint,                                 // 1 = era nota interna
+    pe: pend ? 1 : 0,                         // 1 = espera respuesta de German
+    me: (men && (!yo || (menf && menf > yo))) ? 1 : 0,   // lo arrobaron y no contestó después
+    ma: mena,                                 // quién lo arrobó
+    cl: esCli ? 1 : 0                         // 1 = el que espera es el cliente
+  };
+}
+
 function esAdmin(summary) {
   const s = String(summary || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
   return (s.includes("reunion") && s.includes("minuta")) || (s.includes("gestion") && s.includes("reporter"));
@@ -138,8 +207,12 @@ function plano(it) {
      vista no usa. `nc` (cantidad) permite distinguir "nadie escribió nunca" de "hace mucho". */
   const cs = (f.comment && Array.isArray(f.comment.comments)) ? f.comment.comments : [];
   const ult = cs.length ? cs[cs.length - 1] : null;
+  const h = hilo(cs, (f.reporter && f.reporter.displayName) || "");
   return {
     k: it.key,
+    /* Hilo reducido: quién espera a quién. Ver el bloque "ESPERAN MI RESPUESTA" arriba. */
+    yo: h.yo, ot: h.ot, oa: h.oa, oi: h.oi, pe: h.pe, me: h.me, ma: h.ma, cl: h.cl,
+    rp: (f.reporter && f.reporter.displayName) || "",
     lc: (ult && ult.created) ? String(ult.created).slice(0, 10) : null,   // fecha última respuesta
     la: (ult && ult.author && ult.author.displayName) || "",              // quién respondió
     nc: (f.comment && Number(f.comment.total)) || 0,                      // cuántas respuestas hay
